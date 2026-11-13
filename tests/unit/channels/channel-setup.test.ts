@@ -1,6 +1,7 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import pino from 'pino';
+import { err, ok } from 'neverthrow';
 import { ChannelRepository } from '../../../src/core/database/repositories/channel-repository.js';
 import { PersonaRepository } from '../../../src/core/database/repositories/persona-repository.js';
 import { BindingRepository } from '../../../src/core/database/repositories/binding-repository.js';
@@ -12,8 +13,6 @@ import { selectSignalTarget } from '../../../src/channels/connectors/signal/sign
 import { SignalAccountStateRepository } from '../../../src/core/database/repositories/signal-account-state-repository.js';
 import { SignalDestinationLeaseRepository } from '../../../src/core/database/repositories/signal-destination-lease-repository.js';
 import { QueueRepository } from '../../../src/core/database/repositories/queue-repository.js';
-import { ok } from 'neverthrow';
-import { vi } from 'vitest';
 import fs from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -35,10 +34,42 @@ import { HostToolsBridge } from '../../../src/tools/host-tools-bridge.js';
 import { SignalToolExecutionRegistry } from '../../../src/tools/host-tools/signal-tool-execution.js';
 import type { DaemonContext, SignalRunGeneration } from '../../../src/daemon/daemon-context.js';
 import type { SignalConnectorDependencies } from '../../../src/channels/connectors/signal/signal-connector.js';
-import type { TalondConfig } from '../../../src/core/config/config-types.js';
-import type { MessagePipeline } from '../../../src/pipeline/message-pipeline.js';
 import { createTestDb, uuid } from '../core/database/repositories/helpers.js';
-import type { BindingConfig } from '../../../src/core/config/config-types.js';
+import { PipelineError } from '../../../src/core/errors/index.js';
+import type { InboundEvent } from '../../../src/channels/channel-types.js';
+import type { TalondConfig, BindingConfig } from '../../../src/core/config/config-types.js';
+
+// Capture the handler channel-setup registers on the connector so the
+// async awaiting behavior can be exercised directly, plus the factory
+// arguments so the images-settings passthrough can be asserted.
+const connectorCapture = vi.hoisted(() => ({
+  handler: undefined as ((event: InboundEvent) => void | Promise<void>) | undefined,
+  factoryArgs: [] as unknown[][],
+  stub: false,
+}));
+
+// Only the "registerChannels() inbound handler" suite stubs the factory (`stub = true`); every other
+// suite (Signal wiring through the real factory) gets the real createConnector.
+vi.mock('../../../src/daemon/channel-factory.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../src/daemon/channel-factory.js')>();
+  return {
+    ...actual,
+    createConnector: (...args: Parameters<typeof actual.createConnector>) => {
+      if (!connectorCapture.stub) return actual.createConnector(...args);
+      connectorCapture.factoryArgs.push(args);
+      return {
+        type: 'telegram',
+        name: 'tg',
+        start: async () => {},
+        stop: async () => {},
+        send: async () => ok(undefined),
+        onMessage: (fn: (event: InboundEvent) => void | Promise<void>) => {
+          connectorCapture.handler = fn;
+        },
+      } as unknown as ReturnType<typeof actual.createConnector>;
+    },
+  };
+});
 
 const logger = pino({ level: 'silent' });
 
@@ -183,7 +214,12 @@ describe('registerChannels Signal wiring', () => {
     },
   });
   const configWith = (channels: unknown[]): TalondConfig =>
-    ({ channels, personas: [], bindings: [] }) as unknown as TalondConfig;
+    ({
+      channels,
+      personas: [],
+      bindings: [],
+      images: { maxInputBytes: 20_000_000, maxPerMessage: 5 },
+    }) as unknown as TalondConfig;
   const quietLogger = (): pino.Logger =>
     ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), child: vi.fn() }) as unknown as pino.Logger;
 
@@ -592,6 +628,7 @@ describe('integrated Signal wiring through the real registerChannels and pipelin
       ],
       personas: [{ name: 'fixture' }],
       bindings: [],
+      images: { maxInputBytes: 20_000_000, maxPerMessage: 5 },
     } as unknown as TalondConfig;
     registry = new ChannelRegistry(quiet);
     registerChannels(config, registry, {
@@ -728,5 +765,114 @@ describe('integrated Signal wiring through the real registerChannels and pipelin
     const deliveryId = state.kind === 'checkpoint' ? state.checkpoint.deliveryId : '';
     expect(deliveryId).toMatch(/^[0-9a-f-]{36}$/);
     expect(JSON.stringify(sent[0])).not.toContain(deliveryId);
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// registerChannels() inbound handler
+// ---------------------------------------------------------------------------
+
+describe('registerChannels() inbound handler', () => {
+  let db: Database.Database;
+  let channelRepo: ChannelRepository;
+  let personaRepo: PersonaRepository;
+  let bindingRepo: BindingRepository;
+  let lines: string[];
+  let log: pino.Logger;
+
+  const event: InboundEvent = {
+    channelType: 'telegram',
+    channelName: 'tg',
+    externalThreadId: 'ext-1',
+    senderId: 'u1',
+    idempotencyKey: 'k1',
+    content: 'hi',
+    timestamp: 1_700_000_000_000,
+  };
+
+  beforeEach(() => {
+    db = createTestDb();
+    channelRepo = new ChannelRepository(db);
+    personaRepo = new PersonaRepository(db);
+    bindingRepo = new BindingRepository(db);
+    lines = [];
+    log = pino({ level: 'info' }, { write: (chunk: unknown) => lines.push(String(chunk)) });
+    connectorCapture.handler = undefined;
+    connectorCapture.factoryArgs.length = 0;
+    connectorCapture.stub = true;
+  });
+
+  afterEach(() => {
+    connectorCapture.stub = false;
+    db.close();
+  });
+
+  function register(pipeline: MessagePipeline): void {
+    registerChannels(
+      {
+        channels: [{ name: 'tg', type: 'telegram', enabled: true, config: {} }],
+        personas: [],
+        images: {
+          maxInputBytes: 12_345_678,
+          maxPerMessage: 7,
+          maxPerInspection: 5,
+          maxEdge: 4096,
+          jpegQuality: 85,
+          retentionHours: 24,
+        },
+      } as unknown as TalondConfig,
+      { register: vi.fn() } as unknown as ChannelRegistry,
+      { channelRepo, bindingRepo, personaRepo, messagePipeline: pipeline, logger: log },
+    );
+  }
+
+  it('forwards the validated images limits to the connector factory', async () => {
+    const pipeline = {
+      handleInboundEvent: vi.fn().mockResolvedValue(ok('enqueued')),
+    } as unknown as MessagePipeline;
+    register(pipeline);
+
+    expect(connectorCapture.factoryArgs).toHaveLength(1);
+    expect(connectorCapture.factoryArgs[0]![4]).toEqual({
+      maxInputBytes: 12_345_678,
+      maxPerMessage: 7,
+    });
+  });
+
+  it('awaits the async pipeline Result and logs Err outcomes', async () => {
+    const pipeline = {
+      handleInboundEvent: vi.fn().mockResolvedValue(err(new PipelineError('boom'))),
+    } as unknown as MessagePipeline;
+    register(pipeline);
+
+    expect(connectorCapture.handler).toBeDefined();
+    // Awaiting the handler must surface the pipeline Err as a logged failure —
+    // possible only because the handler awaits the pipeline Promise.
+    await connectorCapture.handler!(event);
+
+    expect(pipeline.handleInboundEvent).toHaveBeenCalledTimes(1);
+    expect(lines.some((line) => line.includes('inbound message pipeline failed'))).toBe(true);
+  });
+
+  it('logs nothing on Ok outcomes', async () => {
+    const pipeline = {
+      handleInboundEvent: vi.fn().mockResolvedValue(ok('enqueued')),
+    } as unknown as MessagePipeline;
+    register(pipeline);
+
+    await connectorCapture.handler!(event);
+
+    expect(lines.some((line) => line.includes('pipeline failed'))).toBe(false);
+  });
+
+  it('contains unexpected throws instead of producing an unhandled rejection', async () => {
+    const pipeline = {
+      handleInboundEvent: vi.fn().mockRejectedValue(new Error('kaboom')),
+    } as unknown as MessagePipeline;
+    register(pipeline);
+
+    await expect(connectorCapture.handler!(event)).resolves.toBeUndefined();
+    expect(lines.some((line) => line.includes('pipeline threw'))).toBe(true);
   });
 });

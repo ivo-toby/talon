@@ -1,16 +1,19 @@
 /**
  * Host-side tool: persona.list
  *
- * Returns discovery cards for all currently-loaded personas available for
- * delegation via persona_send — excluding the calling persona itself.
+ * Returns discovery cards for the currently-loaded personas the caller may
+ * delegate to via persona_send (per its `persona.send` scopes) — excluding the
+ * calling persona itself.
  *
  * Uses PersonaLoader (the live in-memory cache) rather than the raw DB so
  * that stale/unloaded personas are never advertised.
  */
 
-import fs from 'node:fs';
 import type pino from 'pino';
+import { getPersonaDescription } from '../../personas/persona-description.js';
+import { filterDelegationTargets } from '../../personas/persona-delegation.js';
 import type { PersonaLoader } from '../../personas/persona-loader.js';
+import type { ResolvedCapabilities } from '../../personas/persona-types.js';
 import type { ToolCallResult, ToolManifest } from '../tool-types.js';
 import type { ToolExecutionContext } from './channel-send.js';
 
@@ -30,7 +33,8 @@ export interface PersonaCard {
 export class PersonaListHandler {
   static readonly manifest: ToolManifest = {
     name: 'persona.list',
-    description: 'Lists available personas for delegation via persona_send.',
+    description:
+      'Lists the personas you can delegate to via persona_send: name, description and skills of each.',
     capabilities: ['persona.send:*'],
     executionLocation: 'host',
   };
@@ -38,23 +42,11 @@ export class PersonaListHandler {
   constructor(
     private readonly deps: {
       personaLoader: PersonaLoader;
+      /** Resolves the CALLING persona's capabilities on the host (fail-closed). */
+      resolveCapabilities: (personaId: string) => ResolvedCapabilities;
       logger: pino.Logger;
     },
   ) {}
-
-  private readDescription(systemPromptFile: string | null | undefined): string | null {
-    if (!systemPromptFile) return null;
-    try {
-      const content = fs.readFileSync(systemPromptFile, 'utf-8');
-      for (const line of content.split('\n')) {
-        const trimmed = line.replace(/^#+\s*/, '').trim();
-        if (trimmed) return trimmed;
-      }
-      return null;
-    } catch {
-      return null;
-    }
-  }
 
   async execute(_args: PersonaListArgs, context: ToolExecutionContext): Promise<ToolCallResult> {
     const requestId = context.requestId ?? 'unknown';
@@ -71,13 +63,18 @@ export class PersonaListHandler {
       : null;
 
     // List only live (loaded) personas — stale DB rows are excluded.
-    const cards: PersonaCard[] = this.deps.personaLoader.listNames()
+    // Only personas the caller may actually delegate to (persona.send scopes).
+    const delegable = filterDelegationTargets(
+      this.deps.resolveCapabilities(context.personaId),
+      this.deps.personaLoader.listNames(),
+    );
+    const cards: PersonaCard[] = delegable
       .filter((name) => name !== callerName)
       .map((name) => {
         const loadedResult = this.deps.personaLoader.getByName(name);
         const loaded = loadedResult.isOk() && loadedResult.value ? loadedResult.value : null;
         const skills = loaded ? loaded.config.skills : [];
-        const description = this.readDescription(loaded?.config.systemPromptFile);
+        const description = getPersonaDescription(loaded);
         return { name, description, skills };
       });
 

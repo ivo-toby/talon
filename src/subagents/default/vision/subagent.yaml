@@ -1,0 +1,33 @@
+# Built-in vision sub-agent: one-shot multimodal Inspections
+# (docs/adr/0001-vision-subagent.md).
+#
+# Default model: Anthropic Claude Haiku 4.5 — the same low-cost tier the other
+# built-in sub-agents use. Primary source for its vision capability:
+# Anthropic's vision guide, "All currently supported Claude models" (Opus,
+# Sonnet, and Haiku, including Haiku 4.5) accept image inputs:
+# https://docs.anthropic.com/en/docs/build-with-claude/vision
+#
+# The vision chain may only contain the inference adapters
+# (anthropic/openai/google/ollama). Overrides go under `subagents.vision.model`
+# in talond.yaml and are validated at config load; the full effective chain
+# including this implicit manifest fallback is validated before Inspection work.
+# Missing provider credentials stay explicit invocation errors — the runner
+# never reroutes an Inspection to the foreground model.
+name: vision
+version: "0.1.0"
+description: "Answers one question about the current thread's Images in a single multimodal request and records a textual Finding"
+
+model:
+  provider: anthropic
+  name: claude-haiku-4-5-20251001
+  maxTokens: 8192
+
+# Inspection is gated by persona assignment plus the `subagent.invoke`
+# capability on the host tool; it needs no additional resource capabilities.
+requiredCapabilities: []
+
+rootPaths: []
+
+# A request carries up to `images.maxPerInspection` normalized JPEGs; allow a
+# wider wall-clock budget than the text-only sub-agents before abort/failover.
+timeoutMs: 60000

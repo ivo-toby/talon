@@ -14,6 +14,7 @@ export { EmailConnector, encodeThreadId, decodeThreadId, extractAddress } from '
 export { markdownToHtml, htmlEscape } from './email-format.js';
 export type {
   EmailConfig,
+  EmailAttachment,
   ParsedEmail,
   SmtpSendOptions,
   SmtpSendResult,
@@ -24,3 +25,11 @@ export type {
   ImapClient,
   EmailConnectorOptions,
 } from './email-connector.js';
+export {
+  DEFAULT_EMAIL_IMAGE_SETTINGS,
+  isInlineOrRelatedEmailAttachment,
+  planEmailMedia,
+  planHasImageSlots,
+  stageEmailMedia,
+} from './email-media.js';
+export type { EmailMediaItem, EmailMediaPlan } from './email-media.js';

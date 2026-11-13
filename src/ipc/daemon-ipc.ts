@@ -25,7 +25,13 @@ import { SignalRpcTransportError } from '../channels/connectors/signal/signal-rp
 // ---------------------------------------------------------------------------
 
 /** Union of all supported daemon control commands. */
-export type DaemonCommandType = 'status' | 'reload' | 'shutdown' | 'queue-purge' | 'signal-resume';
+export type DaemonCommandType =
+  | 'status'
+  | 'reload'
+  | 'shutdown'
+  | 'queue-purge'
+  | 'signal-resume'
+  | 'a2a-cancel';
 
 /** A command sent by `talonctl` to the running `talond` process. */
 export interface DaemonCommand {
@@ -62,7 +68,7 @@ export interface DaemonResponse {
 /** Zod schema for validating serialised {@link DaemonCommand} objects. */
 const LegacyDaemonCommandSchema = z.object({
   id: z.uuid(),
-  command: z.enum(['status', 'reload', 'shutdown', 'queue-purge']),
+  command: z.enum(['status', 'reload', 'shutdown', 'queue-purge', 'a2a-cancel']),
   payload: z.record(z.string(), z.unknown()).optional(),
 });
 

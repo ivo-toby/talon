@@ -1,4 +1,27 @@
-/** Atomic local handoff from normalized channel events to the durable queue. */
+/**
+ * MessagePipeline: atomic local handoff from normalized channel events to the durable queue.
+ *
+ * Two admission paths, each atomic in its own way:
+ *
+ *  - Text path (every event without attachments, and ALL Signal events): one local SQLite
+ *    transaction wraps channel/thread resolution, dedup, message persist, routing and enqueue
+ *    (rolled back as a unit on any failure). `handleInboundEventWithReceipt` exposes the
+ *    outcome as a local-commit receipt for connectors that acknowledge remotely only after
+ *    that commit. Signal events are text only (`attachments?: never`), so the receipt path
+ *    can never bypass image admission.
+ *
+ *  - Image path (events with attachments, when an {@link ImageIngestionService} is injected):
+ *    after thread resolution and normalization the event is handed to the ingestion
+ *    coordinator, which stages bytes, then admits the message, its Images and its Ingestion
+ *    atomically in its own transaction (so a message is never durable without its recovery
+ *    record), resolves Processing outcomes and enqueues exactly once at the commit-together
+ *    completion. The pipeline stays the identity authority. This path awaits attachment
+ *    staging and therefore cannot run inside a synchronous SQLite transaction; its atomicity
+ *    lives in the coordinator.
+ *
+ * All expected failure paths are returned as Result errors; exceptions are never thrown across
+ * the public boundary. The public boundary is async because ingestion stages bytes first.
+ */
 import { v4 as uuidv4 } from 'uuid';
 import type pino from 'pino';
 import { ok, err, type Result } from 'neverthrow';
@@ -12,6 +35,7 @@ import type { QueueManager } from '../queue/queue-manager.js';
 import type { AuditLogger } from '../core/logging/audit-logger.js';
 import type { InboundEvent, InboundReceipt } from '../channels/channel-types.js';
 import { MessageNormalizer } from './message-normalizer.js';
+import type { ImageIngestionRequest, ImageIngestionService } from '../images/image-ingestion.js';
 import type { NormalizedMessage, PipelineResult, PipelineStats } from './pipeline-types.js';
 
 type AcceptanceResult = Exclude<PipelineResult, 'error'>;
@@ -43,10 +67,24 @@ export class MessagePipeline {
     private readonly router: ChannelRouter,
     private readonly auditLogger: AuditLogger,
     private readonly logger: pino.Logger,
+    /**
+     * Durable Ingestion coordinator for image-bearing events. Optional so deployments without
+     * image storage keep the text path working; when absent, image-bearing events follow the
+     * plain text path (attachments are not admitted).
+     */
+    private readonly imageIngestion: ImageIngestionService | null = null,
   ) {}
 
-  /** Compatible legacy outcomes for ordinary connector callers. */
-  handleInboundEvent(event: InboundEvent): Result<PipelineResult, PipelineError> {
+  /**
+   * Compatible legacy outcomes for ordinary connector callers. Image-bearing events (with an
+   * ingestion coordinator) take the durable Ingestion path; everything else is the atomic
+   * text path.
+   */
+  async handleInboundEvent(event: InboundEvent): Promise<Result<PipelineResult, PipelineError>> {
+    const ingestion = this.imageIngestion;
+    if (ingestion !== null && event.attachments !== undefined && event.attachments.length > 0) {
+      return this.handleImageInboundEvent(event, ingestion);
+    }
     return this.acceptInboundEvent(event);
   }
 
@@ -214,6 +252,181 @@ export class MessagePipeline {
         personaId,
       },
       'pipeline: message enqueued',
+    );
+    return ok('enqueued');
+  }
+
+  /**
+   * Image-bearing events: resolve channel and thread, normalize, then delegate the whole
+   * durable lifecycle to the ingestion coordinator (admission is atomic there).
+   */
+  private async handleImageInboundEvent(
+    event: InboundEvent,
+    ingestion: ImageIngestionService,
+  ): Promise<Result<PipelineResult, PipelineError>> {
+    this.statsCounters.processed++;
+
+    try {
+      const channelResult = this.channelRepo.findByName(event.channelName);
+      if (channelResult.isErr()) {
+        this.statsCounters.errors++;
+        return err(
+          new PipelineError(
+            `Failed to look up channel '${event.channelName}': ${channelResult.error.message}`,
+            channelResult.error,
+          ),
+        );
+      }
+      const channel = channelResult.value;
+      if (channel === null) {
+        this.statsCounters.errors++;
+        this.logger.warn({ channelName: event.channelName }, 'pipeline: channel not found');
+        return err(new PipelineError(`Channel not found: ${event.channelName}`));
+      }
+      const channelId = channel.id;
+
+      const threadResult = this.threadRepo.findByExternalId(channelId, event.externalThreadId);
+      if (threadResult.isErr()) {
+        this.statsCounters.errors++;
+        return err(
+          new PipelineError(
+            `Failed to look up thread for channel ${channelId}, external ID '${event.externalThreadId}': ${threadResult.error.message}`,
+            threadResult.error,
+          ),
+        );
+      }
+
+      let threadId: string;
+      if (threadResult.value !== null) {
+        threadId = threadResult.value.id;
+      } else {
+        const newThreadId = uuidv4();
+        const insertResult = this.threadRepo.insert({
+          id: newThreadId,
+          channel_id: channelId,
+          external_id: event.externalThreadId,
+          metadata: '{}',
+        });
+        if (insertResult.isErr()) {
+          this.statsCounters.errors++;
+          return err(
+            new PipelineError(
+              `Failed to create thread for channel ${channelId}, external ID '${event.externalThreadId}': ${insertResult.error.message}`,
+              insertResult.error,
+            ),
+          );
+        }
+        threadId = newThreadId;
+        this.logger.debug(
+          { threadId, channelId, externalThreadId: event.externalThreadId },
+          'pipeline: created new thread',
+        );
+      }
+
+      const normalized = this.normalizer.normalize(event, channelId, threadId);
+      return await this.handleImageEvent(event, ingestion, channelId, threadId, normalized);
+    } catch (cause) {
+      // Catch-all for truly unexpected errors (programming bugs, not domain failures).
+      this.statsCounters.errors++;
+      const message = cause instanceof Error ? cause.message : String(cause);
+      this.logger.error({ err: cause }, `pipeline: unexpected error: ${message}`);
+      return err(
+        new PipelineError(
+          `Unexpected pipeline error: ${message}`,
+          cause instanceof Error ? cause : undefined,
+        ),
+      );
+    }
+  }
+
+  /**
+   * Durable Ingestion path for image-bearing events.
+   *
+   * Resolves the persona first (the coordinator needs the routing decision
+   * to choose between pending Ingestion and a terminal admission record),
+   * then delegates the whole durable lifecycle. Counter and audit behavior
+   * mirrors the text path so monitoring stays comparable across both.
+   */
+  private async handleImageEvent(
+    event: InboundEvent,
+    ingestion: ImageIngestionService,
+    channelId: string,
+    threadId: string,
+    normalized: ReturnType<MessageNormalizer['normalize']>,
+  ): Promise<Result<PipelineResult, PipelineError>> {
+    const personaResult = this.router.resolvePersona(channelId, threadId);
+    if (personaResult.isErr()) {
+      this.statsCounters.errors++;
+      return err(
+        new PipelineError(
+          `Failed to resolve persona for channel ${channelId}, thread ${threadId}: ${personaResult.error.message}`,
+          personaResult.error,
+        ),
+      );
+    }
+    const personaId = personaResult.value;
+
+    const request: ImageIngestionRequest = {
+      channelId,
+      channelName: event.channelName,
+      externalMessageId: normalized.idempotencyKey,
+      externalChatId: event.externalThreadId,
+      threadId,
+      message: {
+        id: normalized.id,
+        content: normalized.content,
+        senderId: normalized.senderId,
+        idempotencyKey: normalized.idempotencyKey,
+      },
+      attachments: event.attachments ?? [],
+      personaId,
+      // No queue payload is carried: the coordinator rebuilds completion
+      // payloads from the committed Message row and the route persisted
+      // with the Ingestion, so a redelivery can never enqueue a view that
+      // disagrees with what the ledger stored. Payloads stay text and
+      // metadata only — never pixels or local paths
+      // (docs/adr/0001-vision-subagent.md).
+    };
+
+    const outcome = await ingestion.ingestMessage(request);
+    if (outcome.isErr()) {
+      this.statsCounters.errors++;
+      return err(outcome.error);
+    }
+
+    if (outcome.value === 'no_persona') {
+      this.statsCounters.noPersona++;
+      this.logger.warn(
+        { channelId, threadId, channelName: event.channelName },
+        'pipeline: no persona binding found; image message admitted unrouted',
+      );
+      this.auditLogger.logChannelSend({
+        threadId,
+        action: 'pipeline.message.dropped',
+        details: {
+          reason: 'no_persona',
+          channelId,
+          channelName: event.channelName,
+          externalThreadId: event.externalThreadId,
+          messageId: normalized.id,
+          idempotencyKey: `${channelId}:${normalized.idempotencyKey}`,
+        },
+      });
+      return ok('no_persona');
+    }
+
+    if (outcome.value === 'duplicate') {
+      this.statsCounters.duplicates++;
+      this.logger.debug(
+        { messageId: normalized.id, channelId },
+        'pipeline: duplicate image message joined its active owner',
+      );
+      return ok('duplicate');
+    }
+
+    this.logger.info(
+      { messageId: normalized.id, threadId, channelId, personaId },
+      'pipeline: image message ingested and enqueued',
     );
     return ok('enqueued');
   }

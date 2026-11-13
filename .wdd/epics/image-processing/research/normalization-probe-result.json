@@ -1,0 +1,53 @@
+{
+  "node": "v24.15.0",
+  "sharp": "0.34.5",
+  "formats": [
+    {
+      "format": "jpeg",
+      "exifHeader": "457869660000",
+      "orientation": 6,
+      "captureTime": "2026:10:14 12:34:56",
+      "captureOffset": "+02:00",
+      "latitude": 51.5,
+      "longitude": -0.11666666666666667,
+      "normalized": {
+        "width": 8,
+        "height": 16,
+        "exifPresent": false
+      }
+    },
+    {
+      "format": "png",
+      "exifHeader": "49492a000800",
+      "orientation": 6,
+      "captureTime": "2026:10:14 12:34:56",
+      "captureOffset": "+02:00",
+      "latitude": 51.5,
+      "longitude": -0.11666666666666667,
+      "normalized": {
+        "width": 8,
+        "height": 16,
+        "exifPresent": false
+      }
+    },
+    {
+      "format": "webp",
+      "exifHeader": "457869660000",
+      "orientation": 6,
+      "captureTime": "2026:10:14 12:34:56",
+      "captureOffset": "+02:00",
+      "latitude": 51.5,
+      "longitude": -0.11666666666666667,
+      "normalized": {
+        "width": 8,
+        "height": 16,
+        "exifPresent": false
+      }
+    }
+  ],
+  "singleFrameApng": {
+    "pages": null,
+    "acTL": true,
+    "firstFrameConvertible": true
+  }
+}

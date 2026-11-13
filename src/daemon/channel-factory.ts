@@ -7,6 +7,7 @@
 
 import type pino from 'pino';
 import type { ChannelConnector } from '../channels/channel-types.js';
+import type { ImageSelectionSettings } from '../images/image-selection.js';
 import { TelegramConnector } from '../channels/connectors/telegram/telegram-connector.js';
 import type { TelegramConfig } from '../channels/connectors/telegram/telegram-types.js';
 import { SlackConnector } from '../channels/connectors/slack/slack-connector.js';
@@ -28,14 +29,25 @@ import {
 import { parseSignalConfig } from '../channels/connectors/signal/signal-config.js';
 
 /**
+ * Daemon-level image intake settings forwarded to the connectors that
+ * accept image Attachments. Values come from the validated `images` config
+ * section; connectors merge them over their own defaults.
+ */
+export type ConnectorImageSettings = Partial<ImageSelectionSettings>;
+
+/**
  * Creates a channel connector instance for the given type.
  *
- * @param type   - Channel type string (e.g. 'telegram', 'slack').
- * @param name   - Instance name from config.
- * @param config - Channel-specific configuration object.
- * @param logger - Pino logger.
- * @param signal - Shared Signal dependencies (one generation registry, one SQLite connection).
- *                 Required for `signal`; Signal instances are never created without them.
+ * @param type          - Channel type string (e.g. 'telegram', 'slack').
+ * @param name          - Instance name from config.
+ * @param config        - Channel-specific configuration object.
+ * @param logger        - Pino logger.
+ * @param imageSettings - Validated `images` intake limits, forwarded only to
+ *                        the image-capable connectors (telegram, WhatsApp
+ *                        Business, WhatsApp Baileys, email). Connectors
+ *                        without image intake ignore it.
+ * @param signal        - Shared Signal dependencies (one generation registry, one SQLite connection).
+ *                        Required for `signal`; Signal instances are never created without them.
  * @returns The constructed connector, or null if the type is unknown or cannot be built.
  */
 export function createConnector(
@@ -43,6 +55,7 @@ export function createConnector(
   name: string,
   config: Record<string, unknown>,
   logger: pino.Logger,
+  imageSettings?: ConnectorImageSettings,
   signal?: SignalConnectorDependencies,
 ): ChannelConnector | null {
   switch (type) {
@@ -52,18 +65,27 @@ export function createConnector(
       return parsed.isOk() ? new SignalConnector(parsed.value, name, logger, signal) : null;
     }
     case 'telegram':
-      return new TelegramConnector(config as unknown as TelegramConfig, name, logger);
+      return new TelegramConnector(config as unknown as TelegramConfig, name, logger, {
+        imageSettings,
+      });
     case 'slack':
       return new SlackConnector(config as unknown as SlackConfig, name, logger);
     case 'discord':
       return new DiscordConnector(config as unknown as DiscordConfig, name, logger);
     case 'whatsapp':
     case 'whatsappBusiness':
-      return new WhatsAppConnector(config as unknown as WhatsAppConfig, name, logger);
+      return new WhatsAppConnector(config as unknown as WhatsAppConfig, name, logger, {
+        imageSettings,
+      });
     case 'whatsappBaileys':
-      return new WhatsAppBaileysConnector(config as unknown as WhatsAppBaileysConfig, name, logger);
+      return new WhatsAppBaileysConnector(
+        config as unknown as WhatsAppBaileysConfig,
+        name,
+        logger,
+        imageSettings,
+      );
     case 'email':
-      return new EmailConnector(config as unknown as EmailConfig, name, logger);
+      return new EmailConnector(config as unknown as EmailConfig, name, logger, { imageSettings });
     case 'terminal':
       return new TerminalConnector(config as unknown as TerminalConfig, name, logger);
     default:

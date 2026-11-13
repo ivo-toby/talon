@@ -1943,3 +1943,324 @@ describe('ContextRoller', () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Image-aware rotation (ADR-0002): full descriptor inventory + Finding
+// projections are appended to rotation transcripts so summaries and
+// observations can paraphrase them; canonical records stay in SQLite.
+// ---------------------------------------------------------------------------
+
+import type { ImageDescriptor } from '../../../src/images/image-types.js';
+import type { Finding } from '../../../src/images/finding-types.js';
+
+const HOUR_MS = 3_600_000;
+const BASE_TS = 1_700_000_000_000;
+
+function makeRotationImage(overrides: Partial<ImageDescriptor> & { imageId: string }): ImageDescriptor {
+  return {
+    threadId: 'thread-1',
+    messageId: 'msg-1',
+    ordinal: 0,
+    receivedAt: BASE_TS,
+    expiresAt: BASE_TS + HOUR_MS,
+    state: 'available',
+    mimeType: 'image/png',
+    ...overrides,
+  };
+}
+
+function makeRotationFinding(overrides: Partial<Finding> & { findingId: string }): Finding {
+  return {
+    threadId: 'thread-1',
+    runId: 'run-1',
+    imageIds: ['img-1'],
+    question: 'What is in this image?',
+    answer: 'A sunset over the harbour.',
+    createdAt: BASE_TS,
+    modelName: 'vision-model-1',
+    ...overrides,
+  };
+}
+
+describe('ContextRoller image context (ADR-0002)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const usage = {
+    ratio: 0.45,
+    inputTokens: 90_000,
+    rawMetric: 90_000,
+    rawMetricName: 'cache_read_input_tokens',
+  };
+
+  it('appends the bounded Image inventory and Findings to the rotation transcript', async () => {
+    const messages = [
+      { direction: 'inbound', content: JSON.stringify({ body: 'hello' }), created_at: 1000 },
+      { direction: 'outbound', content: JSON.stringify({ body: 'hi there' }), created_at: 2000 },
+    ];
+    mockSummarizerRun.mockResolvedValueOnce(ok({
+      summary: 'Greeting exchange',
+      data: { keyFacts: ['User greeted'], openThreads: [], summary: 'Greeting exchange' },
+      usage: { inputTokens: 100, outputTokens: 50, costUsd: 0 },
+    }));
+
+    const source = {
+      resolveMessageDescriptors: vi.fn().mockResolvedValue([] as ImageDescriptor[]),
+      listThreadDescriptors: vi.fn().mockResolvedValue([
+        makeRotationImage({ imageId: 'img-rotated' }),
+      ]),
+      listThreadFindings: vi.fn().mockResolvedValue([
+        makeRotationFinding({ findingId: 'find-rotated' }),
+      ]),
+    };
+    const deps = makeDeps({
+      messageRepo: {
+        findLatestByThread: vi.fn().mockReturnValue(ok(messages)),
+        findLatestByThreadSince: vi.fn().mockReturnValue(ok([])),
+      } as any,
+    });
+    const roller = new ContextRoller(deps);
+
+    await roller.checkAndRotate(
+      'thread-1',
+      'persona-1',
+      usage,
+      undefined,
+      'session-summarizer',
+      { source, imageLookupExposed: true },
+    );
+
+    expect(source.listThreadDescriptors).toHaveBeenCalledWith('thread-1');
+    expect(source.listThreadFindings).toHaveBeenCalledWith('thread-1');
+    expect(source.resolveMessageDescriptors).not.toHaveBeenCalled();
+    const transcript = mockSummarizerRun.mock.calls[0][2].transcript as string;
+    expect(transcript).toContain('hello');
+    expect(transcript).toContain('Image inventory:');
+    expect(transcript).toContain('img img-rotated state=available');
+    expect(transcript).toContain('finding find-rotated');
+    expect(deps.sessionTracker.rotateSession).toHaveBeenCalledWith('thread-1');
+  });
+
+  it('keeps the transcript unchanged when no image context is supplied', async () => {
+    const messages = [
+      { direction: 'inbound', content: JSON.stringify({ body: 'hello' }), created_at: 1000 },
+    ];
+    mockSummarizerRun.mockResolvedValueOnce(ok({
+      summary: 'Greeting exchange',
+      data: { keyFacts: ['User greeted'], openThreads: [], summary: 'Greeting exchange' },
+    }));
+    const deps = makeDeps({
+      messageRepo: {
+        findLatestByThread: vi.fn().mockReturnValue(ok(messages)),
+        findLatestByThreadSince: vi.fn().mockReturnValue(ok([])),
+      } as any,
+    });
+    const roller = new ContextRoller(deps);
+
+    await roller.checkAndRotate('thread-1', 'persona-1', usage);
+
+    const transcript = mockSummarizerRun.mock.calls[0][2].transcript as string;
+    expect(transcript).toContain('hello');
+    expect(transcript).not.toContain('Image inventory');
+    expect(transcript).not.toContain('Findings (historical data');
+  });
+
+  it('rotates without image projections when the source rejects', async () => {
+    const messages = [
+      { direction: 'inbound', content: JSON.stringify({ body: 'hello' }), created_at: 1000 },
+    ];
+    mockSummarizerRun.mockResolvedValueOnce(ok({
+      summary: 'Greeting exchange',
+      data: { keyFacts: ['User greeted'], openThreads: [], summary: 'Greeting exchange' },
+    }));
+    const source = {
+      resolveMessageDescriptors: vi.fn().mockResolvedValue([] as ImageDescriptor[]),
+      listThreadDescriptors: vi.fn().mockRejectedValue(new Error('images db down')),
+      listThreadFindings: vi.fn().mockResolvedValue([
+        makeRotationFinding({ findingId: 'find-x' }),
+      ]),
+    };
+    const deps = makeDeps({
+      messageRepo: {
+        findLatestByThread: vi.fn().mockReturnValue(ok(messages)),
+        findLatestByThreadSince: vi.fn().mockReturnValue(ok([])),
+      } as any,
+    });
+    const roller = new ContextRoller(deps);
+
+    await roller.checkAndRotate(
+      'thread-1',
+      'persona-1',
+      usage,
+      undefined,
+      'session-summarizer',
+      { source, imageLookupExposed: false },
+    );
+
+    const transcript = mockSummarizerRun.mock.calls[0][2].transcript as string;
+    expect(transcript).toContain('hello');
+    expect(transcript).not.toContain('Image inventory');
+    expect(transcript).not.toContain('finding find-x');
+    expect(deps.logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ threadId: 'thread-1' }),
+      expect.stringContaining('image context fetch failed'),
+    );
+    expect(deps.sessionTracker.rotateSession).toHaveBeenCalledWith('thread-1');
+  });
+
+  it('appends the image projection to the OM observer transcript', async () => {
+    const messages = [
+      { direction: 'inbound', content: JSON.stringify({ body: 'work on X' }), created_at: 1000 },
+      { direction: 'outbound', content: JSON.stringify({ body: 'done' }), created_at: 2000 },
+    ];
+    const observerRun = vi.fn().mockResolvedValueOnce(ok({
+      summary: 'Observations recorded',
+      data: {
+        observations: [
+          { date: '2026-04-19', time: '10:00', priority: 'high', text: 'captured context' },
+        ],
+        taskComplete: true,
+        memoryUpdates: [],
+      },
+    }));
+    const source = {
+      resolveMessageDescriptors: vi.fn().mockResolvedValue([] as ImageDescriptor[]),
+      listThreadDescriptors: vi.fn().mockResolvedValue([
+        makeRotationImage({ imageId: 'img-om' }),
+      ]),
+      listThreadFindings: vi.fn().mockResolvedValue([] as Finding[]),
+    };
+    const deps = makeDeps({
+      messageRepo: {
+        findLatestByThread: vi.fn().mockReturnValue(ok(messages)),
+        findLatestByThreadSince: vi.fn().mockReturnValue(ok([])),
+      } as any,
+      resolveSummarizerRun: vi.fn().mockImplementation((name: string) =>
+        name === 'session-observer' ? observerRun : null,
+      ),
+    });
+    const roller = new ContextRoller(deps);
+
+    await roller.checkAndRotateOM(
+      'thread-1',
+      'persona-1',
+      usage,
+      undefined,
+      'session-observer',
+      'session-reflector',
+      DEFAULT_MAX_OBSERVATION_CHARS,
+      null,
+      undefined,
+      { source, imageLookupExposed: false },
+    );
+
+    const transcript = observerRun.mock.calls[0][2].transcript as string;
+    expect(transcript).toContain('work on X');
+    expect(transcript).toContain('Image inventory:');
+    expect(transcript).toContain('img img-om state=available');
+  });
+
+  it('subtracts the image section from the transcript allowance when the transcript saturates', async () => {
+    // Review r1 P2-2 repro: a single 99,900-char message fills the
+    // transcript near MAX_TRANSCRIPT_CHARS. The image section must be
+    // rendered FIRST and its length (separator included) subtracted from
+    // the allowance — the combined summarizer input may never exceed the
+    // enclosing 100,000-char budget.
+    const messages = [
+      { direction: 'inbound', content: JSON.stringify({ body: 'x'.repeat(99_900) }), created_at: 1000 },
+    ];
+    mockSummarizerRun.mockResolvedValueOnce(ok({
+      summary: 'Saturated rotation',
+      data: { keyFacts: [], openThreads: [], summary: 'Saturated rotation' },
+      usage: { inputTokens: 100, outputTokens: 50, costUsd: 0 },
+    }));
+    const source = {
+      resolveMessageDescriptors: vi.fn().mockResolvedValue([] as ImageDescriptor[]),
+      listThreadDescriptors: vi.fn().mockResolvedValue([
+        makeRotationImage({ imageId: 'img-sat-1', filename: 'a'.repeat(900) }),
+        makeRotationImage({ imageId: 'img-sat-2', filename: 'b'.repeat(900) }),
+      ]),
+      listThreadFindings: vi.fn().mockResolvedValue([] as Finding[]),
+    };
+    const deps = makeDeps({
+      messageRepo: {
+        findLatestByThread: vi.fn().mockReturnValue(ok(messages)),
+        findLatestByThreadSince: vi.fn().mockReturnValue(ok([])),
+      } as any,
+    });
+    const roller = new ContextRoller(deps);
+
+    await roller.checkAndRotate(
+      'thread-1',
+      'persona-1',
+      usage,
+      undefined,
+      'session-summarizer',
+      { source, imageLookupExposed: true },
+    );
+
+    const transcript = mockSummarizerRun.mock.calls[0][2].transcript as string;
+    expect(transcript.length).toBeLessThanOrEqual(100_000);
+    // The projection survives whole at the end: only the message transcript
+    // (rendered first in the allowance) gives way.
+    expect(transcript).toContain('Image inventory:');
+    expect(transcript).toContain('img img-sat-2 state=available');
+    expect(transcript.startsWith('[turn 1, user]: xxxx')).toBe(true);
+    const sectionStart = transcript.indexOf('\n\nImages (historical data');
+    expect(sectionStart).toBeGreaterThan(-1);
+    expect(transcript.length - sectionStart).toBeLessThan(2_500);
+  });
+
+  it('subtracts the image section from the OM observer transcript allowance', async () => {
+    const messages = [
+      { direction: 'inbound', content: JSON.stringify({ body: 'x'.repeat(99_900) }), created_at: 1000 },
+    ];
+    const observerRun = vi.fn().mockResolvedValueOnce(ok({
+      summary: 'Observations recorded',
+      data: {
+        observations: [
+          { date: '2026-04-19', time: '10:00', priority: 'high', text: 'captured context' },
+        ],
+        taskComplete: true,
+        memoryUpdates: [],
+      },
+    }));
+    const source = {
+      resolveMessageDescriptors: vi.fn().mockResolvedValue([] as ImageDescriptor[]),
+      listThreadDescriptors: vi.fn().mockResolvedValue([
+        makeRotationImage({ imageId: 'img-om-sat', filename: 'a'.repeat(900) }),
+      ]),
+      listThreadFindings: vi.fn().mockResolvedValue([] as Finding[]),
+    };
+    const deps = makeDeps({
+      messageRepo: {
+        findLatestByThread: vi.fn().mockReturnValue(ok(messages)),
+        findLatestByThreadSince: vi.fn().mockReturnValue(ok([])),
+      } as any,
+      resolveSummarizerRun: vi.fn().mockImplementation((name: string) =>
+        name === 'session-observer' ? observerRun : null,
+      ),
+    });
+    const roller = new ContextRoller(deps);
+
+    await roller.checkAndRotateOM(
+      'thread-1',
+      'persona-1',
+      usage,
+      undefined,
+      'session-observer',
+      'session-reflector',
+      DEFAULT_MAX_OBSERVATION_CHARS,
+      null,
+      undefined,
+      { source, imageLookupExposed: false },
+    );
+
+    const transcript = observerRun.mock.calls[0][2].transcript as string;
+    expect(transcript.length).toBeLessThanOrEqual(100_000);
+    expect(transcript).toContain('Image inventory:');
+    expect(transcript).toContain('img img-om-sat state=available');
+    expect(transcript.startsWith('[turn 1, user]: xxxx')).toBe(true);
+  });
+});

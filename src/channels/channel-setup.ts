@@ -173,6 +173,13 @@ export function registerChannels(
       : buildSignalDependencies(enabledChannels, deps.signal, logger);
   const signalDependencies = signalWiring.dependencies;
 
+  // Image intake limits for the image-capable connectors, from the validated
+  // top-level `images` section. Connectors without image intake ignore it.
+  const imageSettings = {
+    maxInputBytes: config.images.maxInputBytes,
+    maxPerMessage: config.images.maxPerMessage,
+  };
+
   for (const channelConfig of enabledChannels) {
     const signal = signalDependencies.get(channelConfig.name);
     if (channelConfig.type === 'signal' && signal === undefined) {
@@ -187,6 +194,7 @@ export function registerChannels(
       channelConfig.name,
       channelConfig.config,
       logger,
+      imageSettings,
       signal,
     );
     if (connector === null) {
@@ -256,12 +264,23 @@ export function registerChannels(
       // Signal delivers only through the Result-returning receipt path; ordinary onMessage stays unchanged.
       connector.onMessageWithReceipt((event) => messagePipeline.handleInboundEventWithReceipt(event));
     } else {
-      connector.onMessage((event: InboundEvent) => {
-        const pipelineResult = messagePipeline.handleInboundEvent(event);
-        if (pipelineResult.isErr()) {
+      // The pipeline is async: image-bearing events stage attachment bytes
+      // before atomic admission. Await its Result so failures are logged, and
+      // contain unexpected throws here so a connector never produces an
+      // unhandled rejection.
+      connector.onMessage(async (event: InboundEvent) => {
+        try {
+          const pipelineResult = await messagePipeline.handleInboundEvent(event);
+          if (pipelineResult.isErr()) {
+            logger.error(
+              { channelName: event.channelName, err: pipelineResult.error.message },
+              'channel-setup: inbound message pipeline failed',
+            );
+          }
+        } catch (cause) {
           logger.error(
-            { channelName: event.channelName, err: pipelineResult.error.message },
-            'channel-setup: inbound message pipeline failed',
+            { channelName: event.channelName, err: cause },
+            'channel-setup: inbound message pipeline threw',
           );
         }
       });

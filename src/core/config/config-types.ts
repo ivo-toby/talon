@@ -31,6 +31,7 @@ import type {
   SubAgentsConfigSchema,
   SubAgentModelOverrideSchema,
   A2AConfigSchema,
+  ImagesConfigSchema,
   ReasoningEffortSchema,
 } from './config-schema.js';
 
@@ -114,3 +115,6 @@ export type SubAgentModelOverride = z.infer<typeof SubAgentModelOverrideSchema>;
 
 /** Agent-to-agent runtime limits. */
 export type A2AConfig = z.infer<typeof A2AConfigSchema>;
+
+/** Image ingestion limits and Normalized-file retention. */
+export type ImagesConfig = z.infer<typeof ImagesConfigSchema>;

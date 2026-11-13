@@ -15,6 +15,7 @@ import type { BackgroundTask } from '../../subagents/background/background-agent
 import { BackgroundAgentError } from '../../core/errors/error-types.js';
 import { filterAllowedMcpTools } from '../tool-filter.js';
 import { resolveToolInstructions } from '../tool-instructions.js';
+import { buildPersonaRosterAppendix } from '../../personas/persona-roster.js';
 import { buildTimeContext } from '../../core/time-context.js';
 
 const DEFAULT_BACKGROUND_CONTEXT_RECENT_MESSAGE_COUNT = 10;
@@ -292,6 +293,12 @@ export class BackgroundAgentHandler {
     const toolInstructionsBlock = resolveToolInstructions(
       this.deps.toolInstructions,
       allowedMcpTools,
+      buildPersonaRosterAppendix(
+        this.deps.personaLoader,
+        allowedMcpTools,
+        loadedPersona.config.name ?? targetPersonaName,
+        loadedPersona.resolvedCapabilities,
+      ),
     );
 
     const spawnResult = await this.deps.backgroundAgentManager.spawn({

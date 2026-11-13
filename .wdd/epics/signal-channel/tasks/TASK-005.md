@@ -37,7 +37,7 @@ No real Signal accounts/messages, signal-cli installation/provisioning, service/
 
 ## Conflict domains
 
-- src/core/database/migrations/014-signal-state.sql
+- src/core/database/migrations/017-signal-state.sql
 - src/core/database/repositories/signal-account-state-repository.ts
 - src/core/database/repositories/signal-destination-lease-repository.ts
 - src/core/database/repositories/index.ts

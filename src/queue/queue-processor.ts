@@ -29,6 +29,21 @@ import type { QueueItem, QueueHandler, SavedSignalDeliveryHandler } from './queu
 import { rowToQueueItem } from './queue-mapper.js';
 
 /**
+ * Sentinel error a handler may return to defer an item without consuming a
+ * retry attempt (e.g. waiting for A2A admission). The item returns to
+ * 'pending' and is retried after `delayMs`. Deferral never dead-letters.
+ */
+export class QueueDeferral extends Error {
+  constructor(
+    message: string,
+    public readonly delayMs: number = 2000,
+  ) {
+    super(message);
+    this.name = 'QueueDeferral';
+  }
+}
+
+/**
  * Processes queue items with retry and dead-letter support.
  *
  * Key invariants:
@@ -281,6 +296,7 @@ export class QueueProcessor {
       return failure !== undefined &&
         !savedDispatch &&
         !(failure instanceof DeliveryDeferredError) &&
+        !(failure instanceof QueueDeferral) &&
         !(failure instanceof NonRetryableRunError) &&
         !(failure instanceof SignalDeliveryError)
         ? err(new QueueError(`Queue item not found: ${itemId}`))
@@ -314,6 +330,17 @@ export class QueueProcessor {
     if (failure === undefined) {
       // Only this successful execution, which began ordinary, may finish its new tool guard.
       return state.kind === 'invoked' ? this.completeOrdinary(itemId) : this.complete(itemId);
+    }
+    if (failure instanceof QueueDeferral) {
+      // A2A admission wait: back to pending without consuming an attempt. Never dead-letters.
+      // Signal-checkpointed or invoked items never reach here (handled above).
+      const deferred = this.queueRepo.defer(itemId, Date.now() + failure.delayMs);
+      if (deferred.isErr()) return err(new QueueError('Queue state write failed', deferred.error));
+      this.logger.debug(
+        { itemId, delayMs: failure.delayMs, reason: failure.message },
+        'queue item deferred',
+      );
+      return ok(undefined);
     }
     if (
       failure instanceof NonRetryableRunError ||

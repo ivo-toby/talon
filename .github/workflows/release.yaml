@@ -41,6 +41,13 @@ jobs:
             type=ref,event=tag
             type=raw,value=latest
 
+      # Both published glibc targets must build from deploy/Dockerfile, whose
+      # production stage runs the Sharp native gate (load + tiny JPEG
+      # normalization) after `npm ci --omit=dev`. Buildx executes RUN steps in
+      # the target platform (arm64 under QEMU), so each pushed image carries
+      # executed per-target native proof — the runner host is not the probe.
+      # This means a per-arch Sharp regression surfaces on release-tag builds
+      # (accepted trade-off; no PR-time multiarch workflow is configured).
       - name: Build & push
         uses: docker/build-push-action@v7
         with:

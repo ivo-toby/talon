@@ -82,7 +82,10 @@ describe('createConnector', () => {
     const connector = createConnector('telegram', name, config, logger);
 
     expect(connector).not.toBeNull();
-    expect(TelegramConnector).toHaveBeenCalledWith(config, name, logger);
+    // No image settings supplied: forwarded as an explicit undefined slot.
+    expect(TelegramConnector).toHaveBeenCalledWith(config, name, logger, {
+      imageSettings: undefined,
+    });
   });
 
   it('creates SlackConnector for type "slack"', () => {
@@ -103,28 +106,34 @@ describe('createConnector', () => {
     const connector = createConnector('whatsapp', name, config, logger);
 
     expect(connector).not.toBeNull();
-    expect(WhatsAppConnector).toHaveBeenCalledWith(config, name, logger);
+    expect(WhatsAppConnector).toHaveBeenCalledWith(config, name, logger, {
+      imageSettings: undefined,
+    });
   });
 
   it('creates WhatsAppConnector for type "whatsappBusiness"', () => {
     const connector = createConnector('whatsappBusiness', name, config, logger);
 
     expect(connector).not.toBeNull();
-    expect(WhatsAppConnector).toHaveBeenCalledWith(config, name, logger);
+    expect(WhatsAppConnector).toHaveBeenCalledWith(config, name, logger, {
+      imageSettings: undefined,
+    });
   });
 
   it('creates WhatsAppBaileysConnector for type "whatsappBaileys"', () => {
     const connector = createConnector('whatsappBaileys', name, config, logger);
 
     expect(connector).not.toBeNull();
-    expect(WhatsAppBaileysConnector).toHaveBeenCalledWith(config, name, logger);
+    expect(WhatsAppBaileysConnector).toHaveBeenCalledWith(config, name, logger, undefined);
   });
 
   it('creates EmailConnector for type "email"', () => {
     const connector = createConnector('email', name, config, logger);
 
     expect(connector).not.toBeNull();
-    expect(EmailConnector).toHaveBeenCalledWith(config, name, logger);
+    expect(EmailConnector).toHaveBeenCalledWith(config, name, logger, {
+      imageSettings: undefined,
+    });
   });
 
   it('creates TerminalConnector for type "terminal"', () => {
@@ -145,6 +154,36 @@ describe('createConnector', () => {
 
     expect(connector).toBeNull();
   });
+
+  it('forwards image settings to every image-capable connector', () => {
+    const imageSettings = { maxInputBytes: 42_000_000, maxPerMessage: 3 };
+
+    createConnector('telegram', name, config, logger, imageSettings);
+    createConnector('whatsappBusiness', name, config, logger, imageSettings);
+    createConnector('whatsappBaileys', name, config, logger, imageSettings);
+    createConnector('email', name, config, logger, imageSettings);
+
+    expect(TelegramConnector).toHaveBeenCalledWith(config, name, logger, {
+      imageSettings,
+    });
+    expect(WhatsAppConnector).toHaveBeenCalledWith(config, name, logger, {
+      imageSettings,
+    });
+    // Baileys receives the settings object directly (its own 4th ctor arg).
+    expect(WhatsAppBaileysConnector).toHaveBeenCalledWith(
+      config,
+      name,
+      logger,
+      imageSettings,
+    );
+    expect(EmailConnector).toHaveBeenCalledWith(config, name, logger, {
+      imageSettings,
+    });
+    // Non-image connectors never receive image settings.
+    expect(SlackConnector).not.toHaveBeenCalled();
+    expect(DiscordConnector).not.toHaveBeenCalled();
+    expect(TerminalConnector).not.toHaveBeenCalled();
+  });
 });
 
 describe('createConnector signal', () => {
@@ -156,7 +195,7 @@ describe('createConnector signal', () => {
     deviceId: 1,
   };
 
-  function wiring(): Parameters<typeof createConnector>[4] {
+  function wiring(): Parameters<typeof createConnector>[5] {
     const config = SignalConfigSchema.parse(signalRaw);
     return {
       accounts: {} as never,
@@ -167,7 +206,7 @@ describe('createConnector signal', () => {
   }
 
   it('creates the real SignalConnector when the shared Signal wiring is supplied', () => {
-    const connector = createConnector('signal', 'signal-main', signalRaw, pino({ level: 'silent' }), wiring());
+    const connector = createConnector('signal', 'signal-main', signalRaw, pino({ level: 'silent' }), undefined, wiring());
 
     expect(connector).toBeInstanceOf(SignalConnector);
     expect(connector?.type).toBe('signal');
@@ -180,7 +219,7 @@ describe('createConnector signal', () => {
 
   it('refuses a Signal config that fails the typed schema', () => {
     expect(
-      createConnector('signal', 'signal-main', { ...signalRaw, deviceId: 0 }, pino({ level: 'silent' }), wiring()),
+      createConnector('signal', 'signal-main', { ...signalRaw, deviceId: 0 }, pino({ level: 'silent' }), undefined, wiring()),
     ).toBeNull();
   });
 });

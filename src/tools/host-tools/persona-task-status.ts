@@ -54,6 +54,8 @@ export class PersonaTaskStatusHandler {
       taskMapper: A2ATaskMapper;
       logger: pino.Logger;
       pollIntervalMs?: number;
+      /** Wraps the polling wait so the caller's queue slot can be released. */
+      waitScope?: <T>(fn: () => Promise<T>, context: ToolExecutionContext) => Promise<T>;
     },
   ) {}
 
@@ -78,8 +80,11 @@ export class PersonaTaskStatusHandler {
     }
 
     const waitMs = resolvePersonaTaskWaitMs(validated.value.wait_ms, 0);
+    const taskId = validated.value.task_id;
+    const poll = (): Promise<Result<PersonaTaskStatusOutput, ToolError>> =>
+      this.pollUntilTerminal(taskId, waitMs, context.threadId);
     const statusResult = waitMs > 0
-      ? await this.pollUntilTerminal(validated.value.task_id, waitMs, context.threadId)
+      ? (this.deps.waitScope ? await this.deps.waitScope(poll, context) : await poll())
       : this.loadStatus(validated.value.task_id, context.threadId);
     if (statusResult.isErr()) {
       return this.errorResult(requestId, statusResult.error.message);

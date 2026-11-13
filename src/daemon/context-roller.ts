@@ -22,6 +22,7 @@ import type { SessionTracker } from '../sandbox/session-tracker.js';
 import type { SubAgentResult } from '../subagents/subagent-types.js';
 import type { SubAgentError } from '../core/errors/index.js';
 import type { ResolvedContextUsage } from '../providers/provider-types.js';
+import { projectImageHistory, type ImageContextSource } from './context-assembler.js';
 import { readScheduleOriginExternalId } from './schedule-thread-utils.js';
 
 // ---------------------------------------------------------------------------
@@ -100,6 +101,26 @@ export interface ContextRotationResult {
 export type ReflectorRunFn = SummarizerRunFn;
 
 /**
+ * Image replay material for rotation (ADR-0002). Rotation rebuilds the FULL
+ * Image descriptor inventory and Finding projections for the transcript the
+ * summarizer/observer compresses: rotated summaries may paraphrase them, and
+ * the next fresh session additionally rebuilds an inventory that no longer
+ * depends on the moved message window. Exact records stay canonical in SQLite
+ * and remain reachable through `image_lookup`.
+ *
+ * The source queries are independent of the rotation message cutoff, so
+ * Findings from failed runs and Findings created while an earlier summarizer
+ * was in flight are included. When omitted, rotation transcripts are
+ * unchanged (scheduled-run isolation is preserved — agent-runner never
+ * supplies this for schedule items).
+ */
+export interface RotationImageContext {
+  source: ImageContextSource;
+  /** Actual `image_lookup` exposure from the persona's filtered tool set. */
+  imageLookupExposed: boolean;
+}
+
+/**
  * Default character budget for the accumulated observation log before the
  * reflector is triggered to consolidate observations. ~40K chars ≈ ~10K
  * tokens — keeps observations manageable. Operators can override via
@@ -148,6 +169,7 @@ export class ContextRoller {
     contextUsage: ResolvedContextUsage,
     overrideThreshold?: number,
     summarizerName: string = 'session-summarizer',
+    imageContext?: RotationImageContext,
   ): Promise<ContextRotationResult> {
     const noRotation: ContextRotationResult = { rotated: false, hasOpenThreads: false };
     const threshold = overrideThreshold ?? this.deps.thresholdRatio ?? 0.4;
@@ -183,7 +205,12 @@ export class ContextRoller {
     // incorrectly drop messages that arrived in between.
     const rotatedThroughTs = messages[messages.length - 1].created_at;
 
-    const transcript = this.buildTranscript(messages, MAX_TRANSCRIPT_CHARS);
+    // The bounded image section renders FIRST and its length (separator
+    // included) is subtracted from the transcript allowance: the combined
+    // summarizer input must never exceed MAX_TRANSCRIPT_CHARS.
+    const imageSection = await this.imageContextSection(threadId, imageContext);
+    const transcript =
+      this.buildTranscript(messages, Math.max(1, MAX_TRANSCRIPT_CHARS - imageSection.length)) + imageSection;
     const summarizerRun = this.deps.resolveSummarizerRun
       ? this.deps.resolveSummarizerRun(summarizerName)
       : this.deps.summarizerRun;
@@ -368,6 +395,7 @@ export class ContextRoller {
     reflectionThresholdChars: number = DEFAULT_MAX_OBSERVATION_CHARS,
     threadMetadata?: string | null,
     channelId?: string,
+    imageContext?: RotationImageContext,
   ): Promise<ContextRotationResult> {
     const noRotation: ContextRotationResult = { rotated: false, hasOpenThreads: false };
     const threshold = overrideThreshold ?? this.deps.thresholdRatio ?? 0.4;
@@ -411,12 +439,16 @@ export class ContextRoller {
     // Snapshot boundary — see comment in checkAndRotate above.
     const rotatedThroughTs = messages[messages.length - 1].created_at;
 
-    const transcript = await this.buildObservationTranscript(
-      threadId,
-      messages,
-      threadMetadata,
-      channelId,
-    );
+    // Image section first — see the budget note in checkAndRotate above.
+    const imageSection = await this.imageContextSection(threadId, imageContext);
+    const transcript =
+      (await this.buildObservationTranscript(
+        threadId,
+        messages,
+        threadMetadata,
+        channelId,
+        Math.max(1, MAX_TRANSCRIPT_CHARS - imageSection.length),
+      )) + imageSection;
 
     // 2. Resolve and call the observer.
     const observerRun = this.deps.resolveSummarizerRun
@@ -788,13 +820,54 @@ export class ContextRoller {
     );
   }
 
+  /**
+   * Bounded Image inventory + Finding projection appended to a rotation
+   * transcript (ADR-0002). No live block exists at rotation time, so the
+   * projection consumes the full shared descriptor budget. Source failures
+   * degrade to no section — rotation must not be blocked by image context.
+   */
+  private async imageContextSection(
+    threadId: string,
+    imageContext: RotationImageContext | undefined,
+  ): Promise<string> {
+    if (!imageContext) {
+      return '';
+    }
+    try {
+      const [inventoryDescriptors, findings] = await Promise.all([
+        imageContext.source.listThreadDescriptors(threadId),
+        imageContext.source.listThreadFindings(threadId),
+      ]);
+      const section = projectImageHistory({
+        live: {
+          text: '',
+          imageIds: [],
+          selectedCount: 0,
+          consumedChars: 0,
+          omittedCount: 0,
+        },
+        inventoryDescriptors,
+        findings,
+        imageLookupExposed: imageContext.imageLookupExposed,
+      });
+      return section.length > 0 ? `\n\n${section}` : '';
+    } catch (cause) {
+      this.deps.logger.warn(
+        { threadId, err: cause },
+        'context-roller: image context fetch failed; rotating without image projections',
+      );
+      return '';
+    }
+  }
+
   private async buildObservationTranscript(
     threadId: string,
     scheduleMessages: MessageRow[],
     threadMetadata?: string | null,
     channelId?: string,
+    maxChars: number = MAX_TRANSCRIPT_CHARS,
   ): Promise<string> {
-    const scheduleTranscript = this.buildTranscript(scheduleMessages, MAX_TRANSCRIPT_CHARS);
+    const scheduleTranscript = this.buildTranscript(scheduleMessages, maxChars);
     const originExternalId = readScheduleOriginExternalId(threadMetadata);
     if (!originExternalId || !channelId || !this.deps.threadRepo) {
       return scheduleTranscript;
@@ -837,7 +910,7 @@ export class ContextRoller {
     return this.buildObservationTranscriptWithDirectContext(
       recentConversationMessages,
       scheduleMessages,
-      MAX_TRANSCRIPT_CHARS,
+      maxChars,
     );
   }
 
@@ -964,10 +1037,13 @@ export class ContextRoller {
       turnNumber--;
     }
 
-    // Reverse back to chronological order.
-    return entries
+    // Reverse back to chronological order. A single entry larger than the
+    // budget is kept (dropping it would leave no transcript at all) but the
+    // documented cap still holds: the assembled text is hard-capped.
+    const transcript = entries
       .reverse()
       .map((e) => `[turn ${e.n}, ${e.role}]: ${e.body}`)
       .join('\n');
+    return transcript.length > maxChars ? transcript.slice(0, maxChars) : transcript;
   }
 }

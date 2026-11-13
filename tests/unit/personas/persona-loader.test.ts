@@ -457,6 +457,30 @@ describe('PersonaLoader', () => {
       expect(logger.warn).toHaveBeenCalled();
     });
 
+    it('warns (never fails) when persona.send:<name> names an unknown persona', async () => {
+      const result = await loader.loadFromConfig([
+        makePersonaConfig({ name: 'boss', capabilities: { allow: ['persona.send:worker', 'persona.send:ghost'], requireApproval: [] } }),
+        makePersonaConfig({ name: 'worker' }),
+      ]);
+      expect(result.isOk()).toBe(true);
+      expect(logger.warn).toHaveBeenCalledWith(
+        { persona: 'boss', target: 'ghost' },
+        expect.stringContaining('persona.send:ghost'),
+      );
+      expect(logger.warn).not.toHaveBeenCalledWith(
+        expect.objectContaining({ target: 'worker' }),
+        expect.anything(),
+      );
+    });
+
+    it('does not warn for persona.send:* or hyphenated known persona names', async () => {
+      await loader.loadFromConfig([
+        makePersonaConfig({ name: 'boss', capabilities: { allow: ['persona.send:*', 'persona.send:code-reviewer'], requireApproval: [] } }),
+        makePersonaConfig({ name: 'code-reviewer' }),
+      ]);
+      expect(logger.warn).not.toHaveBeenCalled();
+    });
+
     it('logs warning for missing-scope labels without failing', async () => {
       const config = makePersonaConfig({
         name: 'noscope',

@@ -19,11 +19,18 @@ COPY package.json package-lock.json ./
 # Install ALL dependencies (including devDependencies) for the build step
 RUN npm ci
 
-# Copy source files
+# Copy source files AND the instruction templates.
+#
+# `npm run build` copies templates/tool-instructions/*.md into
+# dist/templates/tool-instructions/ (the packaged location the runtime
+# reads). That copy is written to tolerate a missing directory, so without
+# templates/ in this stage the build silently omits every tool instruction
+# from the image. templates/ must therefore be present BEFORE the build runs.
 COPY tsconfig.json tsconfig.build.json ./
 COPY src/ ./src/
+COPY templates/ ./templates/
 
-# Compile TypeScript → dist/
+# Compile TypeScript → dist/ (also stages dist/templates/tool-instructions/)
 RUN npm run build
 
 # ---------------------------------------------------------------------------
@@ -87,6 +94,27 @@ COPY --from=builder /build/dist ./dist/
 # We reinstall with --omit=dev so we don't carry devDependencies.
 COPY --from=builder /build/package.json /build/package-lock.json ./
 RUN npm ci --omit=dev
+
+# ---------------------------------------------------------------------------
+# Native packaging gate (Sharp): prove the target image can actually load
+# Sharp and normalize a tiny JPEG.
+#
+# Two awaited conversions are required: sharp's metadata() is header-only
+# access (it never decodes pixels), so the gate re-encodes the produced
+# JPEG into a second buffer — an awaited decode+encode round trip — and
+# validates that SECOND buffer (nonempty, format jpeg, decoded dimensions).
+# A broken native binding fails here instead of at first image upload.
+#
+# Sharp ships per-platform prebuilt binaries as npm optionalDependencies
+# (@img/sharp-linux-x64, @img/sharp-linux-arm64, musl variants, …). npm
+# resolves them against the platform npm itself runs on, so this check must
+# execute INSIDE the image: a probe on the build host is never proof for a
+# cross-built architecture. The release workflow builds this Dockerfile for
+# linux/amd64 and linux/arm64, so the gate below runs once per published
+# target (arm64 under QEMU). node:24-slim is glibc; musl/Alpine targets are
+# NOT claimed supported unless they pass this same native gate.
+# ---------------------------------------------------------------------------
+RUN node --input-type=module -e 'import sharp from "sharp"; const jpeg = await sharp({create:{width:8,height:8,channels:3,background:"#3399ff"}}).jpeg({quality:85}).toBuffer(); const reencoded = await sharp(jpeg).jpeg({quality:85}).toBuffer(); const meta = await sharp(reencoded).metadata(); if (reencoded.length === 0 || meta.format !== "jpeg" || meta.width !== 8 || meta.height !== 8) { console.error("sharp normalization gate failed", reencoded.length, meta); process.exit(1); } console.log("sharp native gate OK", process.platform, process.arch, reencoded.length + " bytes");'
 
 # Install the CLI-based agent providers globally so the `codex-cli` and
 # `gemini-cli` provider strategies work out of the box (their config

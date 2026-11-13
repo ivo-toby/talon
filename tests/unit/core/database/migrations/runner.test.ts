@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, beforeEach } from 'vitest';
-import { copyFileSync, mkdtempSync, readdirSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
@@ -139,7 +139,7 @@ describe('runMigrations', () => {
     expect(result._unsafeUnwrapErr().message).toMatch(/numeric version prefix/);
   });
 
-  it('upgrades a real version-013 database to Signal state without disturbing queued work', () => {
+  it('upgrades a real version-013 database through image ledgers (014-016) to Signal state (017) without disturbing queued work', () => {
     const realMigrationsDir = join(import.meta.dirname, '../../../../../src/core/database/migrations');
     for (const file of readdirSync(realMigrationsDir).filter((file) => /^\d+.*\.sql$/.test(file) && Number(file.split('-')[0]) <= 13)) {
       copyFileSync(join(realMigrationsDir, file), join(tmpDir, file));
@@ -151,8 +151,9 @@ describe('runMigrations', () => {
       INSERT INTO threads (id, channel_id, external_id, created_at, updated_at) VALUES ('t', 'c', 'test', 1, 1);
       INSERT INTO queue_items (id, thread_id, payload, created_at, updated_at) VALUES ('q', 't', '{"saved":true}', 1, 1);
     `);
-    expect(runMigrations(db, realMigrationsDir)._unsafeUnwrap()).toBe(1);
-    expect(db.pragma('user_version', { simple: true })).toBe(14);
+    // 014-image-ledger, 015-finding-ledger, 016-image-ingestion-route, 017-signal-state.
+    expect(runMigrations(db, realMigrationsDir)._unsafeUnwrap()).toBe(4);
+    expect(db.pragma('user_version', { simple: true })).toBe(17);
     expect(db.prepare('SELECT payload FROM queue_items WHERE id = ?').get('q')).toEqual({ payload: '{"saved":true}' });
     expect(db.prepare("SELECT name FROM sqlite_master WHERE name IN ('signal_account_state', 'signal_destination_leases')").all()).toHaveLength(2);
     expect(runMigrations(db, realMigrationsDir)._unsafeUnwrap()).toBe(0);
@@ -184,5 +185,117 @@ describe('runMigrations', () => {
       .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='channels'`)
       .get();
     expect(tbl).toBeDefined();
+  });
+
+  it('applies the Finding ledger migration after the Image ledger', () => {
+    const realMigrationsDir = join(
+      import.meta.dirname,
+      '../../../../../src/core/database/migrations',
+    );
+    expect(runMigrations(db, realMigrationsDir).isOk()).toBe(true);
+
+    const tables = db
+      .prepare(`SELECT name FROM sqlite_master WHERE type='table' ORDER BY name`)
+      .all() as Array<{ name: string }>;
+    const names = tables.map((t) => t.name);
+    expect(names).toContain('images');
+    expect(names).toContain('findings');
+    expect(names).toContain('finding_images');
+
+    // The Finding ledger takes a free number strictly greater than every
+    // existing prefix (014-image-ledger.sql was the highest before it), and it
+    // is the highest version applied.
+    const version = db.pragma('user_version', { simple: true }) as number;
+    expect(version).toBeGreaterThanOrEqual(15);
+  });
+
+  it('keeps Finding ids globally unique in the real migrated schema', () => {
+    const realMigrationsDir = join(
+      import.meta.dirname,
+      '../../../../../src/core/database/migrations',
+    );
+    expect(runMigrations(db, realMigrationsDir).isOk()).toBe(true);
+
+    db.prepare(`INSERT INTO channels (id, type, name, config, credentials_ref, enabled,
+                                      created_at, updated_at)
+                VALUES ('c1', 'telegram', 'c1', '{}', NULL, 1, 1, 1)`).run();
+    db.prepare(`INSERT INTO threads (id, channel_id, external_id, metadata, created_at, updated_at)
+                VALUES ('t1', 'c1', 'e1', '{}', 1, 1)`).run();
+    db.prepare(`INSERT INTO personas (id, name, model, system_prompt_file, skills, capabilities,
+                                      mounts, max_concurrent, created_at, updated_at)
+                VALUES ('p1', 'p1', 'm', NULL, '[]', '{}', '[]', NULL, 1, 1)`).run();
+    db.prepare(`INSERT INTO runs (id, thread_id, persona_id, provider_name, status,
+                                  input_tokens, output_tokens, cache_read_tokens,
+                                  cache_write_tokens, cost_usd, created_at)
+                VALUES ('r1', 't1', 'p1', 'openai-compatible', 'completed', 0, 0, 0, 0, 0, 1)`).run();
+
+    const insertFinding = db.prepare(
+      `INSERT INTO findings (id, run_id, thread_id, question, answer, model_name, created_at)
+       VALUES (?, 'r1', 't1', 'q', 'a', 'vision-model', 2)`,
+    );
+    insertFinding.run('f1');
+    expect(() => insertFinding.run('f1')).toThrow(/PRIMARY KEY|UNIQUE/i);
+
+    // A Finding row is plain text and numbers: nothing binary is storable.
+    const columns = db.prepare(`PRAGMA table_info(findings)`).all() as Array<{ type: string }>;
+    for (const column of columns) {
+      expect(['TEXT', 'INTEGER']).toContain(column.type);
+    }
+  });
+  describe('Signal and image-processing migration coexistence', () => {
+    const realDir = join(process.cwd(), 'src/core/database/migrations');
+    const tableNames = (d: Database.Database): string[] =>
+      (d.prepare(`SELECT name FROM sqlite_master WHERE type = 'table'`).all() as Array<{ name: string }>).map(
+        (r) => r.name,
+      );
+
+    it('applies the full real chain to a fresh DB ending at 17 with Signal and image tables', () => {
+      const result = runMigrations(db, realDir);
+      expect(result.isOk()).toBe(true);
+      expect(db.pragma('user_version', { simple: true })).toBe(17);
+      const tables = tableNames(db);
+      expect(tables).toEqual(
+        expect.arrayContaining([
+          'signal_account_state',
+          'signal_destination_leases',
+          'images',
+          'image_source_messages',
+          'image_ingestions',
+          'findings',
+        ]),
+      );
+    });
+
+    it('applies 017 idempotently when the Signal tables already exist at version 16', () => {
+      const staging = makeTmpDir();
+      for (const f of readdirSync(realDir).filter((n) => n.endsWith('.sql'))) {
+        if (!f.startsWith('017-')) copyFileSync(join(realDir, f), join(staging, f));
+      }
+      expect(runMigrations(db, staging).isOk()).toBe(true);
+      // Pre-create the Signal schema by running 017's SQL directly, leaving user_version at 16.
+      db.exec(readFileSync(join(realDir, '017-signal-state.sql'), 'utf-8'));
+      expect(db.pragma('user_version', { simple: true })).toBe(16);
+
+      const result = runMigrations(db, realDir);
+      expect(result._unsafeUnwrap()).toBe(1);
+      expect(db.pragma('user_version', { simple: true })).toBe(17);
+    });
+
+    it('upgrades a DB already at version 16 (main schema) to 17 with the Signal tables', () => {
+      const staging = makeTmpDir();
+      for (const f of readdirSync(realDir).filter((n) => n.endsWith('.sql'))) {
+        if (!f.startsWith('017-')) copyFileSync(join(realDir, f), join(staging, f));
+      }
+      expect(runMigrations(db, staging).isOk()).toBe(true);
+      expect(db.pragma('user_version', { simple: true })).toBe(16);
+      expect(tableNames(db)).not.toContain('signal_account_state');
+
+      const upgraded = runMigrations(db, realDir);
+      expect(upgraded._unsafeUnwrap()).toBe(1);
+      expect(db.pragma('user_version', { simple: true })).toBe(17);
+      expect(tableNames(db)).toEqual(
+        expect.arrayContaining(['signal_account_state', 'signal_destination_leases', 'images']),
+      );
+    });
   });
 });

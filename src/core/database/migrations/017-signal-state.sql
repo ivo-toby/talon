@@ -1,5 +1,5 @@
 -- Signal gate state is keyed by canonical ACI, never a configured channel name.
-CREATE TABLE signal_account_state (
+CREATE TABLE IF NOT EXISTS signal_account_state (
   account_uuid TEXT PRIMARY KEY,
   revision INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0),
   last_send_start INTEGER CHECK (last_send_start BETWEEN 0 AND 9007199254740991),
@@ -26,7 +26,7 @@ CREATE TABLE signal_account_state (
           AND reservation_purpose IS NOT NULL AND reservation_started_at IS NOT NULL))
 );
 
-CREATE TABLE signal_destination_leases (
+CREATE TABLE IF NOT EXISTS signal_destination_leases (
   account_uuid TEXT NOT NULL,
   external_thread_id TEXT NOT NULL,
   -- Fresh identity prevents a late release from deleting a subsequently reacquired lease.
@@ -38,4 +38,4 @@ CREATE TABLE signal_destination_leases (
   updated_at INTEGER NOT NULL,
   PRIMARY KEY (account_uuid, external_thread_id)
 );
-CREATE INDEX idx_signal_destination_leases_queue ON signal_destination_leases(queue_item_id);
+CREATE INDEX IF NOT EXISTS idx_signal_destination_leases_queue ON signal_destination_leases(queue_item_id);
