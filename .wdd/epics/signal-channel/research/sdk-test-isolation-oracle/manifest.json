@@ -1,0 +1,84 @@
+{
+  "purpose": "Independent frozen actual V5 inert-source oracle; no SDK/network/account execution authority",
+  "actualSdkSource": "e1f8bc17dcf5aa082e47a5d74812e48713bb4f0fdbf2fb060aec21bf732ecc7f",
+  "correctSdkLines": {
+    "createExecutionStrategy": 66,
+    "dynamicImport": 197,
+    "queryCall": 218,
+    "resultMapping": 250,
+    "return": 318
+  },
+  "caution": "Some old B inspection prose SDKline offsets wrong; exact current source and corrected lines above authoritative; old files not edited. Conditionalframeworkhazard and actual V5 constructed sharing proof are NOT original historiccause or no-v4-network proof.",
+  "files": {
+    "TASK-010-review2-B-counterexample-v5.test.ts": {
+      "bytes": 6275,
+      "sha256": "a4fa7557205f427aa7cfc7956abf309dc898de867d52fa414a91372c94c2814b",
+      "source": "/home/ivo/workspace/talon.feat-signal/.wdd/dispatch/pi-validation/TASK-010-review2-B-counterexample-v5.test.ts",
+      "execution": "READONLY_ORACLE_DO_NOT_RUN"
+    },
+    "TASK-010-review2-B-counterexample-v5.vitest.config.mjs": {
+      "bytes": 2026,
+      "sha256": "85de1ff4442b98a4c6472a1bf76d1f4292cd8ca5e6bb76c3fab54546d5f6e82d",
+      "source": "/home/ivo/workspace/talon.feat-signal/.wdd/dispatch/pi-validation/TASK-010-review2-B-counterexample-v5.vitest.config.mjs",
+      "execution": "READONLY_ORACLE_DO_NOT_RUN"
+    },
+    "TASK-010-review2-B-counterexample-v5-deny-operations.setup.mjs": {
+      "bytes": 1549,
+      "sha256": "bd8ed233b6adc4d805c78526e8b9202b78234bccf110927ee326348a91ac6e24",
+      "source": "/home/ivo/workspace/talon.feat-signal/.wdd/dispatch/pi-validation/TASK-010-review2-B-counterexample-v5-deny-operations.setup.mjs",
+      "execution": "READONLY_ORACLE_DO_NOT_RUN"
+    },
+    "TASK-010-review2-B-counterexample-v5-sdk.fixture.mjs": {
+      "bytes": 1009,
+      "sha256": "b22bab413be09537a73e32000d6b0ea94be21e7df62bb8b555d54b2859879270",
+      "source": "/home/ivo/workspace/talon.feat-signal/.wdd/dispatch/pi-validation/TASK-010-review2-B-counterexample-v5-sdk.fixture.mjs",
+      "execution": "READONLY_ORACLE_DO_NOT_RUN"
+    },
+    "TASK-010-review2-B-counterexample-v5-trace.jsonl": {
+      "bytes": 8083,
+      "sha256": "582af3e3a00361221c70f01bbbd8ee1434f2cfe508cb2f180a4c0dae68f89b95",
+      "source": "/home/ivo/workspace/talon.feat-signal/.wdd/dispatch/pi-validation/TASK-010-review2-B-counterexample-v5-trace.jsonl",
+      "execution": "READONLY_ORACLE_DO_NOT_RUN"
+    },
+    "TASK-010-review2-B-counterexample-v5.log": {
+      "bytes": 858,
+      "sha256": "8c7b4c0dc0b4b23456021e9afd80e084a81775696a28d90545fd4a0782e58eeb",
+      "source": "/home/ivo/workspace/talon.feat-signal/.wdd/dispatch/pi-validation/TASK-010-review2-B-counterexample-v5.log",
+      "execution": "READONLY_ORACLE_DO_NOT_RUN"
+    },
+    "TASK-010-review2-B-counterexample-v5-static.log": {
+      "bytes": 1548,
+      "sha256": "69569ee84d57b8211be8994cb4c5ad1d21856692999fe321ee6ac29cde99fb77",
+      "source": "/home/ivo/workspace/talon.feat-signal/.wdd/dispatch/pi-validation/TASK-010-review2-B-counterexample-v5-static.log",
+      "execution": "READONLY_ORACLE_DO_NOT_RUN"
+    },
+    "TASK-010-review2-B-counterexample-v5-outcome.md": {
+      "bytes": 5809,
+      "sha256": "e96099e3e95d93fac64b62008ded1a93738630d53a703cea1f01f7b3c03991a4",
+      "source": "/home/ivo/workspace/talon.feat-signal/.wdd/dispatch/pi-validation/TASK-010-review2-B-counterexample-v5-outcome.md",
+      "execution": "READONLY_ORACLE_DO_NOT_RUN"
+    },
+    "TASK-010-review2-B-parent-sdk-resolution-inspection.log": {
+      "bytes": 1220,
+      "sha256": "23dec94e5a27464b6d010a2e7b092bfe0647ea20a3a713a2fe9d2f4f0c74aa82",
+      "source": "/home/ivo/workspace/talon.feat-signal/.wdd/dispatch/pi-validation/TASK-010-review2-B-parent-sdk-resolution-inspection.log",
+      "execution": "READONLY_ORACLE_DO_NOT_RUN"
+    },
+    "client.mjs.source-extract.txt": {
+      "bytes": 2951,
+      "sha256": "bb5730a56180e37b41a230ebe37598e51bb4d1f45bd099e740a950aea62c09cf",
+      "source": "node_modules/vite-node/dist/client.mjs",
+      "sourceBytes": 14962,
+      "sourceSha256": "f435e10a73dbce6b7ae610a743248e57738c627e83bb83d290bd90418e1f98b3",
+      "execution": "READONLY_SOURCE_CONTRACT"
+    },
+    "execute.2pr0rHgK.js.source-extract.txt": {
+      "bytes": 3473,
+      "sha256": "c530babef880131b3a1969d3833cfaeb87a55e1573e68a4677f889e6221f4a08",
+      "source": "node_modules/vitest/dist/chunks/execute.2pr0rHgK.js",
+      "sourceBytes": 24993,
+      "sourceSha256": "c9ed4360604f5ae8fe494ed113e5ed214278fe0bec9e0aae983e941961db85c4",
+      "execution": "READONLY_SOURCE_CONTRACT"
+    }
+  }
+}

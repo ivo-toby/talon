@@ -1,0 +1,113 @@
+{
+  "purpose": "Immutable independent native-load oracle/public API/installed worker evidence; only native-loader-conformance.mjs may execute against assignedcandidate, all other historic scripts source-only",
+  "sourcePins": {
+    "node_modules/@types/node/module.d.ts": {
+      "bytes": 40283,
+      "sha256": "e6fa9ad47c5f71ff733744a029d1dc472c618de53804eae08ffc243b936f87ff",
+      "ranges": [
+        [
+          223,
+          247
+        ],
+        [
+          430,
+          486
+        ]
+      ]
+    },
+    "node_modules/@vitest/runner/dist/index.js": {
+      "bytes": 40308,
+      "sha256": "5eef7c212d38d69c0fbe6a73f802fa9f91541dc31cd15a57610305a723b17645",
+      "ranges": [
+        [
+          817,
+          856
+        ]
+      ]
+    },
+    "node_modules/vitest/dist/chunks/execute.2pr0rHgK.js": {
+      "bytes": 24993,
+      "sha256": "c9ed4360604f5ae8fe494ed113e5ed214278fe0bec9e0aae983e941961db85c4",
+      "ranges": [
+        [
+          600,
+          625
+        ],
+        [
+          780,
+          801
+        ]
+      ]
+    },
+    "node_modules/vite-node/dist/client.mjs": {
+      "bytes": 14962,
+      "sha256": "f435e10a73dbce6b7ae610a743248e57738c627e83bb83d290bd90418e1f98b3",
+      "ranges": [
+        [
+          211,
+          231
+        ],
+        [
+          273,
+          286
+        ],
+        [
+          405,
+          425
+        ]
+      ]
+    },
+    "node_modules/vitest/dist/path.js": {
+      "bytes": 248,
+      "sha256": "026864e03ef38d252fbd99701e4670444a5250ffe49fe20f33759b31cb5d3a9c",
+      "ranges": [
+        [
+          1,
+          15
+        ]
+      ]
+    }
+  },
+  "files": {
+    "F1-fresh-whole-five-review.md": {
+      "bytes": 20049,
+      "sha256": "687fe23007c8b1ae4f56a5d1d53d795f2ef45b2baffa48cb5bc1cfdc88e9cefe"
+    },
+    "TASK-022-review2-F2-F3-parent-metadata-1.log": {
+      "bytes": 1590,
+      "sha256": "cc493c0bb6bf22c076bc1e90555469f99a29aa12e0dbcbca49b277501cda70f5"
+    },
+    "TASK-022-review2-F2-F3-parent-metadata-1.mjs": {
+      "bytes": 3236,
+      "sha256": "bde8f624a7f8c78030b0ddb08fdb01857153660a8cab6eb8b9633cceda911a09"
+    },
+    "native-loader-conformance.mjs": {
+      "bytes": 3830,
+      "sha256": "3fdda4b8d307b0e0a1e7bc949e9b3f75c28796a5f6ff0cd07b1b0eb156b913b5"
+    },
+    "node-module-types.source-extract.txt": {
+      "bytes": 3734,
+      "sha256": "22ee37eb28a0e3aff9bf2e85dea52d2d20ce567d2c14a1c5af267fe5998c25d4"
+    },
+    "node24-module-hooks-contract.md": {
+      "bytes": 3208,
+      "sha256": "7aec273c7441de631490e64196bee889deaa421679b330842e2dea644496ee70"
+    },
+    "vite-node-native-import.source-extract.txt": {
+      "bytes": 2417,
+      "sha256": "e068cb7c680ee06c0b444ca37125e66e12796b0a06f68d1924cdd59eabc31a57"
+    },
+    "vitest-dist-path.source-extract.txt": {
+      "bytes": 442,
+      "sha256": "56911b2c82dd1e319d152e256f6191fe22d07c83937eda457b933d418f818523"
+    },
+    "vitest-setup-order.source-extract.txt": {
+      "bytes": 1891,
+      "sha256": "f6ce00cee0f5edf9b1d2eab9cb81b7019ce69deb06419af38a30638c6d497867"
+    },
+    "vitest-worker-fastpath.source-extract.txt": {
+      "bytes": 2134,
+      "sha256": "942d01e2ebb352e77ec2c38d7ef4cb211e77d951011b6396c616e055e34aed1b"
+    }
+  }
+}

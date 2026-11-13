@@ -1,0 +1,69 @@
+{"stage": "trace-created-before-single-approved-run", "cwd": "/home/ivo/workspace/talon.feat-signal/.worktrees/SCOPE-signal-channel/TASK-010"}
+{"process":3491089,"stage":"deny-original-guards-installed"}
+{"stage":"fenced-sdk-resolution","id":"/home/ivo/workspace/talon.feat-signal/.wdd/dispatch/pi-validation/TASK-010-review2-B-counterexample-v5-sdk.fixture.mjs","importer":"/home/ivo/workspace/talon.feat-signal/.wdd/dispatch/pi-validation/TASK-010-review2-B-counterexample-v5.test.ts","external":false}
+{"stage":"fenced-sdk-resolution","id":"/home/ivo/workspace/talon.feat-signal/.wdd/dispatch/pi-validation/TASK-010-review2-B-counterexample-v5-sdk.fixture.mjs","importer":"/home/ivo/workspace/talon.feat-signal/.worktrees/SCOPE-signal-channel/TASK-010/index.html","external":false}
+{"stage":"fenced-sdk-resolution","id":"/home/ivo/workspace/talon.feat-signal/.wdd/dispatch/pi-validation/TASK-010-review2-B-counterexample-v5-sdk.fixture.mjs","importer":"/home/ivo/workspace/talon.feat-signal/.worktrees/SCOPE-signal-channel/TASK-010/index.html","external":false}
+{"process":3491089,"stage":"inert-sdk-module-evaluated","module":"file:///home/ivo/workspace/talon.feat-signal/.wdd/dispatch/pi-validation/TASK-010-review2-B-counterexample-v5-sdk.fixture.mjs"}
+{"stage":"fenced-sdk-resolution","id":"/home/ivo/workspace/talon.feat-signal/.wdd/dispatch/pi-validation/TASK-010-review2-B-counterexample-v5-sdk.fixture.mjs","importer":"/home/ivo/workspace/talon.feat-signal/.worktrees/SCOPE-signal-channel/TASK-010/src/providers/claude-code-provider.ts","external":false}
+{"process":3491089,"arm":"shared","stage":"arm-start"}
+{"process":3491089,"arm":"shared","stage":"adapter-next-call","consumer":0}
+{"process":3491089,"arm":"shared","stage":"adapter-next-call","consumer":1}
+{"process":3491089,"stage":"synthetic-query-entry","arm":"shared","call":1,"threadId":"synthetic command"}
+{"process":3491089,"arm":"shared","stage":"supplier-returned-original-iterable","queryCall":1,"nativeId":1}
+{"process":3491089,"stage":"synthetic-query-return","arm":"shared","call":1}
+{"process":3491089,"arm":"shared","stage":"native-before-yield","nativeId":1}
+{"process":3491089,"stage":"synthetic-query-entry","arm":"shared","call":2,"threadId":"synthetic command"}
+{"process":3491089,"arm":"shared","stage":"supplier-returned-original-iterable","queryCall":2,"nativeId":1}
+{"process":3491089,"stage":"synthetic-query-return","arm":"shared","call":2}
+{"process":3491089,"arm":"shared","stage":"native-resumed-after-yield","nativeId":1}
+{"process":3491089,"arm":"shared","stage":"native-return-call","nativeId":1}
+{"process":3491089,"arm":"shared","stage":"adapter-next-settled","consumer":1,"value":{"done":true}}
+{"process":3491089,"arm":"shared","stage":"adapter-next-settled","consumer":0,"value":{"value":{"type":"result","result":{"output":"original final","sessionId":"original-session","usage":{"inputTokens":123,"outputTokens":45},"isError":false}},"done":false}}
+{"process":3491089,"arm":"shared","stage":"adapter-next-call","consumer":0}
+{"process":3491089,"arm":"shared","stage":"native-return-settled","nativeId":1,"value":{"done":true}}
+{"process":3491089,"arm":"shared","stage":"native-return-call","nativeId":1}
+{"process":3491089,"arm":"shared","stage":"adapter-next-settled","consumer":0,"value":{"done":true}}
+{"process":3491089,"arm":"shared","stage":"native-return-settled","nativeId":1,"value":{"done":true}}
+{"process":3491089,"arm":"shared","stage":"actual-result-summary","nativeIds":[1,1],"results":[[{"value":{"type":"result","result":{"output":"original final","sessionId":"original-session","usage":{"inputTokens":123,"outputTokens":45},"isError":false}},"done":false},{"done":true}],[{"done":true}]]}
+{"process":3491089,"arm":"shared","stage":"drain-pending-next","count":3}
+{"process":3491089,"arm":"shared","stage":"adapter-return-call","consumer":0}
+{"process":3491089,"arm":"shared","stage":"adapter-return-call","consumer":1}
+{"process":3491089,"arm":"shared","stage":"adapter-return-settled","consumer":0}
+{"process":3491089,"arm":"shared","stage":"adapter-return-settled","consumer":1}
+{"process":3491089,"arm":"shared","stage":"native-return-call","nativeId":1}
+{"process":3491089,"arm":"shared","stage":"native-return-settled","nativeId":1,"value":{"done":true}}
+{"process":3491089,"arm":"shared","stage":"actual-drain-completed","adapters":2,"nativeIterables":1,"awaitedNativeReturnPromises":3}
+{"process":3491089,"arm":"fresh","stage":"arm-start"}
+{"process":3491089,"arm":"fresh","stage":"adapter-next-call","consumer":0}
+{"process":3491089,"arm":"fresh","stage":"adapter-next-call","consumer":1}
+{"process":3491089,"stage":"synthetic-query-entry","arm":"fresh","call":1,"threadId":"synthetic command"}
+{"process":3491089,"arm":"fresh","stage":"supplier-returned-original-iterable","queryCall":1,"nativeId":1}
+{"process":3491089,"stage":"synthetic-query-return","arm":"fresh","call":1}
+{"process":3491089,"arm":"fresh","stage":"native-before-yield","nativeId":1}
+{"process":3491089,"stage":"synthetic-query-entry","arm":"fresh","call":2,"threadId":"synthetic command"}
+{"process":3491089,"arm":"fresh","stage":"supplier-returned-original-iterable","queryCall":2,"nativeId":2}
+{"process":3491089,"stage":"synthetic-query-return","arm":"fresh","call":2}
+{"process":3491089,"arm":"fresh","stage":"native-before-yield","nativeId":2}
+{"process":3491089,"arm":"fresh","stage":"adapter-next-settled","consumer":0,"value":{"value":{"type":"result","result":{"output":"original final","sessionId":"original-session","usage":{"inputTokens":123,"outputTokens":45},"isError":false}},"done":false}}
+{"process":3491089,"arm":"fresh","stage":"adapter-next-call","consumer":0}
+{"process":3491089,"arm":"fresh","stage":"native-resumed-after-yield","nativeId":1}
+{"process":3491089,"arm":"fresh","stage":"adapter-next-settled","consumer":1,"value":{"value":{"type":"result","result":{"output":"original final","sessionId":"original-session","usage":{"inputTokens":123,"outputTokens":45},"isError":false}},"done":false}}
+{"process":3491089,"arm":"fresh","stage":"adapter-next-call","consumer":1}
+{"process":3491089,"arm":"fresh","stage":"native-resumed-after-yield","nativeId":2}
+{"process":3491089,"arm":"fresh","stage":"native-return-call","nativeId":1}
+{"process":3491089,"arm":"fresh","stage":"native-return-call","nativeId":2}
+{"process":3491089,"arm":"fresh","stage":"adapter-next-settled","consumer":0,"value":{"done":true}}
+{"process":3491089,"arm":"fresh","stage":"adapter-next-settled","consumer":1,"value":{"done":true}}
+{"process":3491089,"arm":"fresh","stage":"native-return-settled","nativeId":1,"value":{"done":true}}
+{"process":3491089,"arm":"fresh","stage":"native-return-settled","nativeId":2,"value":{"done":true}}
+{"process":3491089,"arm":"fresh","stage":"actual-result-summary","nativeIds":[1,2],"results":[[{"value":{"type":"result","result":{"output":"original final","sessionId":"original-session","usage":{"inputTokens":123,"outputTokens":45},"isError":false}},"done":false},{"done":true}],[{"value":{"type":"result","result":{"output":"original final","sessionId":"original-session","usage":{"inputTokens":123,"outputTokens":45},"isError":false}},"done":false},{"done":true}]]}
+{"process":3491089,"arm":"fresh","stage":"drain-pending-next","count":4}
+{"process":3491089,"arm":"fresh","stage":"adapter-return-call","consumer":0}
+{"process":3491089,"arm":"fresh","stage":"adapter-return-call","consumer":1}
+{"process":3491089,"arm":"fresh","stage":"adapter-return-settled","consumer":0}
+{"process":3491089,"arm":"fresh","stage":"adapter-return-settled","consumer":1}
+{"process":3491089,"arm":"fresh","stage":"native-return-call","nativeId":1}
+{"process":3491089,"arm":"fresh","stage":"native-return-call","nativeId":2}
+{"process":3491089,"arm":"fresh","stage":"native-return-settled","nativeId":1,"value":{"done":true}}
+{"process":3491089,"arm":"fresh","stage":"native-return-settled","nativeId":2,"value":{"done":true}}
+{"process":3491089,"arm":"fresh","stage":"actual-drain-completed","adapters":2,"nativeIterables":2,"awaitedNativeReturnPromises":4}

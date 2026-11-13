@@ -1,0 +1,61 @@
+SOURCE /home/ivo/workspace/talon.feat-signal/node_modules/vite-node/dist/client.mjs
+FULL_SOURCE_SHA256 f435e10a73dbce6b7ae610a743248e57738c627e83bb83d290bd90418e1f98b3
+
+211:       }
+212:     }
+213:   }
+214:   shouldResolveId(id, _importee) {
+215:     return !isInternalRequest(id) && !isNodeBuiltin(id) && !id.startsWith("data:");
+216:   }
+217:   async _resolveUrl(id, importer) {
+218:     var _a, _b;
+219:     const dep = normalizeRequestId(id, this.options.base);
+220:     if (!this.shouldResolveId(dep)) {
+221:       return [dep, dep];
+222:     }
+223:     const { path, exists } = toFilePath(dep, this.root);
+224:     if (!this.options.resolveId || exists) {
+225:       return [dep, path];
+226:     }
+227:     const resolved = await this.options.resolveId(dep, importer);
+228:     if ((_b = (_a = resolved == null ? void 0 : resolved.meta) == null ? void 0 : _a["vite:alias"]) == null ? void 0 : _b.noResolved) {
+229:       const error = new Error(
+230:         `Cannot find module '${id}'${importer ? ` imported from '${importer}'` : ""}.
+231: 
+
+273:     const requestStubs = this.options.requestStubs || DEFAULT_REQUEST_STUBS;
+274:     if (id in requestStubs) {
+275:       return requestStubs[id];
+276:     }
+277:     let { code: transformed, externalize } = await this.options.fetchModule(id);
+278:     if (externalize) {
+279:       debugNative(externalize);
+280:       const exports2 = await this.interopedImport(externalize);
+281:       mod.exports = exports2;
+282:       return exports2;
+283:     }
+284:     if (transformed == null) {
+285:       throw new Error(
+286:         `[vite-node] Failed to load "${id}" imported from ${callstack[callstack.length - 2]}`
+
+405:    * Define if a module should be interop-ed
+406:    * This function mostly for the ability to override by subclass
+407:    */
+408:   shouldInterop(path, mod) {
+409:     if (this.options.interopDefault === false) {
+410:       return false;
+411:     }
+412:     return !path.endsWith(".mjs") && "default" in mod;
+413:   }
+414:   importExternalModule(path) {
+415:     return import(path);
+416:   }
+417:   /**
+418:    * Import a module and interop it
+419:    */
+420:   async interopedImport(path) {
+421:     const importedModule = await this.importExternalModule(path);
+422:     if (!this.shouldInterop(path, importedModule)) {
+423:       return importedModule;
+424:     }
+425:     const { mod, defaultExport } = interopModule(importedModule);

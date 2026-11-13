@@ -25,3 +25,18 @@ reasoning effort or execution modes silently. No push, live Signal message,
 account provisioning, production service action or final target-branch merge is
 authorized. AC-15 remains pending until the required real-device evidence exists;
 automated success cannot mark the epic delivered.
+
+## Local-only integration correction
+
+The first `wddctl submit` was run while `merge.surface` still selected `pr`.
+That command pushed `task/signal-TASK-001` at
+`0c2dc55b4d485aaa264e670ce8311fed1dba145a` before its PR creation failed. The
+controller reported this unauthorized side effect and confirmed the remote
+branch read-only; it did not delete or rewrite the remote branch. This record
+is disclosure, not retroactive push approval.
+
+When asked whether to switch WDD to local-only integration and continue, Ivo
+selected “Continue locally (recommended)”. The controller changed
+`merge.surface` to `local` through `wddctl`, amended governance, re-approved the
+epic configuration and re-stamped the unchanged plan. No further push or PR
+creation is authorized, and the existing remote branch remains untouched.

@@ -1,0 +1,43 @@
+SOURCE /home/ivo/workspace/talon.feat-signal/node_modules/@vitest/runner/dist/index.js
+FULL_SOURCE_SHA256 5eef7c212d38d69c0fbe6a73f802fa9f91541dc31cd15a57610305a723b17645
+
+817: async function runSetupFiles(config, files, runner) {
+818:   if (config.sequence.setupFiles === "parallel") {
+819:     await Promise.all(
+820:       files.map(async (fsPath) => {
+821:         await runner.importFile(fsPath, "setup");
+822:       })
+823:     );
+824:   } else {
+825:     for (const fsPath of files) {
+826:       await runner.importFile(fsPath, "setup");
+827:     }
+828:   }
+829: }
+830: 
+831: const now$1 = globalThis.performance ? globalThis.performance.now.bind(globalThis.performance) : Date.now;
+832: async function collectTests(paths, runner) {
+833:   var _a;
+834:   const files = [];
+835:   const config = runner.config;
+836:   for (const filepath of paths) {
+837:     const file = createFileTask(filepath, config.root, config.name, runner.pool);
+838:     (_a = runner.onCollectStart) == null ? void 0 : _a.call(runner, file);
+839:     clearCollectorContext(filepath, runner);
+840:     try {
+841:       const setupFiles = toArray(config.setupFiles);
+842:       if (setupFiles.length) {
+843:         const setupStart = now$1();
+844:         await runSetupFiles(config, setupFiles, runner);
+845:         const setupEnd = now$1();
+846:         file.setupDuration = setupEnd - setupStart;
+847:       } else {
+848:         file.setupDuration = 0;
+849:       }
+850:       const collectStart = now$1();
+851:       await runner.importFile(filepath, "collect");
+852:       const defaultTasks = await getDefaultSuite().collect(file);
+853:       const fileHooks = createSuiteHooks();
+854:       mergeHooks(fileHooks, getHooks(defaultTasks));
+855:       for (const c of [...defaultTasks.tasks, ...collectorContext.tasks]) {
+856:         if (c.type === "test" || c.type === "custom" || c.type === "suite") {

@@ -1,0 +1,13 @@
+SOURCE /home/ivo/workspace/talon.feat-signal/node_modules/vitest/dist/path.js
+FULL_SOURCE_SHA256 026864e03ef38d252fbd99701e4670444a5250ffe49fe20f33759b31cb5d3a9c
+
+1: import { resolve } from 'node:path';
+2: import url from 'node:url';
+3: 
+4: const rootDir = resolve(url.fileURLToPath(import.meta.url), "../../");
+5: const distDir = resolve(
+6:   url.fileURLToPath(import.meta.url),
+7:   "../../dist"
+8: );
+9: 
+10: export { distDir, rootDir };

@@ -23,6 +23,8 @@ Produces:
 Constructsharedaccount/lease repos andinboundResulttransactionfromthesameSQLiteconnection; injectallSignalconnector/registry/sendgate/proof/guard/actor dependencies throughfactory/bootstrap/runner/hosttools. RejectduplicateownershipsameACI+device/socketbeforeanystart; preserve namedinstances. GenerationregistrymustexcludeallpersonalbridgeswithoutgenericbotUserIdfilteringoperatorACI. WireoptionalonMessageWithReceiptpipelineoutcome; ordinaryonMessageunchanged.
 Reloadquiescesclaims/newdispatch, boundeddrain/stopoldconnectors, replacegenerationregistry, register/startnewconnectors andresumequeue. Currentregistrylookupindelivery prevents staleconnectorpostquery. InitialfailedSignalstartretryownedconnector, noDaemonreloadneeded. WireIPCprivilegedresumeandstatussafeDTO, verificationrefusalsandratepreservationno sends. Recoveryclassifiesreservation/checkpointandorphanleasesbeforeacceptingsends. Testactualbootstrap/factoryreachableconnector, ownoutputexcluded, BGpathtrustedID, atomicreceipt retry, activeRPCreloadcompletevsunknownandnewworkunwritten/deferred, noleakedtimers. Ifproducercontractbugrequiresoutside-domainedit, reportcontroller; don'tsilentlybypasswithunusedadapter.
 
+The actual `HostToolsBridge` constructor, registered-run authentication and channel dispatch are integration ownership here. Inject the shared trusted Signal execution dependencies through that real boundary; do not replace them with model-supplied queue/delivery fields or a global shadow registry. Preserve existing authentication/capability checks and exercise the actual bridge in its existing focused tests.
+
 Follow the design including its R2/R3 dispositions. No source-shaped assumption may be inferred from a mock: for each external field/method/result, read and cite the pinned v0.14.9 source named by the inventory. Do not consult moving upstream as a substitute. Inputs are untrusted; do not leak raw RPC errors, envelopes, identifiers, text, challenge tokens or dynamic parse paths into diagnostics.
 
 ## Non-scope
@@ -52,11 +54,13 @@ No real Signal accounts/messages, signal-cli installation/provisioning, service/
 - tests/unit/channels/channel-setup.test.ts
 - tests/unit/ipc/signal-resume.test.ts
 - tests/unit/ipc/daemon-ipc-server.test.ts
+- src/tools/host-tools-bridge.ts
+- tests/unit/tools/host-tools-bridge.test.ts
 
 ## Verification
 
 ```sh
-npx vitest run tests/unit/daemon/channel-factory.test.ts tests/unit/channels/channel-setup.test.ts tests/unit/daemon/daemon-bootstrap.test.ts tests/unit/daemon/daemon.test.ts tests/unit/daemon/reload.test.ts tests/unit/ipc/signal-resume.test.ts tests/unit/ipc/daemon-ipc-server.test.ts
+npx vitest run tests/unit/daemon/channel-factory.test.ts tests/unit/channels/channel-setup.test.ts tests/unit/daemon/daemon-bootstrap.test.ts tests/unit/daemon/daemon.test.ts tests/unit/daemon/reload.test.ts tests/unit/ipc/signal-resume.test.ts tests/unit/ipc/daemon-ipc-server.test.ts tests/unit/tools/host-tools-bridge.test.ts
 ```
 
 ```sh

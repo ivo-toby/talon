@@ -1,0 +1,92 @@
+SOURCE node_modules/vitest/dist/chunks/execute.2pr0rHgK.js SHA256 c9ed4360604f5ae8fe494ed113e5ed214278fe0bec9e0aae983e941961db85c4
+READONLY SOURCE CONTRACT; not API to patch
+
+LINES 372-410
+372:   async callFunctionMock(dep, mock) {
+373:     const cached = this.moduleCache.get(dep)?.exports;
+374:     if (cached) {
+375:       return cached;
+376:     }
+377:     const exports = await mock.resolve();
+378:     const moduleExports = new Proxy(exports, {
+379:       get: (target, prop) => {
+380:         const val = target[prop];
+381:         if (prop === "then") {
+382:           if (target instanceof Promise) {
+383:             return target.then.bind(target);
+384:           }
+385:         } else if (!(prop in target)) {
+386:           if (this.filterPublicKeys.includes(prop)) {
+387:             return void 0;
+388:           }
+389:           throw this.createError(
+390:             `[vitest] No "${String(prop)}" export is defined on the "${mock.raw}" mock. Did you forget to return it from "vi.mock"?
+391: If you need to partially mock a module, you can use "importOriginal" helper inside:
+392: `,
+393:             highlight(`vi.mock(import("${mock.raw}"), async (importOriginal) => {
+394:   const actual = await importOriginal()
+395:   return {
+396:     ...actual,
+397:     // your mocked methods
+398:   }
+399: })`)
+400:           );
+401:         }
+402:         return val;
+403:       }
+404:     });
+405:     this.moduleCache.set(dep, { exports: moduleExports });
+406:     return moduleExports;
+407:   }
+408:   // public method to avoid circular dependency
+409:   getMockContext() {
+410:     return this.mockContext;
+
+LINES 492-524
+492:   async requestWithMock(url, callstack) {
+493:     const id = this.normalizePath(url);
+494:     const mock = this.getDependencyMock(id);
+495:     if (!mock) {
+496:       return;
+497:     }
+498:     const mockPath = this.getMockPath(id);
+499:     if (mock.type === "automock" || mock.type === "autospy") {
+500:       const cache = this.moduleCache.get(mockPath);
+501:       if (cache.exports) {
+502:         return cache.exports;
+503:       }
+504:       const exports = {};
+505:       this.moduleCache.set(mockPath, { exports });
+506:       const mod = await this.executor.directRequest(url, url, callstack);
+507:       this.mockObject(mod, exports, mock.type);
+508:       return exports;
+509:     }
+510:     if (mock.type === "manual" && !callstack.includes(mockPath) && !callstack.includes(url)) {
+511:       try {
+512:         callstack.push(mockPath);
+513:         this.mockContext.callstack = callstack;
+514:         return await this.callFunctionMock(mockPath, mock);
+515:       } finally {
+516:         this.mockContext.callstack = null;
+517:         const indexMock = callstack.indexOf(mockPath);
+518:         callstack.splice(indexMock, 1);
+519:       }
+520:     } else if (mock.type === "redirect" && !callstack.includes(mock.redirect)) {
+521:       return mock.redirect;
+522:     }
+523:   }
+524:   queueMock(id, importer, factoryOrOptions) {
+
+LINES 790-801
+790:   }
+791:   async dependencyRequest(id, fsPath, callstack) {
+792:     const mocked = await this.mocker.requestWithMock(fsPath, callstack);
+793:     if (typeof mocked === "string") {
+794:       return super.dependencyRequest(mocked, mocked, callstack);
+795:     }
+796:     if (mocked && typeof mocked === "object") {
+797:       return mocked;
+798:     }
+799:     return super.dependencyRequest(id, fsPath, callstack);
+800:   }
+801:   prepareContext(context) {

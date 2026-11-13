@@ -1,0 +1,77 @@
+SOURCE node_modules/vite-node/dist/client.mjs SHA256 f435e10a73dbce6b7ae610a743248e57738c627e83bb83d290bd90418e1f98b3
+READONLY SOURCE CONTRACT; not API to patch
+
+LINES 176-208
+176:   async cachedRequest(id, fsPath, callstack) {
+177:     const importee = callstack[callstack.length - 1];
+178:     const mod = this.moduleCache.get(fsPath);
+179:     const { imports, importers } = mod;
+180:     if (importee) {
+181:       importers.add(importee);
+182:     }
+183:     const getStack = () => `stack:
+184: ${[...callstack, fsPath].reverse().map((p) => `  - ${p}`).join("\n")}`;
+185:     if (callstack.includes(fsPath) || Array.from(imports.values()).some((i) => importers.has(i))) {
+186:       if (mod.exports) {
+187:         return mod.exports;
+188:       }
+189:     }
+190:     let debugTimer;
+191:     if (this.debug) {
+192:       debugTimer = setTimeout(
+193:         () => console.warn(
+194:           `[vite-node] module ${fsPath} takes over 2s to load.
+195: ${getStack()}`
+196:         ),
+197:         2e3
+198:       );
+199:     }
+200:     try {
+201:       if (mod.promise) {
+202:         return await mod.promise;
+203:       }
+204:       const promise = this.directRequest(id, fsPath, callstack);
+205:       Object.assign(mod, { promise, evaluated: false });
+206:       return await promise;
+207:     } finally {
+208:       mod.evaluated = true;
+
+LINES 258-282
+258:   async dependencyRequest(id, fsPath, callstack) {
+259:     return await this.cachedRequest(id, fsPath, callstack);
+260:   }
+261:   /** @internal */
+262:   async directRequest(id, fsPath, _callstack) {
+263:     const moduleId = normalizeModuleId(fsPath);
+264:     const callstack = [..._callstack, moduleId];
+265:     const mod = this.moduleCache.getByModuleId(moduleId);
+266:     const request = async (dep) => {
+267:       const [id2, depFsPath] = await this.resolveUrl(String(dep), fsPath);
+268:       const depMod = this.moduleCache.getByModuleId(depFsPath);
+269:       depMod.importers.add(moduleId);
+270:       mod.imports.add(depFsPath);
+271:       return this.dependencyRequest(id2, depFsPath, callstack);
+272:     };
+273:     const requestStubs = this.options.requestStubs || DEFAULT_REQUEST_STUBS;
+274:     if (id in requestStubs) {
+275:       return requestStubs[id];
+276:     }
+277:     let { code: transformed, externalize } = await this.options.fetchModule(id);
+278:     if (externalize) {
+279:       debugNative(externalize);
+280:       const exports2 = await this.interopedImport(externalize);
+281:       mod.exports = exports2;
+282:       return exports2;
+
+LINES 360-370
+360:         }
+361:       });
+362:     }
+363:     const context = this.prepareContext({
+364:       // esm transformed by Vite
+365:       __vite_ssr_import__: request,
+366:       __vite_ssr_dynamic_import__: request,
+367:       __vite_ssr_exports__: exports,
+368:       __vite_ssr_exportAll__: (obj) => exportAll(exports, obj),
+369:       __vite_ssr_import_meta__: meta,
+370:       // cjs compact

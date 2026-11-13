@@ -87,7 +87,11 @@ never handed to the shared pipeline.
 
 V1 requires the bridge and talond to run as the same effective numeric Unix UID.
 The socket's immediate parent is owned by that UID and has mode 0700; the socket
-is owned by that UID, is a Unix socket and has mode 0600. Every ancestor up to
+is owned by that UID, is a Unix socket and has no group or other permission
+bits and no setuid/setgid/sticky bits (mode 0600 or 0700). Linux creates sockets
+as 0777 & ~umask, so a bridge started under umask 077 yields 0700; a process-wide
+umask 0177 would make signal-cli's runtime directories untraversable, so exact
+0600 is not required (amended 2026-11-13, approved by Ivo). Every ancestor up to
 root must be owned by that UID or root and have no group/world write permission.
 Reject symlinks in the configured path, socket or ancestors. Check with lstat
 before every connection and repeat the checks and socket device/inode comparison

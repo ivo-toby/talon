@@ -1,0 +1,86 @@
+SOURCE /home/ivo/workspace/talon.feat-signal/node_modules/@types/node/module.d.ts
+FULL_SOURCE_SHA256 e6fa9ad47c5f71ff733744a029d1dc472c618de53804eae08ffc243b936f87ff
+
+223:         interface RegisterHooksOptions {
+224:             /**
+225:              * See [load hook](https://nodejs.org/docs/latest-v22.x/api/module.html#loadurl-context-nextload).
+226:              * @default undefined
+227:              */
+228:             load?: LoadHookSync | undefined;
+229:             /**
+230:              * See [resolve hook](https://nodejs.org/docs/latest-v22.x/api/module.html#resolvespecifier-context-nextresolve).
+231:              * @default undefined
+232:              */
+233:             resolve?: ResolveHookSync | undefined;
+234:         }
+235:         interface ModuleHooks {
+236:             /**
+237:              * Deregister the hook instance.
+238:              */
+239:             deregister(): void;
+240:         }
+241:         /**
+242:          * Register [hooks](https://nodejs.org/docs/latest-v22.x/api/module.html#customization-hooks)
+243:          * that customize Node.js module resolution and loading behavior.
+244:          * @since v22.15.0
+245:          * @experimental
+246:          */
+247:         function registerHooks(options: RegisterHooksOptions): ModuleHooks;
+
+430:             ) => ResolveFnOutput | Promise<ResolveFnOutput>,
+431:         ) => ResolveFnOutput | Promise<ResolveFnOutput>;
+432:         type ResolveHookSync = (
+433:             specifier: string,
+434:             context: ResolveHookContext,
+435:             nextResolve: (
+436:                 specifier: string,
+437:                 context?: Partial<ResolveHookContext>,
+438:             ) => ResolveFnOutput,
+439:         ) => ResolveFnOutput;
+440:         interface LoadHookContext {
+441:             /**
+442:              * Export conditions of the relevant `package.json`
+443:              */
+444:             conditions: string[];
+445:             /**
+446:              * The format optionally supplied by the `resolve` hook chain (can be an intermediary value).
+447:              */
+448:             format: string | null | undefined;
+449:             /**
+450:              *  An object whose key-value pairs represent the assertions for the module to import
+451:              */
+452:             importAttributes: ImportAttributes;
+453:         }
+454:         interface LoadFnOutput {
+455:             format: string | null | undefined;
+456:             /**
+457:              * A signal that this hook intends to terminate the chain of `resolve` hooks.
+458:              * @default false
+459:              */
+460:             shortCircuit?: boolean | undefined;
+461:             /**
+462:              * The source for Node.js to evaluate
+463:              */
+464:             source?: ModuleSource | undefined;
+465:         }
+466:         /**
+467:          * The `load` hook provides a way to define a custom method of determining how a
+468:          * URL should be interpreted, retrieved, and parsed. It is also in charge of
+469:          * validating the import attributes.
+470:          */
+471:         type LoadHook = (
+472:             url: string,
+473:             context: LoadHookContext,
+474:             nextLoad: (
+475:                 url: string,
+476:                 context?: Partial<LoadHookContext>,
+477:             ) => LoadFnOutput | Promise<LoadFnOutput>,
+478:         ) => LoadFnOutput | Promise<LoadFnOutput>;
+479:         type LoadHookSync = (
+480:             url: string,
+481:             context: LoadHookContext,
+482:             nextLoad: (
+483:                 url: string,
+484:                 context?: Partial<LoadHookContext>,
+485:             ) => LoadFnOutput,
+486:         ) => LoadFnOutput;

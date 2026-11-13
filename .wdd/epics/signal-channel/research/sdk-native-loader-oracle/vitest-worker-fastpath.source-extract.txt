@@ -1,0 +1,52 @@
+SOURCE /home/ivo/workspace/talon.feat-signal/node_modules/vitest/dist/chunks/execute.2pr0rHgK.js
+FULL_SOURCE_SHA256 c9ed4360604f5ae8fe494ed113e5ed214278fe0bec9e0aae983e941961db85c4
+
+600:     throw new Error(`process.exit unexpectedly called with "${code}"`);
+601:   };
+602:   listenForErrors(state);
+603:   const getTransformMode = () => {
+604:     return state().environment.transformMode ?? "ssr";
+605:   };
+606:   return await createVitestExecutor({
+607:     async fetchModule(id) {
+608:       if (externalizeMap.has(id)) {
+609:         return { externalize: externalizeMap.get(id) };
+610:       }
+611:       if (id.includes(distDir) || id.includes(normalizedDistDir)) {
+612:         const { path } = toFilePath(id, state().config.root);
+613:         const externalize = pathToFileURL(path).toString();
+614:         externalizeMap.set(id, externalize);
+615:         return { externalize };
+616:       }
+617:       if (bareVitestRegexp.test(id)) {
+618:         externalizeMap.set(id, id);
+619:         return { externalize: id };
+620:       }
+621:       const result = await rpc().fetch(id, getTransformMode());
+622:       if (result.id && !result.externalize) {
+623:         const code = readFileSync(result.id, "utf-8");
+624:         return { code };
+625:       }
+
+780:       // if we encountered an import, it's not inlined
+781:       importModuleDynamically: this.externalModules.importModuleDynamically
+782:     });
+783:     await fn(...Object.values(context));
+784:   }
+785:   async importExternalModule(path) {
+786:     if (this.externalModules) {
+787:       return this.externalModules.import(path);
+788:     }
+789:     return super.importExternalModule(path);
+790:   }
+791:   async dependencyRequest(id, fsPath, callstack) {
+792:     const mocked = await this.mocker.requestWithMock(fsPath, callstack);
+793:     if (typeof mocked === "string") {
+794:       return super.dependencyRequest(mocked, mocked, callstack);
+795:     }
+796:     if (mocked && typeof mocked === "object") {
+797:       return mocked;
+798:     }
+799:     return super.dependencyRequest(id, fsPath, callstack);
+800:   }
+801:   prepareContext(context) {

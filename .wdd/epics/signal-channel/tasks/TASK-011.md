@@ -31,7 +31,8 @@ No real Signal accounts/messages, signal-cli installation/provisioning, service/
 ## Files to read first
 
 - AGENTS.md and /home/ivo/dotfiles/agents/.agents/skills/ivo-code-style/SKILL.md (for code/test changes).
-- All snapshot context above, then cli config-utils/add-channel/status/queue-purge/index, ipc-types/client and taskconnector/repository status APIs.
+- All snapshot context above, then cli config-utils/add-channel/status/queue-purge/index, daemon-ipc.ts/client, ipc-types.ts and taskconnector/repository status APIs.
+- The actual daemon control union/schema is in `src/ipc/daemon-ipc.ts`, consumed by the real client and server. Define signal-resume there; ipc-types.ts is the separate container/host message contract. Test the real daemon command schema/client, never a parallel model or validation bypass. Ivo approved this one-path ownership correction before dispatch; TASK-012 still owns daemon handler wiring.
 - Read dependency implementations and existing adjacent tests before choosing exported signatures.
 
 ## Conflict domains
@@ -42,6 +43,7 @@ No real Signal accounts/messages, signal-cli installation/provisioning, service/
 - src/cli/index.ts
 - src/ipc/ipc-types.ts
 - src/ipc/daemon-ipc-client.ts
+- src/ipc/daemon-ipc.ts
 
 ## Verification
 
