@@ -235,6 +235,8 @@ channels:
         - "123456789"
 ```
 
+Signal is also supported. It runs through a separately supervised signal-cli v0.14.9 bridge that you install and run yourself, and Talon connects to its local socket. Its setup needs JRE 25 or newer plus native libsignal-client, a private socket directory, and device linking. Linking and registration are operator-only steps. Follow [docs/signal-channel.md](signal-channel.md) before adding it, or run the `/add-signal` setup skill. To add the entry from the CLI, use `talonctl add-channel --name <name> --type signal --signal-config '<json>'`.
+
 ### Personas
 
 A persona is the agent's identity: system prompt, model, tools, and permissions.

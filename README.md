@@ -82,6 +82,7 @@ integration, or automation is safe without your configuration and review.
 - **Terminal** — WebSocket server with `talonctl chat` client, rendered markdown output, persistent threads
 - **Discord** — Gateway events with REST API, rate limit handling _(inbound not yet implemented)_
 - **WhatsApp** — WhatsApp Web bridge via Baileys, supports dedicated number or self-chat mode
+- **Signal** — Text DMs and groups through an externally supervised signal-cli v0.14.9 bridge over a local Unix socket. Personal mode links Talon as an extra device on your own account (Note to Self plus selected chats); dedicated mode uses a separate agent account. Selected DMs and groups need the trigger and allowlists; Note to Self needs neither. Attachments are not supported. See [docs/signal-channel.md](docs/signal-channel.md)
 - **Email** — IMAP polling + SMTP send (imapflow / nodemailer), thread tracking via References / In-Reply-To headers _(IMAP polling verified against a live KPN mailbox; SMTP send not yet verified live)_
 
 ### Agent System
@@ -243,6 +244,7 @@ graph TB
         SL[Slack]
         DC[Discord]
         WA[WhatsApp]
+        SG[Signal]
         EM[Email]
         TM[Terminal]
     end
@@ -809,6 +811,36 @@ Once authenticated, the daemon uses the saved credentials — no QR code display
 - **Thread mapping**: Sender JID
 - **Reconnection**: Automatic on disconnect; logged-out sessions require re-authentication (delete `authDir` and re-run `talonctl whatsapp-auth`)
 
+### Signal
+
+Text conversations through [signal-cli](https://github.com/AsamK/signal-cli) v0.14.9, run as a separately supervised bridge. Talon connects to its local Unix socket; it never installs, registers, or supervises signal-cli and never reads account keys.
+
+```yaml
+channels:
+  - name: signal-personal
+    type: signal
+    enabled: true
+    config:
+      accountMode: personal          # or dedicated
+      socketPath: /run/user/1000/talon-signal/signal.sock
+      account: '+15555550100'        # E.164 hint; the UUID below is authoritative
+      accountUuid: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'
+      deviceId: 2                    # personal: linked device, not 1
+      deviceCreatedTimestamp: 1767225600000
+      allowedDmPeers: []             # empty = no DMs selected
+      allowedSenders: []             # empty = nobody authorized
+      allowedGroups: []              # empty = no groups selected
+      triggerPrefix: '!talon'        # quote it in YAML
+```
+
+- **Personal mode**: your own Note to Self messages are commands without a trigger; in selected chats, commands need the trigger. Progress and tool notices are suppressed, and `showToolCalls: true` is rejected.
+- **Dedicated mode**: replies come from the agent account. Messages it sends, including echoes, never become commands.
+- **Trigger**: messages in DMs and groups must start with `triggerPrefix` followed by whitespace or end of text. Note to Self needs no prefix.
+- **Limits**: text only, replies chunked at 2,000 UTF-8 bytes, signal-cli 0.14.9 only, and the bridge must run as the same Unix user as talond with a private socket directory (no `/tmp`).
+- **Delivery**: a send succeeds when the bridge accepts it, not when it is read. A partial send whose current chunk was not written is deferred and resumes from its saved cursor. Other partial and unknown sends are terminal and are never resent automatically; inspect the chat instead.
+
+Linking, registration, and CAPTCHA steps are operator-only and happen outside any agent session. Setup steps, bridge flags (start the bridge under `umask 077`), device-relink rules, retention, and the full field reference are in [docs/signal-channel.md](docs/signal-channel.md).
+
 ### Email
 
 > **Partly verified live**: IMAP polling (including the `ARC-Authentication-Results` / `requireDmarcPass` check) has been run against a live KPN mailbox. SMTP send is implemented and unit-tested but not yet verified against a live SMTP server. See TASK-049.
@@ -949,6 +981,7 @@ Connectors automatically filter inbound messages from all bot accounts to preven
 - **Discord** — drops all messages from `author.bot` accounts.
 - **Telegram** — drops all messages where `from.is_bot` is true.
 - **WhatsApp Baileys** — filters via JID-based self-detection.
+- **Signal** — filters by verified device provenance: the operator's own messages are commands only from verified linked devices, and the dedicated account's messages are never commands.
 
 WhatsApp Business (Cloud API) does not implement bot-self filtering; avoid running multiple Talon bots that share the same WhatsApp Business account.
 
@@ -1828,7 +1861,7 @@ npx talonctl chat --token mytoken --persona assistant
 | Option            | Description                                                                                             | Default       |
 | ----------------- | ------------------------------------------------------------------------------------------------------- | ------------- |
 | `--name <name>`   | Unique channel name (required)                                                                          | —             |
-| `--type <type>`   | Connector type: telegram, slack, discord, whatsappBaileys, whatsappBusiness, email, terminal (required) | —             |
+| `--type <type>`   | Connector type: telegram, slack, discord, whatsappBaileys, whatsappBusiness, signal, email, terminal (required) | —             |
 | `--config <path>` | Path to talond.yaml                                                                                     | `talond.yaml` |
 
 **`add-persona`** options:
@@ -2175,6 +2208,7 @@ npx talonctl run-subagent --name my-agent --input '{}' --subagents-dir ./subagen
 | `backup`      | Backup database, config, personas, and skills                  |
 | `doctor`      | Run diagnostic checks on environment, config, and dependencies |
 | `queue-purge` | Purge queue items by status                                    |
+| `signal-resume` | Clear a Signal challenge pause after external resolution (sends nothing) |
 
 **`backup`** options:
 
@@ -3011,6 +3045,7 @@ talon/
         discord/                 # Discord Gateway + REST connector
         whatsapp-business/       # WhatsApp Cloud API connector
         whatsapp-baileys/        # WhatsApp Web (Baileys) connector
+        signal/                  # signal-cli JSON-RPC bridge connector
         email/                   # IMAP + SMTP connector
         terminal/                # WebSocket terminal connector
       channel-registry.ts        # Connector lifecycle management
@@ -3125,6 +3160,8 @@ Talon uses SQLite with WAL mode and foreign keys. All persistence goes through t
 | `artifacts`    | Agent output files                                              |
 | `audit_log`    | Append-only audit trail                                         |
 | `tool_results` | Idempotent tool result cache                                    |
+| `signal_account_state` | Signal account send gate, pauses, and device-check budget |
+| `signal_destination_leases` | Per-destination Signal delivery leases |
 
 ---
 
