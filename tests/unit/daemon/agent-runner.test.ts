@@ -4852,6 +4852,125 @@ describe('AgentRunner saved Signal lifecycle', () => {
     120_000,
   );
 
+  async function settleWithin(promise: Promise<unknown>, fakeMs: number): Promise<void> {
+    let settled = false;
+    const mark = (): void => {
+      settled = true;
+    };
+    void promise.then(mark, mark);
+    for (let elapsed = 0; elapsed < fakeMs && !settled; elapsed += 100) {
+      for (let j = 0; j < 10; j++) await new Promise<void>((resolve) => setImmediate(resolve));
+      if (!settled) await vi.advanceTimersByTimeAsync(100);
+    }
+    expect(settled).toBe(true);
+  }
+
+  function useShortQueryTimeout(): void {
+    // The persona's queryTimeoutMinutes (schema default 10) overrides the constructor option, so
+    // clear it here to arm the 200 ms test timeout.
+    const loaded = ctx.personaLoader.getByName('fixture')._unsafeUnwrap();
+    if (loaded === undefined) throw new Error('fixture persona not loaded');
+    (loaded.config as { queryTimeoutMinutes?: number }).queryTimeoutMinutes = undefined;
+  }
+
+  it.each([
+    [
+      'next() never resolves and return() never resolves',
+      () => new Promise<never>(() => {}),
+      () => new Promise<never>(() => {}),
+    ],
+    [
+      'return() resolves but next() stays pending',
+      () => new Promise<never>(() => {}),
+      () => Promise.resolve({ done: true, value: undefined }),
+    ],
+  ] as const)(
+    'settles a guarded query timeout within bounded fake time when %s',
+    async (_label, next, ret) => {
+      useShortQueryTimeout();
+      let drainCalls = 0;
+      const context = {
+        ...ctx,
+        signalRuntime: {
+          executions,
+          sealAndDrain: () => {
+            drainCalls++;
+            return Promise.resolve(ok(undefined));
+          },
+        },
+      };
+      const iterator = {
+        next: vi.fn(next),
+        return: vi.fn(ret),
+        [Symbol.asyncIterator]() {
+          return this;
+        },
+      };
+      mockQuery.mockReturnValue({ [Symbol.asyncIterator]: () => iterator } as never);
+
+      const run = new AgentRunner(context, { queryTimeoutMs: 200 }).run(enqueue());
+      await settleWithin(run, 10_000);
+      const result = await run;
+
+      expect(result.isErr()).toBe(true);
+      expect(result._unsafeUnwrapErr().message).toContain('timed out after');
+      expect(drainCalls).toBe(1);
+      expect(sentBodies).toEqual([]);
+      expect(mockQuery).toHaveBeenCalledTimes(1);
+      expect(runs.findByThread('thread')._unsafeUnwrap()[0]).toMatchObject({ status: 'failed' });
+    },
+    30_000,
+  );
+
+  it('keeps a guarded timeout non-terminal until an admitted Signal continuation settles, then fails without replay', async () => {
+    useShortQueryTimeout();
+    let drainCalls = 0;
+    let releaseAdmission!: () => void;
+    const admitted = new Promise<void>((resolve) => {
+      releaseAdmission = resolve;
+    });
+    const context = {
+      ...ctx,
+      signalRuntime: {
+        executions,
+        sealAndDrain: () => {
+          drainCalls++;
+          return admitted.then(() => ok(undefined));
+        },
+      },
+    };
+    async function* stream() {
+      // The admitted Signal continuation is modelled by the pending drain port below.
+      yield { type: 'assistant', message: { content: [{ text: 'partial' }] } };
+      await new Promise(() => {});
+    }
+    mockQuery.mockReturnValue(stream());
+
+    const run = new AgentRunner(context, { queryTimeoutMs: 200 }).run(enqueue());
+    let settled = false;
+    void run.then(() => {
+      settled = true;
+    });
+    // Advance until the query timeout has fired and the runner has entered the drain.
+    for (let i = 0; i < 200 && drainCalls === 0; i++) {
+      for (let j = 0; j < 10; j++) await new Promise<void>((resolve) => setImmediate(resolve));
+      await vi.advanceTimersByTimeAsync(100);
+    }
+    expect(drainCalls).toBe(1);
+    // Well past the 200 ms timeout, the run must still wait for the admitted continuation.
+    await vi.advanceTimersByTimeAsync(5_000);
+    for (let j = 0; j < 10; j++) await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(settled).toBe(false);
+
+    releaseAdmission();
+    const result = await finish(run);
+    expect(result.isErr()).toBe(true);
+    expect(result._unsafeUnwrapErr().message).toContain('timed out after');
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+    expect(sentBodies).toEqual([]);
+    expect(runs.findByThread('thread')._unsafeUnwrap()[0]).toMatchObject({ status: 'failed' });
+  });
+
   it('bounds Signal state-read retries and returns the last typed database error', async () => {
     const reads = vi.spyOn(queue, 'findById').mockReturnValue(err(new DbError('database is locked')));
     const result = await finish(new AgentRunner(ctx).run(enqueue()));

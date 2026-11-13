@@ -1084,7 +1084,12 @@ export class AgentRunner {
                     if (guard !== undefined) {
                       // Seal new authenticated admission BEFORE waiting for timeout losers.
                       const draining = sealAndDrain();
-                      await Promise.allSettled([queryPromise, returning]);
+                      // Never await queryPromise or returning here: a hung SDK stream leaves next()
+                      // pending, and return() queues behind it. Admitted Signal continuations are
+                      // covered by the bounded drain alone; late stream work is refused by the sealed
+                      // bridge generation and by the closed guard.
+                      queryPromise.catch(() => {});
+                      returning?.catch(() => {});
                       await draining;
                     } else {
                       returning?.catch(() => {});
