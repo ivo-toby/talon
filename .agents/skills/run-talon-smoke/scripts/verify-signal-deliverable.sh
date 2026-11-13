@@ -173,7 +173,7 @@ AC-12  send/list/broadcast/schedule .... tests/unit/tools/host-tools/channel-sen
 AC-13  docs ............................ tests/unit/deploy/starter-bundle.test.ts plus the stage 3 check that the
                                           starter/ and starter-stack/ are clean before and after the tests (fail closed)
 AC-14  focused tests ................... every path in stage 3
-AC-15  real-device evidence ............ NOT covered by this gate (see run-talon-smoke SKILL.md live recipe)
+AC-15  real-device evidence ............ NOT covered by this fake gate; live evidence is recorded separately in docs/signal-channel.md
 Wire   v0.14.9 fixtures ................ tests/unit/channels/connectors/signal/signal-deliverable-conformance.test.ts
                                           (shared fixture module signal-wire-fixtures.mjs parsed by the production parser/policy)
 
@@ -187,4 +187,4 @@ Packaged smoke scenarios NOT driven through dist/index.js (unit fallback only):
 MAP
 
 echo
-echo "verify-signal-deliverable: all stages passed (AC-15 real-device evidence is not claimed)"
+echo "verify-signal-deliverable: all stages passed (this fake gate does not cover AC-15; live evidence is recorded separately in docs/signal-channel.md)"

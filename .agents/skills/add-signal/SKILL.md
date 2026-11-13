@@ -92,8 +92,9 @@ Privacy, before you choose personal mode:
 effective numeric UID. talond checks `process.geteuid` and the socket's UID and
 mode (`src/channels/connectors/signal/signal-socket-trust.ts:39,48,61`). This
 guide covers Linux with systemd-style `/run/user/<uid>` paths. macOS and Windows
-are not covered. The bridge version is exactly 0.14.9. Live validation on your
-target platform is still pending (Step 12).
+are not covered. The bridge version is exactly 0.14.9. Live validation was run once
+on a Debian 13 VM on 2026-11-13 with the JVM build (Step 12). Other platforms are not
+validated.
 
 Install the pinned version yourself from the upstream project
 (https://github.com/AsamK/signal-cli, release v0.14.9). Talon does not install
@@ -533,11 +534,13 @@ bash .agents/skills/run-talon-smoke/scripts/verify-signal-deliverable.sh --no-bu
 
 Fake checks never count as proof of real-device behavior.
 
-## Step 12: Live validation (separate, not performed)
+## Step 12: Live validation (run once, 2026-11-13)
 
-Live validation needs a real account, a real linked device, and your phone. It is
-a separate step, and it has not been run for this channel. Do not describe the
-channel as verified on a real account until it has been done. When you do it:
+Live validation needs a real account, a real linked device, and your phone. It was
+run once on 2026-11-13 on a Debian 13 VM with signal-cli 0.14.9 (JVM build) and a fake
+provider, covering both account modes. Results and remaining gaps are in
+`docs/signal-channel.md`, "Status and evidence". Do not describe the channel as
+verified on other platforms or bridge builds. When you run it yourself:
 
 - Use a disposable account or a disposable chat, and a fake provider persona.
 - Exercise both account modes. In personal mode, exercise Note to Self and a
@@ -630,10 +633,12 @@ Read these before you rely on the channel.
        (`JsonSendMessageResult.java:26-37`).
 
      Print the token only into your own terminal. Never paste it into chat, a
-     ticket, or logs. **This flow is not live-verified.** It has not been run
-     against a challenged account. The pinned sources do not establish whether a
-     second client can connect to the bridge socket while Talon holds its
-     connection. Test it in live validation (Step 12).
+     ticket, or logs. The 2026-11-13 live run resolved a rate-limit challenge with the
+     bridge's own tooling and needed a challenge CAPTCHA (a registration CAPTCHA
+     returned HTTP 400). The run did not record whether Talon held its bridge
+     connection during that step, and the pinned sources do not establish whether a
+     second client can connect while Talon holds its connection. Confirm it on your
+     own setup (Step 12).
 
      **Agent: do not run step 1 yourself. Give it to the operator.**
   2. **Solve the CAPTCHA** at https://signalcaptchas.org/challenge/generate.html.

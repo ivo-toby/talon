@@ -30,7 +30,7 @@ The fake and real paths prove different things. Do not report one as the other.
 | Oracle | Existing terminal smoke, plus frozen upstream wire conformance (`signal-deliverable-conformance.test.ts`) | Observed device behaviour only |
 
 The fake path never proves real account behaviour. Real-device evidence for Signal
-(AC-15) is missing until the live recipe below is run by a human with accounts.
+(AC-15) was recorded on 2026-11-13. See `docs/signal-channel.md`, "Status and evidence".
 
 ## Signal deliverable gate (fake)
 
@@ -66,19 +66,14 @@ proof TTL, and restarts wait for the one-device-check-per-60-seconds budget. The
 scenario fast-forwards the persisted rate-limit pause (at least 15 minutes) by updating
 the disposable SQLite file between rounds.
 
-## Live Signal check (recipe, not executed)
+## Live Signal check (run 2026-11-13)
 
-This recipe has not been run. It needs a real Signal account and a real device, and
-it may send real messages. Do not claim it passed unless a human ran it and recorded
-the redacted evidence. The pending AC-15 gate and its status are in
-`.wdd/epics/signal-channel/research/live-validation-pending.md` (a WDD epic artifact) and
-the operator reference `docs/signal-channel.md` (its "Status and evidence" section; it ships
-on `wdd/signal-channel` and may be absent on older bases).
-
-Scope gaps against AC-15: this recipe does not cover both account modes end to end,
-groups, long replies and chunking, relink, or offline/reconnect limits, and it does not
-record the freshness-rule or self-target metadata observations. AC-15 stays open until a
-human extends and runs it for those.
+This recipe was run on 2026-11-13 on a Debian 13 VM with signal-cli 0.14.9 (JVM build)
+and a fake provider. It covered both account modes, DM and group replies, exclusions,
+echo suppression, offline input, bridge reconnect and Talon restarts. Results and limits
+are in `docs/signal-channel.md`, "Status and evidence". Long replies and chunking, and
+relink, were not exercised live. Keep the recipe for a re-run. It needs a real Signal
+account and a real device, and it may send real messages. Record only redacted counts.
 
 1. Stop any daemon using the Signal config. Keep the account's primary device linked.
 2. Run `talonctl` setup for the chosen account mode (`personal` or `dedicated`). For

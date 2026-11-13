@@ -2,7 +2,7 @@
 
 This is the operator reference for the `signal` channel type. It covers what Talon does with Signal, what you must run yourself, which numbers and commands are real, and what has and has not been proven.
 
-Read the [status](#status-and-evidence) section first. The implementation is fixture-tested. Live-device acceptance (AC-15) has not been run.
+Read the [status](#status-and-evidence) section first. The implementation is fixture-tested, and live-device acceptance (AC-15) was run once on 2026-11-13 with a fake provider. See [Live validation run, 2026-11-13](#live-validation-run-2026-11-13) for what was observed and what was not.
 
 ## Contents
 
@@ -38,9 +38,52 @@ Three different things are easy to confuse. Keep them apart.
 | --- | --- | --- |
 | Unit and contract tests | Focused Vitest suites under `tests/unit/` for config, RPC framing, policy, send classification, queue, reload and CLI | Code behaves as the implementation says, against recorded fixtures |
 | Fake-bridge deliverable gate | `bash .agents/skills/run-talon-smoke/scripts/verify-signal-deliverable.sh --no-build`, added by TASK-013. It runs the packaged daemon against a fake Unix-socket bridge and a no-cost fake provider. | The packaged daemon wires the channel end to end against a fake bridge. It is not live Signal evidence. |
-| Live-device acceptance (AC-15) | Real linked-device runs with signal-cli v0.14.9 covering both account modes, personal entry points, DM and group replies, trigger and authorization exclusion, echo suppression, offline and reconnect behavior, and relinking across restarts | **Not yet run.** No live success is claimed by this document. |
+| Live-device acceptance (AC-15) | Real linked-device runs with signal-cli v0.14.9 covering both account modes, personal entry points, DM and group replies, trigger and authorization exclusion, echo suppression, offline and reconnect behavior, and relinking across restarts | **Run on 2026-11-13** on a Debian 13 VM with signal-cli 0.14.9 (JVM build), with a fake provider. All listed scenarios passed. Long-reply chunking, relinking, attachments, disappearing messages and background-agent sends were not exercised. See [Live validation run, 2026-11-13](#live-validation-run-2026-11-13). |
 
-Source inspection of the pinned signal-cli v0.14.9 tree is evidence for the field shapes Talon parses. It is not evidence of real-device behavior. Several facts are still open until live runs happen: the source device of self-sent echoes, delivery while the bridge is disconnected, unlink behavior, and replay representations.
+Source inspection of the pinned signal-cli v0.14.9 tree is evidence for the field shapes Talon parses. It is not evidence of real-device behavior. The 2026-11-13 run did not settle these: delivery while the bridge is disconnected, unlink behavior, and replay representations. The source device of self-sent echoes is also not settled by that run, though echo suppression passed.
+
+### Live validation run, 2026-11-13
+
+AC-15 was run once on real phones. The results below come from Talon's database counts and content-free daemon logs. No message text, identifiers or tokens are recorded here.
+
+- **Host:** Debian 13 VM (virtual CPU, x86-64-v2). signal-cli 0.14.9 JVM build on Eclipse Temurin JRE 25.
+- **Bridge:** one multi-account `signal-cli daemon` with `--receive-mode=manual`, attachments, stories, avatars and stickers ignored.
+- **Talon:** a fake `codex-cli` provider with a fixed reply. Two channels on the same bridge: a `personal` channel (the operator's account linked as a device) and a `dedicated` channel (a separately registered account).
+
+Observed:
+
+| Scenario | Mode | Result |
+| --- | --- | --- |
+| Note to Self, no trigger (3 inputs) | personal | 3 replies, 3 completed runs |
+| Bridge's own replies in Note to Self | personal | no further runs (echo suppression) |
+| Bridge restart | personal | reconnected in about 40 s, device re-verified, next input answered once |
+| Talon restarts | personal, dedicated | link persisted, no relink needed |
+| Input sent while Talon was stopped | personal | answered once after restart |
+| Selected-chat `!talon` command | personal | 1 reply from the operator's account |
+| Unauthorized sender's `!talon` in the same DM | personal | not admitted, no run |
+| DM `!talon` command | dedicated | 1 reply |
+| DM and group text without trigger | dedicated | not admitted |
+| Group `!talon` command | dedicated | 1 reply (after the fix below) |
+| Unauthorized sender's `!talon` in the group and as a DM | dedicated | not admitted, no run |
+| Replies from the other account | both | seen as unselected DMs and ignored, no loops |
+| Two `talonctl reload` runs | both | both channels back to ready and verified |
+| One bridge serving both accounts | both | both channels ready and verified at the same time |
+
+Totals: personal 4 inbound and 4 outbound; dedicated 4 inbound and 3 outbound; 7 completed runs. Error-level log lines were zero after the setup issues below were corrected.
+
+**Defect found and fixed during the run.** After a group was added to the dedicated channel's `allowedGroups` and `talonctl reload` ran, the group reply was dead-lettered with `TARGET_REFUSED`. Stored channel config was not refreshed on reload, so allowlist expansions never reached the reply target check. Fixed in `4fd1449`. The same command was then answered once.
+
+**Limits of the evidence:**
+
+- Delivery means the bridge accepted the message. Recipient delivery and read state were seen on the phones, but Talon does not guarantee it.
+- The fake provider means these results do not cover model behavior or cost.
+- Not exercised: long replies and chunking, relinking after an unlink, attachments, disappearing messages, and background-agent sends.
+
+**Operator notes:**
+
+- On older or virtual CPUs, use the JVM build. The GraalVM native build refused to start on this VM with a "CPU ISA level is lower than required" error.
+- A brand-new dedicated account may be rate-limit challenged on its first send. Solve it with a **challenge** CAPTCHA from `https://signalcaptchas.org/challenge/generate.html`. A registration CAPTCHA returns HTTP 400. Then follow [Rate limits, challenges and `signal-resume`](#rate-limits-challenges-and-signal-resume).
+- The Unix socket path limit (about 108 bytes) also applies to Talon's own `dataDir` sockets, not only the bridge socket. A long worktree-based data path failed to bind with `EINVAL` during the run. Keep `dataDir` short.
 
 ## What the channel does and does not do
 
@@ -586,7 +629,7 @@ If the saved-delivery summary cannot be read, the line reads `Signal saved: unav
 
 ## Limitations
 
-- **Live evidence.** AC-15 is not collected. The behaviors above are fixture-tested and source-checked, not observed on a live device.
+- **Live evidence.** AC-15 was run once on 2026-11-13 on one Debian 13 VM with a fake provider. See [Live validation run, 2026-11-13](#live-validation-run-2026-11-13). Long-reply chunking, relinking, attachments, disappearing messages and background-agent sends have no live evidence. Other platforms and bridge builds are not validated.
 - **Version.** Only signal-cli v0.14.9 is accepted.
 - **Media.** No attachments, voice, stickers, video, or view-once in either direction.
 - **Not offered.** Group creation and management, contact management, mentions, buttons, reactions, edits, deletes, and read receipts.
