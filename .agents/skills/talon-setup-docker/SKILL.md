@@ -111,6 +111,7 @@ installed `talonctl` if `./install.sh` has been run):
 | `talonctl list-channels` | Configured channels |
 | `talonctl add-channel --name <n> --type <t>` | Add a channel |
 | `talonctl remove-channel --name <n>` | Remove a channel |
+| `talonctl signal-resume --channel <n> --external-challenge-resolved` | Verify an externally resolved Signal challenge (never sends or replays) |
 | `talonctl list-personas` | Configured personas |
 | `talonctl add-persona --name <n>` | Scaffold a persona dir + add to config |
 | `talonctl remove-persona --name <n>` | Remove a persona |
@@ -189,6 +190,7 @@ which env var the user needs to fill:
 | WhatsApp Baileys | (no env, uses QR-code auth at first boot) |
 | Email | IMAP/SMTP credentials (see add-email skill) |
 | Terminal | `TERMINAL_TOKEN` (just `talonctl chat`) |
+| Signal | No env var. Socket-based: the signal-cli bridge runs on the host and the container mounts only its private socket directory (see `/add-signal`, Docker variant) |
 
 Plus the provider env from step 1 (e.g. `ANTHROPIC_API_KEY` for Codex).
 
@@ -337,6 +339,11 @@ Once boot is verified, anything else uses `talonctl`:
 
 - **Add another channel** — invoke the matching channel skill (`/add-slack`,
   `/add-discord`, etc.) OR `talonctl add-channel` directly.
+- **Signal** — invoke `/add-signal`. In the Docker bundle the signal-cli bridge stays
+  on the host (version 0.14.9, operator-supervised), and the `talond` service gets one
+  extra bind mount of the private socket *directory*. Never mount the signal-cli data
+  or key directory, and the container gets no signal-cli authority. Text only. Recreate
+  the container with `docker compose up -d talond` after the mount change.
 - **Add another persona** — `talonctl add-persona --name <n>`, then edit
   the generated `personas/<name>/system.md`.
 - **Bind persona ↔ channel** — `talonctl bind --persona <p> --channel <c>`.
