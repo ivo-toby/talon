@@ -144,7 +144,7 @@ c) Gemini CLI                        — Google's CLI, preinstalled in the image
 d) Codex CLI                         — OpenAI's CLI, preinstalled in the image
 ```
 
-All four work out of the box. `claude` (bundled in the Agent SDK),
+All four work out of the box. `claude` (native binary shipped with the Agent SDK),
 `codex`, and `gemini` ship in the container image; `openai-compatible`
 runs in-process.
 
