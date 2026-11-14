@@ -50,7 +50,7 @@ export interface SubAgentManifest {
   model: {
     /** AI provider identifier (e.g. `anthropic`, `openai`, `google`). */
     provider: string;
-    /** Model name as understood by the provider (e.g. `claude-haiku-4-5-20251001`). */
+    /** Model name as understood by the provider (e.g. `claude-haiku-5-5`). */
     name: string;
     /** Maximum output tokens per generation. */
     maxTokens: number;

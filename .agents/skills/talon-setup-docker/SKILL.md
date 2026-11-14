@@ -210,7 +210,7 @@ Find:
 ```yaml
 personas:
   - name: assistant
-    model: Codex-sonnet-4-6
+    model: Codex-sonnet-5-5
     provider: Codex
 ```
 

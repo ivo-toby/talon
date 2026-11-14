@@ -4,7 +4,7 @@ description: "Compresses a long conversation transcript into key facts, decision
 
 model:
   provider: anthropic
-  name: claude-sonnet-4-6
+  name: claude-sonnet-5-5
   maxTokens: 32768
 
 requiredCapabilities: []

@@ -72,7 +72,7 @@ sandbox:
 ```yaml
 personas:
   - name: assistant
-    model: claude-sonnet-4-6
+    model: claude-sonnet-5-5
     provider: claude-code
     systemPromptFile: personas/assistant/system.md
     skills:
@@ -96,7 +96,7 @@ personas:
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `name` | string | required | Persona name |
-| `model` | string | `claude-sonnet-4-6` | Model identifier |
+| `model` | string | `claude-sonnet-5-5` | Model identifier |
 | `provider` | string | — | Optional provider override |
 | `systemPromptFile` | string | — | Path to `system.md` |
 | `skills` | string[] | `[]` | Attached skill names |
@@ -488,7 +488,7 @@ subagents:
       - provider: ollama
         name: qwen3-30b
       - provider: anthropic
-        name: claude-haiku-4-5-20251001
+        name: claude-haiku-5-5
 ```
 
 | Field | Type | Default | Description |

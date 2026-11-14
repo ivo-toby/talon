@@ -121,7 +121,7 @@ const PersonaExecutionEnvSchema = z.object({
 
 export const PersonaConfigSchema = z.object({
   name: z.string().min(1),
-  model: z.string().default('claude-sonnet-4-6'),
+  model: z.string().default('claude-sonnet-5-5'),
   provider: z.string().trim().min(1).optional(),
   reasoningEffort: ReasoningEffortSchema.optional(),
   /**
