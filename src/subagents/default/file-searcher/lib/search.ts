@@ -149,7 +149,8 @@ function searchWithRg(
           resolve([]);
           return;
         }
-        reject(error);
+        const failure: Error = error;
+        reject(failure);
         return;
       }
 
@@ -262,7 +263,8 @@ function searchWithGrep(
           resolve([]);
           return;
         }
-        reject(error);
+        const failure: Error = error;
+        reject(failure);
         return;
       }
 
@@ -405,8 +407,9 @@ async function listFiles(dir: string, extensions: string[]): Promise<string[]> {
     if (!entry.isFile()) continue;
     const ext = extname(entry.name).toLowerCase();
     if (!extensions.includes(ext)) continue;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const parent: string = (entry as any).parentPath ?? (entry as any).path;
+    // `parentPath` is Node 20.12+; `path` is the older alias for the same value.
+    const dirent = entry as unknown as { parentPath?: string; path?: string };
+    const parent: string = dirent.parentPath ?? dirent.path ?? dir;
     const fullPath = join(parent, entry.name);
     results.push(fullPath);
   }

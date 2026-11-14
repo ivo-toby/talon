@@ -17,7 +17,6 @@ import type { DiscordConfig } from '../channels/connectors/discord/discord-types
 import { WhatsAppConnector } from '../channels/connectors/whatsapp-business/whatsapp-connector.js';
 import type { WhatsAppConfig } from '../channels/connectors/whatsapp-business/whatsapp-types.js';
 import { WhatsAppBaileysConnector } from '../channels/connectors/whatsapp-baileys/whatsapp-baileys-connector.js';
-import type { WhatsAppBaileysConfig } from '../channels/connectors/whatsapp-baileys/whatsapp-baileys-types.js';
 import { EmailConnector } from '../channels/connectors/email/email-connector.js';
 import type { EmailConfig } from '../channels/connectors/email/email-types.js';
 import { TerminalConnector } from '../channels/connectors/terminal/terminal-connector.js';
@@ -66,7 +65,7 @@ export function createConnector(
       });
     case 'whatsappBaileys':
       return new WhatsAppBaileysConnector(
-        config as unknown as WhatsAppBaileysConfig,
+        config,
         name,
         logger,
         imageSettings,

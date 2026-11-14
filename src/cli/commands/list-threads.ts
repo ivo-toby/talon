@@ -61,10 +61,10 @@ export function listThreads(options: ListThreadsOptions): ThreadSummary[] {
   return summaries;
 }
 
-export async function listThreadsCommand(options: {
+export function listThreadsCommand(options: {
   channel: string;
   configPath?: string;
-}): Promise<void> {
+}): void {
   const configPath = options.configPath ?? DEFAULT_CONFIG_PATH;
   const configResult = loadConfig(configPath);
   if (configResult.isErr()) {

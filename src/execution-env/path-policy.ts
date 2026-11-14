@@ -61,7 +61,7 @@ export function resolveAllowedHostPath(
 }
 
 function resolveRelativeHostPath(candidatePath: string, normalizedRoots: string[]): string {
-  const fallback = canonicalizePath(resolve(normalizedRoots[0]!, candidatePath));
+  const fallback = canonicalizePath(resolve(normalizedRoots[0], candidatePath));
 
   for (const root of normalizedRoots) {
     const candidate = canonicalizePath(resolve(root, candidatePath));

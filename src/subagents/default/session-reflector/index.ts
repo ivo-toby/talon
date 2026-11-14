@@ -45,7 +45,7 @@ export async function run(
 
     return ok({
       summary: 'Observations consolidated',
-      data: { consolidatedLog: text } as unknown as Record<string, unknown>,
+      data: { consolidatedLog: text },
       usage: {
         inputTokens: usage?.inputTokens ?? 0,
         outputTokens: usage?.outputTokens ?? 0,

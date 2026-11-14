@@ -788,7 +788,7 @@ export class ContextRoller {
     // reflects the most recent rotation state.
     const maxRotatedThroughTs = allObservations.reduce<number | null>((acc, obs) => {
       try {
-        const meta = JSON.parse(obs.metadata);
+        const meta = JSON.parse(obs.metadata) as Record<string, unknown>;
         const ts = Number(meta.rotatedThroughTs);
         if (Number.isFinite(ts)) return acc === null ? ts : Math.max(acc, ts);
       } catch { /* ignore */ }
@@ -804,7 +804,7 @@ export class ContextRoller {
     let carriedSuggestedContinuation: string | undefined;
     let carriedTaskComplete: boolean | undefined;
     try {
-      const newestMeta = JSON.parse(allObservations[0].metadata);
+      const newestMeta = JSON.parse(allObservations[0].metadata) as Record<string, unknown>;
       if (typeof newestMeta.taskComplete === 'boolean') {
         carriedTaskComplete = newestMeta.taskComplete;
       }
@@ -924,24 +924,6 @@ export class ContextRoller {
       );
       return '';
     }
-  }
-
-  private async buildObservationTranscript(
-    threadId: string,
-    scheduleMessages: MessageRow[],
-    threadMetadata?: string | null,
-    channelId?: string,
-    maxChars: number = MAX_TRANSCRIPT_CHARS,
-  ): Promise<string> {
-    return this.buildObservationTranscriptWithDiagnostics(
-      threadId,
-      scheduleMessages,
-      threadMetadata,
-      channelId,
-      undefined,
-      this.deps.logger,
-      maxChars,
-    );
   }
 
   private buildObservationTranscriptWithDiagnostics(
@@ -1114,7 +1096,7 @@ export class ContextRoller {
       const role = msg.direction === 'inbound' ? 'user' : 'assistant';
       let body: string;
       try {
-        const parsed = JSON.parse(msg.content);
+        const parsed = JSON.parse(msg.content) as Record<string, unknown>;
         body = typeof parsed.body === 'string' ? parsed.body : msg.content;
       } catch {
         body = msg.content;
