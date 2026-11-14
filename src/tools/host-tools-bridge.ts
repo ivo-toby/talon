@@ -15,7 +15,7 @@ import type { ToolCallResult } from './tool-types.js';
 import type { ToolExecutionContext } from './host-tools/channel-send.js';
 import { ScheduleManageHandler, type ScheduleManageArgs } from './host-tools/schedule-manage.js';
 import { ChannelSendHandler, type ChannelSendArgs } from './host-tools/channel-send.js';
-import { ChannelListHandler, type ChannelListArgs } from './host-tools/channel-list.js';
+import { ChannelListHandler } from './host-tools/channel-list.js';
 import {
   ChannelBroadcastHandler,
   type ChannelBroadcastArgs,
@@ -32,7 +32,6 @@ import { BackgroundAgentHandler, type BackgroundAgentArgs } from './host-tools/b
 import {
   ImageLookupHandler,
   type ImageLookupAccess,
-  type ImageLookupArgs,
   type ImageLookupFindings,
 } from './host-tools/image-lookup.js';
 import { ExecutionEnvHandler, type ExecutionEnvArgs } from './host-tools/execution-env.js';
@@ -794,7 +793,7 @@ export class HostToolsBridge {
         return this.channelHandler.execute(args as unknown as ChannelSendArgs, context);
 
       case 'channel.list':
-        return this.channelListHandler.execute(args as unknown as ChannelListArgs, context);
+        return this.channelListHandler.execute(args, context);
 
       case 'channel.broadcast':
         return this.channelBroadcastHandler.execute(
@@ -892,7 +891,7 @@ export class HostToolsBridge {
             error: 'Image lookup service not initialized',
           };
         }
-        return this.imageLookupHandler.execute(args as unknown as ImageLookupArgs, context);
+        return this.imageLookupHandler.execute(args, context);
 
       default:
         return {

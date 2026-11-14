@@ -125,7 +125,7 @@ export async function extractImageExif(
     };
     parsed = await exifr.parse(
       tiff,
-      parseOptions as unknown as Parameters<typeof exifr.parse>[1],
+      parseOptions,
     );
   } catch (cause) {
     // A rejection while decoding a header-valid block is a decoder failure

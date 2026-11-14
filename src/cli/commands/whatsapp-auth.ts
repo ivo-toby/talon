@@ -40,13 +40,15 @@ export async function whatsappAuthCommand(options: WhatsAppAuthOptions): Promise
   // Dynamic import — qrcode-terminal is an optional dependency like Baileys itself.
   const qrMod = await import('qrcode-terminal').catch(() => null);
   // CJS module — generate lives on .default when imported via ESM dynamic import.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const qrTerminal: any = qrMod && ('default' in qrMod ? qrMod.default : qrMod);
+  const qrTerminal = (qrMod && ('default' in qrMod ? qrMod.default : qrMod)) as
+    | { generate: (qr: string, opts: { small: boolean }) => void }
+    | null
+    | undefined;
 
   // Build a noop logger that satisfies Baileys' pino interface.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const noop = (): any => {};
-  const noopLogger = new Proxy({} as Record<string, unknown>, {
+  const noopLogger = new Proxy({}, {
     get(_target, prop) {
       if (prop === 'level') return 'silent';
       if (prop === 'child') return () => noopLogger;
@@ -75,23 +77,23 @@ export async function whatsappAuthCommand(options: WhatsAppAuthOptions): Promise
       auth: state,
       version,
       browser: Browsers.appropriate('Talon'),
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      logger: noopLogger as any,
+      logger: noopLogger as unknown as Parameters<typeof makeWASocket>[0]['logger'],
       markOnlineOnConnect: false,
     });
 
-    sock.ev.on('creds.update', saveCreds);
+    sock.ev.on('creds.update', () => {
+      void saveCreds();
+    });
 
     // Wait for this socket attempt to resolve.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     const result = await new Promise<{ status: 'open' } | { status: 'retry'; code?: number } | { status: 'fatal'; message: string }>((resolve) => {
       const timer = setTimeout(() => {
-        sock.end(undefined);
+        sock.end(undefined).catch(() => { /* ignore */ });
         resolve({ status: 'fatal', message: `Timeout: no scan received within ${timeout}s.` });
       }, Math.max(deadline - Date.now(), 0));
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      sock.ev.on('connection.update', (update: any) => {
+      sock.ev.on('connection.update', (update) => {
         const { connection, lastDisconnect, qr } = update;
 
         if (qr) {
@@ -132,14 +134,14 @@ export async function whatsappAuthCommand(options: WhatsAppAuthOptions): Promise
       // show "logging in" even though credentials were saved locally.
       console.log('\nAuthenticated — waiting for handshake to complete...');
       await new Promise((r) => setTimeout(r, 3000));
-      try { sock.end(undefined); } catch { /* ignore */ }
+      try { await sock.end(undefined); } catch { /* ignore */ }
       console.log(`Credentials saved to "${authDir}".`);
       console.log('You can now start talond — no QR code will be needed.');
       return;
     }
 
     // Clean up this socket before potentially creating a new one.
-    try { sock.end(undefined); } catch { /* already closed */ }
+    try { await sock.end(undefined); } catch { /* already closed */ }
 
     if (result.status === 'fatal') {
       console.error(result.message);

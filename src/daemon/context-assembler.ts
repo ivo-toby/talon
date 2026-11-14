@@ -408,7 +408,7 @@ export class ContextAssembler {
     // avoids dropping messages that arrived during summarizer latency.
     const boundaryFromMeta = (rawMetadata: string, fallback: number): number => {
       try {
-        const meta = JSON.parse(rawMetadata);
+        const meta = JSON.parse(rawMetadata) as Record<string, unknown>;
         const ts = Number(meta.rotatedThroughTs);
         return Number.isFinite(ts) ? ts : fallback;
       } catch {
@@ -445,7 +445,7 @@ export class ContextAssembler {
       rotationBoundary = boundaryFromMeta(newest.metadata, newest.created_at);
       let continuationHint = '';
       try {
-        const meta = JSON.parse(newest.metadata);
+        const meta = JSON.parse(newest.metadata) as Record<string, unknown>;
         // Only surface hints when the observer explicitly flagged the task
         // as incomplete. A missing `taskComplete` (legacy observations) is
         // treated as "not complete" so older hints still render — previous
@@ -453,8 +453,8 @@ export class ContextAssembler {
         const completed = meta.taskComplete === true;
         if (!completed) {
           const parts: string[] = [];
-          if (meta.currentTask) parts.push(`**Current task:** ${meta.currentTask}`);
-          if (meta.suggestedContinuation) parts.push(`**Next step:** ${meta.suggestedContinuation}`);
+          if (typeof meta.currentTask === 'string' && meta.currentTask) parts.push(`**Current task:** ${meta.currentTask}`);
+          if (typeof meta.suggestedContinuation === 'string' && meta.suggestedContinuation) parts.push(`**Next step:** ${meta.suggestedContinuation}`);
           if (parts.length > 0) continuationHint = `\n\n${parts.join('\n')}`;
         }
       } catch { /* ignore parse errors */ }
@@ -665,7 +665,7 @@ export class ContextAssembler {
         const role = msg.direction === 'inbound' ? 'user' : 'agent';
         let body: string;
         try {
-          const parsed = JSON.parse(msg.content);
+          const parsed = JSON.parse(msg.content) as Record<string, unknown>;
           body = typeof parsed.body === 'string' ? parsed.body : msg.content;
         } catch {
           body = msg.content;

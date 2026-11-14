@@ -2383,6 +2383,8 @@ function closeReason(reason: VoiceCloseReason): 'hangup' | 'logout' | 'deadline'
 }
 
 function latestSidebandUsage(sideband: LiveVoiceSideband | undefined): VoiceUsageUpdate | undefined {
+  // Widening cast: probes optional fields that some sideband implementations expose.
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion
   const candidate = sideband as
     | (LiveVoiceSideband & { latestUsage?: VoiceUsageUpdate; usage?: VoiceUsageUpdate })
     | undefined;
@@ -2393,6 +2395,7 @@ function finalizationFromRuntime(
   runtime: SessionRuntime | undefined,
   usage: VoiceUsageUpdate | undefined,
 ): VoiceSessionRecord['finalization'] {
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion
   const candidate = runtime?.sideband as
     | (LiveVoiceSideband & { finalizationStatus?: 'pending' | 'confirmed' | 'incomplete' })
     | undefined;

@@ -83,7 +83,7 @@ export async function reloadCommand(options: {
     return;
   }
 
-  displayReloadResult((response.data ?? {}) as Partial<DaemonReloadData>);
+  displayReloadResult((response.data ?? {}));
 }
 
 // ---------------------------------------------------------------------------

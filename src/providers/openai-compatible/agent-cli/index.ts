@@ -272,7 +272,7 @@ async function main(): Promise<void> {
           ? { previousResponseId: input.previousResponseId }
           : {}),
         ...(input.providerOptions?.[providerId]
-          ? { providerOptions: input.providerOptions[providerId] as Record<string, unknown> }
+          ? { providerOptions: input.providerOptions[providerId] }
           : {}),
         ...(input.reasoningEffort ? { reasoningEffort: input.reasoningEffort } : {}),
         tools: { ...combinedTools, ...workspaceTools },

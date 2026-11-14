@@ -219,7 +219,7 @@ function responseSchema(options: LanguageModelV3CallOptions): unknown {
   if (options.responseFormat?.type !== 'json') {
     return undefined;
   }
-  return options.responseFormat.schema as unknown;
+  return options.responseFormat.schema;
 }
 
 function subscriptionCliEnvironment(): NodeJS.ProcessEnv {

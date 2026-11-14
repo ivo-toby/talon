@@ -610,7 +610,7 @@ export class SkillLoader {
         );
       }
 
-      manifests.push(parseResult.data as ToolManifest);
+      manifests.push(parseResult.data);
       this.logger.debug({ skill: skillName, file }, 'tool manifest loaded');
     }
 

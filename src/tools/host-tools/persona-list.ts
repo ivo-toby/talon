@@ -48,6 +48,7 @@ export class PersonaListHandler {
     },
   ) {}
 
+  // eslint-disable-next-line @typescript-eslint/require-await -- handler interface is async; this one is synchronous
   async execute(_args: PersonaListArgs, context: ToolExecutionContext): Promise<ToolCallResult> {
     const requestId = context.requestId ?? 'unknown';
 

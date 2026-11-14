@@ -829,8 +829,8 @@ program
   )
   .requiredOption('--channel <name>', 'Channel name')
   .option('--config <path>', 'Path to talond.yaml', DEFAULT_CONFIG_PATH)
-  .action(async (opts: { channel: string; config: string }) => {
-    await listThreadsCommand({
+  .action((opts: { channel: string; config: string }) => {
+    listThreadsCommand({
       channel: opts.channel,
       configPath: opts.config,
     });

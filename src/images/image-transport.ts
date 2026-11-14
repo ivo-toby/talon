@@ -444,14 +444,6 @@ function metadata(request: ImageFetchRequest): { mimeType?: string; filename?: s
 // Helpers
 // ---------------------------------------------------------------------------
 
-/**
- * `Readable.fromWeb` parameter as @types/node declares it. The global
- * `ReadableStream` and the `node:stream/web` one are two structurally
- * identical declarations of the same runtime class, so a cast at this single
- * boundary is needed and safe.
- */
-type WebReadableInput = Parameters<typeof NodeReadable.fromWeb>[0];
-
 /** Node readables expose `read`; Web `ReadableStream`s do not. */
 function isNodeReadable(stream: MediaStream): stream is Readable {
   return typeof (stream as Readable).read === 'function';
@@ -462,7 +454,7 @@ function toNodeReadable(stream: MediaStream): Readable {
   if (isNodeReadable(stream)) {
     return stream;
   }
-  return NodeReadable.fromWeb(stream as unknown as WebReadableInput);
+  return NodeReadable.fromWeb(stream);
 }
 
 /** Destroy/cancel any stream family without throwing. */
