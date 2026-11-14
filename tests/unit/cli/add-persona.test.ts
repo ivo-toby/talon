@@ -329,7 +329,7 @@ describe('addPersona()', () => {
 
     expect(result).toEqual({
       name: 'assistant',
-      model: 'claude-sonnet-4-6',
+      model: 'claude-sonnet-5-5',
       systemPromptFile: join(personasDir, 'assistant', 'system.md'),
       skills: [],
       capabilities: {
@@ -346,7 +346,7 @@ describe('addPersona()', () => {
     const personas = doc.personas as Array<Record<string, unknown>>;
     expect(personas[0]).toEqual({
       name: 'assistant',
-      model: 'claude-sonnet-4-6',
+      model: 'claude-sonnet-5-5',
       systemPromptFile: join(personasDir, 'assistant', 'system.md'),
       skills: [],
       capabilities: {
@@ -373,7 +373,7 @@ describe('addPersona()', () => {
     expect(personas[0]).not.toHaveProperty('provider');
 
     const entry = personas[0] as Record<string, unknown>;
-    expect(entry.model).toBe('claude-sonnet-4-6');
+    expect(entry.model).toBe('claude-sonnet-5-5');
     expect(entry.skills).toEqual([]);
 
     const capabilities = entry.capabilities as Record<string, unknown>;

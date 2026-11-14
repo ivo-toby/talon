@@ -119,8 +119,9 @@ RUN node --input-type=module -e 'import sharp from "sharp"; const jpeg = await s
 # Install the CLI-based agent providers globally so the `codex-cli` and
 # `gemini-cli` provider strategies work out of the box (their config
 # `command:` resolves `codex` / `gemini` from PATH). The `claude-code`
-# provider needs nothing here — the Claude Code CLI ships bundled inside
-# the `@anthropic-ai/claude-agent-sdk` npm dependency.
+# provider needs nothing here — the native Claude Code binary ships as a
+# per-platform optional dependency of `@anthropic-ai/claude-agent-sdk`
+# (installed by `npm ci --omit=dev` above; do not add --omit=optional).
 RUN npm install -g @openai/codex @google/gemini-cli && \
     npm cache clean --force
 

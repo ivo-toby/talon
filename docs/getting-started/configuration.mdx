@@ -31,7 +31,7 @@ storage:
 
 personas:
   - name: assistant
-    model: claude-sonnet-4-6
+    model: claude-sonnet-5-5
     systemPromptFile: personas/assistant/system.md
     capabilities:
       allow:
@@ -64,7 +64,7 @@ dataDir: data
 ```yaml
 personas:
   - name: assistant
-    model: claude-sonnet-4-6
+    model: claude-sonnet-5-5
     provider: claude-code
     systemPromptFile: personas/assistant/system.md
     skills:
@@ -88,7 +88,7 @@ personas:
 
 Key points:
 
-- `model` defaults to `claude-sonnet-4-6`
+- `model` defaults to `claude-sonnet-5-5`
 - `provider` is optional and overrides the default foreground provider for that persona
 - `skills` and `subagents` default to empty arrays
 - capability labels are default-deny; grant only what the persona needs

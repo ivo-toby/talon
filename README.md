@@ -401,7 +401,7 @@ backgroundAgent:
 
 personas:
   - name: assistant
-    model: claude-sonnet-4-6
+    model: claude-sonnet-5-5
     systemPromptFile: personas/assistant/system.md
     skills: []
     subagents:
@@ -564,7 +564,7 @@ personas:
     model: qwen3-coder:30b
     provider: openai-compatible # foreground stays on Ollama
     backgroundProvider: claude-code # background runs on Claude Code
-    backgroundModel: claude-sonnet-4-6
+    backgroundModel: claude-sonnet-5-5
   - name: work-context-manager
     model: qwen3-coder:30b
     provider: openai-compatible
@@ -975,7 +975,7 @@ A persona defines an AI agent's identity, capabilities, and channel bindings. Bi
 personas:
   - name: alfred
     description: Personal assistant
-    model: claude-sonnet-4-6
+    model: claude-sonnet-5-5
     provider: claude-code
     # Optional for Codex CLI and OpenAI-compatible Responses personas.
     # OpenAI Responses: none, minimal, low, medium, high, xhigh, max, ultra.
@@ -1288,7 +1288,7 @@ subagents:
         # maxTokens: 4096     # optional — falls back to subagent.yaml default
         # timeoutMs: 120000   # optional per-model wall-clock timeout (min 1000)
       - provider: anthropic
-        name: claude-haiku-4-5-20251001
+        name: claude-haiku-5-5
   session-summarizer:
     model:
       - provider: openai
@@ -1342,13 +1342,13 @@ subagents:
   session-summarizer:
     model:
       - provider: claude-code
-        name: claude-sonnet-4-6
+        name: claude-sonnet-5-5
         timeoutMs: 60000
       - provider: codex-sandbox
         name: gpt-5.6-terra
         timeoutMs: 60000
       - provider: anthropic # ordinary API fallback, if configured
-        name: claude-haiku-4-5-20251001
+        name: claude-haiku-5-5
 ```
 
 Each attempt is a single isolated generation, not an agent run: no Talon host
@@ -1468,7 +1468,7 @@ subagents:
           chat_template_kwargs:
             enable_thinking: false
       - provider: anthropic
-        name: claude-sonnet-4-6
+        name: claude-sonnet-5-5
         timeoutMs: 60000
         # no providerOptions on the fallback — Claude would drop them anyway
 ```
@@ -1479,14 +1479,14 @@ The runner wraps `providerOptions` under the active model entry's provider name 
 
 | Name                 | Default model               | Description                                                   |
 | -------------------- | --------------------------- | ------------------------------------------------------------- |
-| `file-searcher`      | `claude-haiku-4-5-20251001` | Search files by content, return ranked results with snippets  |
-| `memory-retriever`   | `claude-haiku-4-5-20251001` | Find relevant memories via keyword pre-filter + LLM rerank    |
-| `memory-groomer`     | `claude-haiku-4-5-20251001` | Prune stale, consolidate duplicate memory items               |
-| `session-summarizer` | `claude-sonnet-4-6`         | Compress transcripts for rolling context window (legacy)      |
-| `session-observer`   | `claude-sonnet-4-6`         | Generate dated, prioritized observations for long-term memory |
-| `session-reflector`  | `claude-sonnet-4-6`         | Consolidate observations when log grows too large             |
+| `file-searcher`      | `claude-haiku-5-5`          | Search files by content, return ranked results with snippets  |
+| `memory-retriever`   | `claude-haiku-5-5`          | Find relevant memories via keyword pre-filter + LLM rerank    |
+| `memory-groomer`     | `claude-haiku-5-5`          | Prune stale, consolidate duplicate memory items               |
+| `session-summarizer` | `claude-sonnet-5-5`         | Compress transcripts for rolling context window (legacy)      |
+| `session-observer`   | `claude-sonnet-5-5`         | Generate dated, prioritized observations for long-term memory |
+| `session-reflector`  | `claude-sonnet-5-5`         | Consolidate observations when log grows too large             |
 | `spark-coder`        | `gpt-5.4-spark`             | Fast single-shot code generation (requires `OPENAI_API_KEY`)  |
-| `vision`             | `claude-haiku-4-5-20251001` | One-shot multimodal Inspection of thread Images (see [Images](#images)) |
+| `vision`             | `claude-haiku-5-5`          | One-shot multimodal Inspection of thread Images (see [Images](#images)) |
 
 Sub-agents are loaded from three locations at startup (later overrides earlier):
 
@@ -1545,7 +1545,7 @@ All five built-in sub-agents forward both fields. Copy the pattern above when au
 
 |                           |                                                                           |
 | ------------------------- | ------------------------------------------------------------------------- |
-| **Model**                 | Haiku 4.5                                                                 |
+| **Model**                 | Haiku 5.5                                                                 |
 | **Required capabilities** | `fs.read:*`                                                               |
 | **Timeout**               | 30s                                                                       |
 | **Input**                 | `{ query, rootPaths?, extensions?, maxFileSize?, maxResultsWithoutLlm? }` |
@@ -1561,7 +1561,7 @@ The search cascade tries `rg --json` first (fastest, with `--ignore-case`, `--ma
 
 |                           |                                                           |
 | ------------------------- | --------------------------------------------------------- |
-| **Model**                 | Haiku 4.5                                                 |
+| **Model**                 | Haiku 5.5                                                 |
 | **Required capabilities** | `memory.access:*`                                         |
 | **Timeout**               | 30s                                                       |
 | **Input**                 | `{ query, topK?, threshold? }`                            |
@@ -1577,7 +1577,7 @@ If fewer than 10 keyword matches are found, they're returned directly without LL
 
 |                           |                                                                 |
 | ------------------------- | --------------------------------------------------------------- |
-| **Model**                 | Haiku 4.5                                                       |
+| **Model**                 | Haiku 5.5                                                       |
 | **Required capabilities** | `memory.access:*`                                               |
 | **Timeout**               | 30s                                                             |
 | **Input**                 | `{ periodMs?, protectedKeyPrefixes? }` (optional: only groom items from the last N ms; skip keys starting with any given prefix) |
@@ -1595,7 +1595,7 @@ Uses `generateObject` with a Zod discriminated union schema to ensure the LLM re
 
 |                           |                                                                  |
 | ------------------------- | ---------------------------------------------------------------- |
-| **Model**                 | Haiku 4.5                                                        |
+| **Model**                 | Sonnet 5.5                                                        |
 | **Required capabilities** | none                                                             |
 | **Timeout**               | 30s                                                              |
 | **Input**                 | `{ transcript }`                                                 |
@@ -1628,7 +1628,7 @@ This sub-agent is only loaded when `OPENAI_API_KEY` is set in the environment. P
 
 |                           |                                                                                                    |
 | ------------------------- | ---------------------------------------------------------------------------------------------------- |
-| **Model**                 | Claude Haiku 4.5 (Anthropic) — override under `subagents.vision.model`                             |
+| **Model**                 | Claude Haiku 5.5 (Anthropic) — override under `subagents.vision.model`                             |
 | **Required capabilities** | none (gated by persona assignment + `subagent.invoke`)                                             |
 | **Timeout**               | 60s                                                                                                  |
 | **Input**                 | `{ imageIds: string[], question: string }`                                                          |
@@ -1756,7 +1756,7 @@ Personas must declare which sub-agents they can invoke and have the `subagent.in
 ```yaml
 personas:
   - name: assistant
-    model: claude-sonnet-4-6
+    model: claude-sonnet-5-5
     subagents:
       - session-summarizer
       - memory-groomer
@@ -2172,7 +2172,7 @@ exponents); the CLI rejects invalid values before writing any file.
 ```bash
 npx talonctl setup --config talond.yaml --data-dir data
 npx talonctl add-channel --name work-slack --type slack
-npx talonctl add-persona --name researcher --model claude-sonnet-4-6 --provider claude-code \
+npx talonctl add-persona --name researcher --model claude-sonnet-5-5 --provider claude-code \
   --capabilities "channel.send:slack,fs.read:*" --skills web-search
 npx talonctl add-skill --name web-search --persona researcher --format skillmd
 npx talonctl add-mcp --skill web-search --name tavily \
@@ -3091,7 +3091,7 @@ The persona that spawns sandboxed background agents needs both `subagent.backgro
 ```yaml
 personas:
   - name: software-engineer
-    model: claude-sonnet-4-6
+    model: claude-sonnet-5-5
     capabilities:
       allow:
         - subagent.background

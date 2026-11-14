@@ -83,7 +83,7 @@ channels:
 #   background_agent spawn profile="code-reviewer" prompt="Review PR #42"
 personas:
   - name: assistant
-    model: claude-sonnet-4-6
+    model: claude-sonnet-5-5
     provider: claude-code
     # Optional: override provider/model for background_agent spawns.
     # Useful when the foreground stack (e.g. Ollama) is not suitable for
@@ -92,7 +92,7 @@ personas:
     # provider is not enabled there. backgroundModel must be paired with
     # backgroundProvider.
     # backgroundProvider: claude-code
-    # backgroundModel: claude-sonnet-4-6
+    # backgroundModel: claude-sonnet-5-5
     systemPromptFile: personas/assistant/system.md
     skills: []
     subagents:
@@ -501,11 +501,11 @@ langfuse:
 #         name: qwen3-30b
 #         # maxTokens: 4096     # optional — falls back to subagent.yaml default
 #       - provider: anthropic
-#         name: claude-haiku-4-5-20251001
+#         name: claude-haiku-5-5
 #   session-summarizer:
 #     model:
 #       - provider: claude-code
-#         name: claude-sonnet-4-6
+#         name: claude-sonnet-5-5
 #         timeoutMs: 60000
 #       - provider: codex-sandbox
 #         name: gpt-5.6-terra
@@ -528,7 +528,7 @@ langfuse:
 #           chat_template_kwargs:
 #             enable_thinking: false
 #       - provider: anthropic
-#         name: claude-sonnet-4-6
+#         name: claude-sonnet-5-5
 #         timeoutMs: 60000
 #         # No providerOptions on the fallback — Claude does not accept
 #         # chat_template_kwargs and would silently drop them.
@@ -545,7 +545,7 @@ langfuse:
 #   vision:
 #     model:
 #       - provider: anthropic
-#         name: claude-sonnet-4-6
+#         name: claude-sonnet-5-5
 #         timeoutMs: 60000
 #       - provider: openai          # failover keeps every image part
 #         name: gpt-5.4

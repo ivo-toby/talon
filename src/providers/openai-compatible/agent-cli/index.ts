@@ -211,7 +211,7 @@ async function main(): Promise<void> {
         tools: workspaceToolsConfig,
       });
       await workspace.init();
-      workspaceTools = createWorkspaceTools(workspace) as Record<
+      workspaceTools = (await createWorkspaceTools(workspace)) as Record<
         string,
         Tool<unknown, unknown, unknown, unknown>
       >;

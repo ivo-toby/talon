@@ -34,7 +34,7 @@ Personas are independent AI agent profiles, each with their own identity, model,
 - **System prompt** from `personas/<name>/system.md`
 - **Personality fragments** from `personas/<name>/personality/*.md`, concatenated in sort order
 - **Task prompt files** from `personas/<name>/prompts/*.md`, loaded on demand for scheduled tasks
-- **Model selection** per persona (e.g., `claude-sonnet-4-6`)
+- **Model selection** per persona (e.g., `claude-sonnet-5-5`)
 - **Skill attachment** with capability intersection at runtime
 - **Sub-agent assignment** with explicit persona-level grants
 - **MCP server binding** per persona via `talonctl add-mcp`
@@ -132,12 +132,12 @@ Offloads mechanical LLM tasks to cheap models. The main agent delegates via `sub
 
 ### Built-in sub-agents
 
-| Sub-Agent            | Model     | Purpose                                            |
-| -------------------- | --------- | -------------------------------------------------- |
-| `session-summarizer` | Haiku 4.5 | Compress transcripts into structured summaries     |
-| `memory-groomer`     | Haiku 4.5 | Consolidate/prune stale memory items               |
-| `memory-retriever`   | Haiku 4.5 | Find relevant memories via keyword + LLM reranking |
-| `file-searcher`      | Haiku 4.5 | Search files with rg/grep/node cascade + LLM rank  |
+| Sub-Agent            | Model      | Purpose                                            |
+| -------------------- | ---------- | -------------------------------------------------- |
+| `session-summarizer` | Sonnet 5.5 | Compress transcripts into structured summaries     |
+| `memory-groomer`     | Haiku 5.5  | Consolidate/prune stale memory items               |
+| `memory-retriever`   | Haiku 5.5  | Find relevant memories via keyword + LLM reranking |
+| `file-searcher`      | Haiku 5.5  | Search files with rg/grep/node cascade + LLM rank  |
 
 ### Sub-agent features
 

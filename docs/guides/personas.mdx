@@ -12,7 +12,7 @@ A persona is Talon's runtime identity for an agent: system prompt, optional prov
 ```yaml
 personas:
   - name: assistant
-    model: claude-sonnet-4-6
+    model: claude-sonnet-5-5
     provider: claude-code
     systemPromptFile: personas/assistant/system.md
     skills:
@@ -97,10 +97,10 @@ Built-in sub-agents in this repo:
 
 | Name | Model | Purpose |
 |---|---|---|
-| `session-summarizer` | `claude-sonnet-4-6` | Compress conversation history |
-| `memory-retriever` | `claude-haiku-4-5-20251001` | Retrieve relevant memory entries |
-| `memory-groomer` | `claude-haiku-4-5-20251001` | Prune and consolidate memory |
-| `file-searcher` | `claude-haiku-4-5-20251001` | Search files and return snippets |
+| `session-summarizer` | `claude-sonnet-5-5` | Compress conversation history |
+| `memory-retriever` | `claude-haiku-5-5`          | Retrieve relevant memory entries |
+| `memory-groomer` | `claude-haiku-5-5`          | Prune and consolidate memory |
+| `file-searcher` | `claude-haiku-5-5`          | Search files and return snippets |
 
 ## Background-agent profiles
 

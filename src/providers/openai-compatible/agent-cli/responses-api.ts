@@ -1,5 +1,5 @@
 import type { RequestContext } from '@mastra/core/di';
-import type { Tool, ToolExecutionContext } from '@mastra/core/tools';
+import type { Tool, ToolExecuteCallContext, ToolExecutionContext } from '@mastra/core/tools';
 import type { Workspace } from '@mastra/core/workspace';
 import type { ReasoningEffort } from '../../../core/config/config-types.js';
 import type { AgentUsage } from '../../provider-types.js';
@@ -287,7 +287,7 @@ async function executeTool(
 ): Promise<unknown> {
   const execute = tool.execute as unknown as (
     value: unknown,
-    ctx?: ToolExecutionContext<unknown, unknown> & {
+    ctx?: ToolExecuteCallContext<ToolExecutionContext<unknown, unknown>> & {
       toolCallId: string;
       options: { toolCallId: string };
     },
@@ -320,9 +320,50 @@ function buildNoopToolWriter(): ToolWriter {
 
 function applyToolModelOutput(tool: ToolLike, result: unknown): unknown {
   const transformer = readUnknownProp(tool, 'toModelOutput');
-  return typeof transformer === 'function'
-    ? (transformer as (output: unknown) => unknown)(result)
-    : result;
+  const transformed =
+    typeof transformer === 'function'
+      ? (transformer as (output: unknown) => unknown)(result)
+      : undefined;
+  // Mastra's `toModelOutput` returns undefined for "no transformation needed"
+  // (plain string results), so fall back to the raw result in that case.
+  return flattenModelOutput(transformed ?? result);
+}
+
+/**
+ * Reduce Mastra model-output shapes to text. Pixels never enter the main
+ * agent's prompt (docs/adr/0001-vision-subagent.md): media parts and raw
+ * media results are replaced by a text placeholder, never base64.
+ */
+function flattenModelOutput(value: unknown): unknown {
+  if (!isRecord(value)) {
+    return value;
+  }
+  if (value.__workspaceMedia === true) {
+    const header = readStringProp(value, 'text') ?? 'Media file';
+    const mediaType = readStringProp(value, 'mediaType') ?? 'unknown type';
+    return `${header}\n[${mediaType} content omitted: images are not passed to the main agent]`;
+  }
+  if (value.type === 'content' && Array.isArray(value.value)) {
+    return value.value
+      .map((part: unknown) => {
+        if (!isRecord(part)) {
+          return stringifyToolOutput(part);
+        }
+        if (part.type === 'text' && typeof part.text === 'string') {
+          return part.text;
+        }
+        if (part.type === 'media') {
+          const mediaType = readStringProp(part, 'mediaType') ?? 'unknown type';
+          return `[${mediaType} content omitted: images are not passed to the main agent]`;
+        }
+        return stringifyToolOutput(part);
+      })
+      .join('\n');
+  }
+  if ((value.type === 'text' || value.type === 'json') && 'value' in value) {
+    return value.value;
+  }
+  return value;
 }
 
 function extractFunctionCalls(response: Record<string, unknown>): FunctionCall[] {
