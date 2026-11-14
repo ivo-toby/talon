@@ -514,14 +514,14 @@ export function createVoiceDispatchLogger(logger: pino.Logger): VoiceDispatchLog
             if (classification !== 'nonvoice') {
               return createProxy(current);
             }
-            const child = Reflect.apply(
+            const child: unknown = Reflect.apply(
               Reflect.get(current, property, current) as unknown as (
                 ...childArgs: unknown[]
               ) => pino.Logger,
               current,
               args,
-            ) as unknown as pino.Logger;
-            return createProxy(child);
+            );
+            return createProxy(child as pino.Logger);
           };
         }
 
@@ -529,9 +529,9 @@ export function createVoiceDispatchLogger(logger: pino.Logger): VoiceDispatchLog
           return (): Record<string, unknown> => {
             if ((storage.getStore() ?? 'unknown') !== 'nonvoice') return {};
             const bindings = Reflect.get(current, property, current) as unknown;
-            return typeof bindings === 'function'
-              ? (Reflect.apply(bindings, current, []) as unknown as Record<string, unknown>)
-              : {};
+            if (typeof bindings !== 'function') return {};
+            const applied: unknown = Reflect.apply(bindings, current, []);
+            return applied as Record<string, unknown>;
           };
         }
 

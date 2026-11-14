@@ -27,6 +27,7 @@
  */
 
 import type pino from 'pino';
+import type { WASocket } from '@whiskeysockets/baileys';
 import type { ChannelConnector, InboundEvent, AgentOutput, InboundAttachment } from '../../channel-types.js';
 import type { Result } from '../../../core/types/result.js';
 import { ok, err } from '../../../core/types/result.js';
@@ -47,9 +48,11 @@ import {
 import type { WhatsAppBaileysConfig } from './whatsapp-baileys-types.js';
 import { isBaileysInternalRejection } from './whatsapp-baileys-rejection-matcher.js';
 
-/** Baileys socket type — intentionally loose to keep Baileys as an optional dependency. */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type BaileysSocket = any;
+/**
+ * Baileys socket type. Type-only import: erased at compile time, so Baileys
+ * stays an optional runtime dependency (loaded via dynamic import in start()).
+ */
+type BaileysSocket = WASocket;
 
 /** Loose representation of a Baileys WAMessage for the inbound handler. */
 interface InboundWAMessage {
@@ -179,9 +182,7 @@ export class WhatsAppBaileysConnector implements ChannelConnector {
         auth: state,
         version,
         browser: this.config.browser ?? Browsers.appropriate('Talon'),
-        logger: this.logger.child({ component: 'baileys' }) as unknown as ReturnType<
-          typeof pino
-        >,
+        logger: this.logger.child({ component: 'baileys' }),
         markOnlineOnConnect: this.config.markOnlineOnConnect ?? false,
       });
 
@@ -190,16 +191,20 @@ export class WhatsAppBaileysConnector implements ChannelConnector {
       // If stop() interleaved between makeWASocket and now, tear the socket
       // down and bail before wiring up handlers that would keep it alive.
       if (this.stopRequested) {
-        try {
-          sock.end(undefined);
-        } catch {
-          // ignore
-        }
+        this.endSocket(sock);
         this.sock = null;
         return;
       }
 
-      sock.ev.on('creds.update', saveCreds);
+      sock.ev.on('creds.update', () => {
+        // saveCreds is async; a failed write must not become an unhandled rejection.
+        Promise.resolve(saveCreds()).catch((saveErr: unknown) => {
+          this.logger.warn(
+            { channelName: this.name, err: saveErr },
+            'whatsapp-baileys: failed to save credentials',
+          );
+        });
+      });
 
       return await new Promise<void>((resolve, reject) => {
         let settled = false;
@@ -222,8 +227,7 @@ export class WhatsAppBaileysConnector implements ChannelConnector {
             // Self-chat messages may arrive under either format, so store both.
             this.selfIds.clear();
             const userPn = sock.user?.id;
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            const userLid = (sock.user as any)?.lid as string | undefined;
+            const userLid = sock.user?.lid;
             if (userPn) this.selfIds.add(userPn.replace(/@.*$/, '').replace(/:\d+$/, ''));
             if (userLid) this.selfIds.add(userLid.replace(/@.*$/, '').replace(/:\d+$/, ''));
             const allowedSenders = this.config.allowedSenders;
@@ -316,6 +320,7 @@ export class WhatsAppBaileysConnector implements ChannelConnector {
     }
   }
 
+  // eslint-disable-next-line @typescript-eslint/require-await -- shutdown deliberately does not wait on Baileys' async end()
   async stop(): Promise<void> {
     if (this.stopRequested) {
       // Already stopped. The grace timer scheduled by the original stop()
@@ -334,11 +339,7 @@ export class WhatsAppBaileysConnector implements ChannelConnector {
 
     this.running = false;
     if (this.sock) {
-      try {
-        this.sock.end(undefined);
-      } catch {
-        // ignore errors during shutdown
-      }
+      this.endSocket(this.sock);
       this.sock = null;
     }
 
@@ -349,6 +350,21 @@ export class WhatsAppBaileysConnector implements ChannelConnector {
     this.scheduleShieldTeardown();
 
     this.logger.info({ channelName: this.name }, 'whatsapp-baileys connector stopped');
+  }
+
+  /**
+   * Tear a socket down without blocking on it. `end()` is async in current
+   * Baileys; sync throws and rejections during shutdown are ignored (late
+   * rejections are covered by the rejection shield).
+   */
+  private endSocket(sock: BaileysSocket): void {
+    try {
+      Promise.resolve(sock.end(undefined)).catch(() => {
+        // ignore errors during shutdown
+      });
+    } catch {
+      // ignore errors during shutdown
+    }
   }
 
   onMessage(handler: (event: InboundEvent) => void | Promise<void>): void {

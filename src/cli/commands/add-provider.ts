@@ -284,14 +284,14 @@ export async function addProvider(
   ): void {
     // Ensure section exists.
     if (!doc[sectionKey] || typeof doc[sectionKey] !== 'object') {
-      doc[sectionKey] = {} as Record<string, unknown>;
+      doc[sectionKey] = {};
     }
 
     const section = doc[sectionKey] as Record<string, unknown>;
 
     // Ensure providers object exists.
     if (!section.providers || typeof section.providers !== 'object') {
-      section.providers = {} as Record<string, unknown>;
+      section.providers = {};
     }
 
     const providers = section.providers as Record<string, unknown>;

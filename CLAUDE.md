@@ -35,25 +35,25 @@ Channel Connector → MessagePipeline (normalize, dedup, route, persist)
 
 ### Source Layout
 
-| Module    | Path                       | Purpose                                                             |
-| --------- | -------------------------- | ------------------------------------------------------------------- |
-| Daemon    | `src/daemon/`              | Lifecycle state machine, agent runner, bootstrap, watchdog          |
-| Channels  | `src/channels/connectors/` | 7 adapters: telegram, slack, discord, whatsapp-business, whatsapp-baileys, email, terminal |
-| Pipeline  | `src/pipeline/`            | Inbound normalization, dedup, routing, persistence                  |
-| Queue     | `src/queue/`               | Durable SQLite queue, retry with exponential backoff, dead-letter   |
-| Scheduler | `src/scheduler/`           | Cron/interval/one-shot task execution                               |
+| Module    | Path                       | Purpose                                                                                                                                                       |
+| --------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Daemon    | `src/daemon/`              | Lifecycle state machine, agent runner, bootstrap, watchdog                                                                                                    |
+| Channels  | `src/channels/connectors/` | 7 adapters: telegram, slack, discord, whatsapp-business, whatsapp-baileys, email, terminal                                                                    |
+| Pipeline  | `src/pipeline/`            | Inbound normalization, dedup, routing, persistence                                                                                                            |
+| Queue     | `src/queue/`               | Durable SQLite queue, retry with exponential backoff, dead-letter                                                                                             |
+| Scheduler | `src/scheduler/`           | Cron/interval/one-shot task execution                                                                                                                         |
 | Voice     | `src/voice/`               | Optional browser voice: authentication, WebRTC transport, live provider, durable lifecycle, queue bridge (details in `AGENTS.md` and `docs/guides/voice.mdx`) |
-| Memory    | `src/memory/`              | Per-thread fact/summary/note storage + context assembly             |
-| Tools     | `src/tools/`               | 15 host-tools + capability-based filtering via `tool-filter.ts`     |
-| MCP       | `src/mcp/`                 | MCP server registry and lifecycle                                   |
-| Personas  | `src/personas/`            | Persona config loading + capability merging                         |
-| Skills    | `src/skills/`              | Declarative skill bundles with lazy loading (metadata-only in system prompt, full content on demand via `skill_load` tool) |
-| SubAgents | `src/subagents/`           | Loader, model resolver, runner with per-subagent model overrides and failover |
-| Images    | `src/images/`              | Attachment selection, bounded transport, Sharp normalization, EXIF metadata, ingestion/lifecycle, context projection |
-| Config    | `src/core/config/`         | Zod-validated YAML config loader (`config-schema.ts` is the schema) |
-| Database  | `src/core/database/`       | better-sqlite3 wrapper, 20 repositories, SQL migrations             |
-| IPC       | `src/ipc/`                 | Unix socket daemon↔CLI communication                                |
-| CLI       | `src/cli/`                 | 36 talonctl commands (Commander.js)                                 |
+| Memory    | `src/memory/`              | Per-thread fact/summary/note storage + context assembly                                                                                                       |
+| Tools     | `src/tools/`               | 15 host-tools + capability-based filtering via `tool-filter.ts`                                                                                               |
+| MCP       | `src/mcp/`                 | MCP server registry and lifecycle                                                                                                                             |
+| Personas  | `src/personas/`            | Persona config loading + capability merging                                                                                                                   |
+| Skills    | `src/skills/`              | Declarative skill bundles with lazy loading (metadata-only in system prompt, full content on demand via `skill_load` tool)                                    |
+| SubAgents | `src/subagents/`           | Loader, model resolver, runner with per-subagent model overrides and failover                                                                                 |
+| Images    | `src/images/`              | Attachment selection, bounded transport, Sharp normalization, EXIF metadata, ingestion/lifecycle, context projection                                          |
+| Config    | `src/core/config/`         | Zod-validated YAML config loader (`config-schema.ts` is the schema)                                                                                           |
+| Database  | `src/core/database/`       | better-sqlite3 wrapper, 20 repositories, SQL migrations                                                                                                       |
+| IPC       | `src/ipc/`                 | Unix socket daemon↔CLI communication                                                                                                                          |
+| CLI       | `src/cli/`                 | 36 talonctl commands (Commander.js)                                                                                                                           |
 
 ### Key Architectural Decisions
 
@@ -112,11 +112,6 @@ Tests in `tests/` using vitest. Coverage thresholds: 80% (branches, functions, l
 ### Branching
 
 Always make sure you are in a feature or fix branch before getting to work
-
-### Reviews
-
-Before every commit you need to use the codex skill to ask Gpt-5.4 for a review, address the issues, only if there a no critical, high or medium issues are found the work can be committed.
-When dealing with PR reviews, always resolve a comment when it's fixed or deemed invalid, always add a comment what you fixed, which commit, or why the comment was invalid
 
 ### Documentation
 

@@ -217,7 +217,7 @@ export class ClaudeCodeProvider implements AgentProvider {
 
     const agentQuery = query({
       prompt: input.prompt,
-      options: options as Parameters<typeof query>[0]['options'],
+      options: options,
     });
 
     try {

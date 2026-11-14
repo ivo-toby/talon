@@ -292,7 +292,15 @@ function stringifyForStorage(value: unknown): string {
   try {
     return JSON.stringify(value);
   } catch {
-    return String(value);
+    if (
+      typeof value === 'number' ||
+      typeof value === 'bigint' ||
+      typeof value === 'boolean' ||
+      typeof value === 'symbol'
+    ) {
+      return String(value);
+    }
+    return Object.prototype.toString.call(value);
   }
 }
 

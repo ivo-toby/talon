@@ -228,7 +228,7 @@ function enterFetchPatch(): void {
     // install over it. A shared module-scope capture would let a retained
     // reference follow a newer generation's original (or recurse into it
     // when that original wraps the retained reference).
-    const capturedForThisInstall = globalThis.fetch as BaileysMediaTransferFetch;
+    const capturedForThisInstall = globalThis.fetch;
     windowOriginal = capturedForThisInstall;
     const wrapperForThisInstall: BaileysMediaTransferFetch = (input, init) => {
       const state = transferScope.getStore();

@@ -588,7 +588,7 @@ export class SlackConnector implements ChannelConnector {
 
     // Route events_api envelopes to feedEvent.
     if (envelope.type === 'events_api' && envelope.payload) {
-      await this.feedEvent(envelope.payload as unknown as SlackEvent);
+      await this.feedEvent(envelope.payload);
       return;
     }
 

@@ -80,7 +80,7 @@ export async function statusCommand(options: {
     return;
   }
 
-  displayStatus((response.data ?? {}) as Partial<DaemonStatusData>);
+  displayStatus((response.data ?? {}));
 }
 
 // ---------------------------------------------------------------------------

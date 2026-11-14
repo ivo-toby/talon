@@ -219,7 +219,7 @@ export class OpenAiLiveVoiceProvider implements LiveVoiceProvider {
     this.webSocketFactory =
       options.webSocketFactory ??
       ((url, headers): LiveWebSocket =>
-        new WebSocket(url, { headers: { ...headers } }) as unknown as LiveWebSocket);
+        new WebSocket(url, { headers: { ...headers } }));
     this.now = options.now ?? Date.now;
     this.requestTimeoutMs = positiveLimit(
       options.requestTimeoutMs ?? DEFAULT_LIVE_REQUEST_TIMEOUT_MS,

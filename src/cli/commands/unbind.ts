@@ -61,7 +61,7 @@ export async function unbind(options: UnbindOptions): Promise<UnbindResult> {
     );
   }
 
-  const wasDefault = doc.bindings[idx]!.isDefault === true;
+  const wasDefault = doc.bindings[idx].isDefault === true;
   doc.bindings.splice(idx, 1);
 
   // If we removed the default binding, promote the next binding on this channel.

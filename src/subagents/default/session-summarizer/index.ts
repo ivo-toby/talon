@@ -58,7 +58,7 @@ export async function run(
 
     return ok({
       summary: object.summary || 'Session summarized successfully',
-      data: object as unknown as Record<string, unknown>,
+      data: object,
       usage: {
         inputTokens: usage?.inputTokens ?? 0,
         outputTokens: usage?.outputTokens ?? 0,
