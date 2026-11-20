@@ -26,6 +26,7 @@ import {
 import { ToolOutputStore } from './tool-output-excerpter.js';
 import {
   applyMcpToolLimits,
+  filterAllowedMcpTools,
   isSerializableMcpServer,
   toMastraMcpServers,
   type SerializableMcpServer,
@@ -232,8 +233,10 @@ async function main(): Promise<void> {
     // See specs/2026-04-20-tool-output-excerpting-stage1.md.
     const toolOutputStore = new ToolOutputStore();
     let syntheticToolCallSeq = 0;
+    // Per-server allowedTools: drop tools the skill did not allow before they
+    // are wrapped or offered to the model.
     const mcpTools = applyMcpToolLimits(
-      rawMcpTools,
+      filterAllowedMcpTools(rawMcpTools, input.mcpServers),
       input.mcpServers,
       input.toolOutputCap,
       toolOutputStore,

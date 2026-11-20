@@ -37,6 +37,12 @@ export interface CanonicalMcpStdioServer {
   timeoutMs?: number;
   /** Per-server tool-output excerpt cap in characters; `0` disables excerpting (runtime metadata). */
   toolOutputCap?: number;
+  /**
+   * Tool-name patterns that restrict which of this server's tools reach the
+   * model (runtime metadata, never sent to the server). See
+   * `McpServerConfig.allowedTools` for the matching rules.
+   */
+  allowedTools?: string[];
 }
 
 export interface CanonicalMcpHttpServer {
@@ -55,6 +61,12 @@ export interface CanonicalMcpHttpServer {
   timeoutMs?: number;
   /** Per-server tool-output excerpt cap in characters; `0` disables excerpting (runtime metadata). */
   toolOutputCap?: number;
+  /**
+   * Tool-name patterns that restrict which of this server's tools reach the
+   * model (runtime metadata, never sent to the server). See
+   * `McpServerConfig.allowedTools` for the matching rules.
+   */
+  allowedTools?: string[];
 }
 
 /**

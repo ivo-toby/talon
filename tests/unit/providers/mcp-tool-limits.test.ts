@@ -7,6 +7,8 @@ import {
 } from '../../../src/providers/openai-compatible/agent-cli/tool-output-excerpter.js';
 import {
   applyMcpToolLimits,
+  filterAllowedMcpTools,
+  isMcpToolAllowed,
   isSerializableMcpServer,
   resolveMcpToolOutputCap,
   toMastraMcpServers,
@@ -142,6 +144,126 @@ describe('isSerializableMcpServer', () => {
     expect(isSerializableMcpServer(stdioServer(overrides))).toBe(false);
     expect(isSerializableMcpServer(httpServer(overrides))).toBe(false);
     expect(isSerializableMcpServer(sseServer(overrides))).toBe(false);
+  });
+});
+
+describe('isSerializableMcpServer — allowedTools', () => {
+  it.each([
+    ['stdio', stdioServer({ allowedTools: ['search', 'task_*'] })],
+    ['http', httpServer({ allowedTools: [] })],
+    ['sse', sseServer({ allowedTools: ['!delete'] })],
+  ])('accepts %s with a string-array allowedTools', (_label, server) => {
+    expect(isSerializableMcpServer(server)).toBe(true);
+  });
+
+  it.each([
+    ['a string', { allowedTools: 'search' }],
+    ['a non-string entry', { allowedTools: ['search', 1] }],
+    ['null', { allowedTools: null }],
+  ])('rejects allowedTools as %s on all transports', (_label, overrides) => {
+    expect(isSerializableMcpServer(stdioServer(overrides))).toBe(false);
+    expect(isSerializableMcpServer(httpServer(overrides))).toBe(false);
+    expect(isSerializableMcpServer(sseServer(overrides))).toBe(false);
+  });
+});
+
+describe('isMcpToolAllowed', () => {
+  it('allows exact and glob include matches only', () => {
+    const patterns = ['search', 'task_*', 'lin?'];
+    expect(isMcpToolAllowed('search', patterns)).toBe(true);
+    expect(isMcpToolAllowed('task_list', patterns)).toBe(true);
+    expect(isMcpToolAllowed('link', patterns)).toBe(true);
+    expect(isMcpToolAllowed('unlink', patterns)).toBe(false);
+    expect(isMcpToolAllowed('search_all', patterns)).toBe(false);
+    expect(isMcpToolAllowed('delete', patterns)).toBe(false);
+  });
+
+  it('lets exclusions win over inclusions', () => {
+    expect(isMcpToolAllowed('task_delete', ['task_*', '!task_delete'])).toBe(false);
+    expect(isMcpToolAllowed('task_list', ['task_*', '!task_delete'])).toBe(true);
+  });
+
+  it('allows everything not excluded when the list has only exclusions', () => {
+    expect(isMcpToolAllowed('search', ['!delete', '!workspace_*'])).toBe(true);
+    expect(isMcpToolAllowed('delete', ['!delete', '!workspace_*'])).toBe(false);
+    expect(isMcpToolAllowed('workspace_link', ['!delete', '!workspace_*'])).toBe(false);
+  });
+
+  it('allows nothing for an empty list', () => {
+    expect(isMcpToolAllowed('search', [])).toBe(false);
+  });
+
+  it('treats regex metacharacters in patterns literally', () => {
+    expect(isMcpToolAllowed('a.b', ['a.b'])).toBe(true);
+    expect(isMcpToolAllowed('axb', ['a.b'])).toBe(false);
+    expect(isMcpToolAllowed('a+b', ['a+b'])).toBe(true);
+  });
+});
+
+describe('filterAllowedMcpTools', () => {
+  const tools = {
+    postgram_search: makeTool('search'),
+    postgram_delete: makeTool('delete'),
+    postgram_task_list: makeTool('task_list'),
+    other_delete: makeTool('delete'),
+    __talond_host_tools_channel_send: makeTool('channel_send'),
+    unowned_tool: makeTool('unowned'),
+  };
+
+  it('returns the original map when no server declares allowedTools', () => {
+    const servers = { postgram: httpServer(), other: stdioServer() };
+    expect(filterAllowedMcpTools(tools, servers)).toBe(tools);
+  });
+
+  it('filters only the tools of servers that declare allowedTools', () => {
+    const servers = {
+      postgram: httpServer({ allowedTools: ['search', 'task_*'] }),
+      other: stdioServer(),
+      __talond_host_tools: stdioServer(),
+    };
+    expect(Object.keys(filterAllowedMcpTools(tools, servers)).sort()).toEqual(
+      [
+        '__talond_host_tools_channel_send',
+        'other_delete',
+        'postgram_search',
+        'postgram_task_list',
+        'unowned_tool',
+      ].sort(),
+    );
+  });
+
+  it('removes every tool of a server with an empty allowedTools list', () => {
+    const servers = { postgram: httpServer({ allowedTools: [] }), other: stdioServer() };
+    expect(Object.keys(filterAllowedMcpTools(tools, servers)).sort()).toEqual(
+      ['__talond_host_tools_channel_send', 'other_delete', 'unowned_tool'].sort(),
+    );
+  });
+
+  it('uses the longest owning server name and matches the bare tool name', () => {
+    const servers = {
+      a: httpServer({ allowedTools: ['b_x'] }),
+      a_b: httpServer({ allowedTools: ['y'] }),
+    };
+    const nested = { a_b_x: makeTool('x'), a_b_y: makeTool('y'), a_c: makeTool('c') };
+    // a_b_x and a_b_y belong to server a_b (bare names x and y); a_c to server a.
+    expect(Object.keys(filterAllowedMcpTools(nested, servers))).toEqual(['a_b_y']);
+  });
+
+  it('keeps the filtered tools wrappable by applyMcpToolLimits', async () => {
+    const servers = { postgram: httpServer({ allowedTools: ['search'], toolOutputCap: 10 }) };
+    const big = {
+      postgram_search: makeTool('search', async () => BIG_OUTPUT),
+      postgram_delete: makeTool('delete', async () => 'gone'),
+    };
+    const limited = applyMcpToolLimits(
+      filterAllowedMcpTools(big, servers),
+      servers,
+      undefined,
+      new ToolOutputStore(),
+      () => 'id-1',
+      () => {},
+    );
+    expect(Object.keys(limited).sort()).toEqual(['fetch_tool_output', 'postgram_search']);
   });
 });
 

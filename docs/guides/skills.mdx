@@ -139,6 +139,25 @@ Supported MCP config fields in JSON are:
 - `credentialScope`
 - `rateLimit`
 
+`allowedTools` limits which of the server's tools are offered to the model.
+Patterns match the bare tool name: `*` matches any characters, `?` one
+character, and a leading `!` excludes. A tool is allowed when it matches no
+exclusion and either matches an inclusion or the list has only exclusions;
+an empty list allows nothing. Omit the field to allow every tool. Fewer tools
+also means a smaller prompt on every model call. Currently enforced by the
+`openai-compatible` provider.
+
+```json
+{
+  "name": "postgram",
+  "config": {
+    "transport": "http",
+    "url": "http://mcp-server:3100/mcp",
+    "allowedTools": ["search", "recall", "store", "update", "task_*", "!task_delete"]
+  }
+}
+```
+
 ## Tool manifests
 
 Skills can ship additional tool manifests in `tools/*.yaml`.
