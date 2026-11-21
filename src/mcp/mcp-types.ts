@@ -62,11 +62,19 @@ export interface McpServerConfig {
   env?: Record<string, string>;
 
   /**
-   * Glob / regex patterns that restrict which MCP tools this server exposes
-   * to sandboxed agents. If omitted, all tools are allowed.
+   * Patterns that restrict which of this server's tools are offered to the
+   * model. If omitted, all tools are allowed.
    *
-   * Patterns are matched against the bare tool name using `micromatch`-style
-   * glob syntax (e.g. `read_file`, `git_*`, `!dangerous_*`).
+   * Patterns are matched against the bare tool name (without the server
+   * prefix). `*` matches any run of characters and `?` a single character;
+   * a leading `!` excludes. A tool is allowed when it matches at least one
+   * include pattern (or there are none) and no exclude pattern, so
+   * `["!delete"]` allows everything except `delete` and `[]` allows nothing
+   * (e.g. `["search", "task_*", "!task_delete"]`).
+   *
+   * Currently enforced by the openai-compatible provider only; other
+   * providers offer every tool and the runner logs a warning naming the
+   * affected servers (see `AgentProvider.enforcesMcpAllowedTools`).
    */
   allowedTools?: string[];
 

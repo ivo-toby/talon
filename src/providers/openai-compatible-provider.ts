@@ -124,6 +124,7 @@ type WrapperEvent =
 export class OpenAiCompatibleProvider implements AgentProvider {
   readonly name: ProviderName;
   readonly skillLoaderTransport = 'stdio' as const;
+  readonly enforcesMcpAllowedTools = true;
 
   constructor(
     private readonly config: ProviderConfig,

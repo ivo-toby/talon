@@ -116,6 +116,7 @@ describe('BackgroundAgentManager', () => {
   function createManager(overrides: Record<string, unknown> = {}) {
     const claudeProvider = {
       name: 'claude-code',
+      enforcesMcpAllowedTools: false,
       createExecutionStrategy: vi.fn(),
       prepareBackgroundInvocation,
       parseBackgroundResult,
@@ -123,6 +124,7 @@ describe('BackgroundAgentManager', () => {
     };
     const geminiProvider = {
       name: 'gemini-cli',
+      enforcesMcpAllowedTools: false,
       createExecutionStrategy: vi.fn(),
       prepareBackgroundInvocation,
       parseBackgroundResult,
@@ -229,6 +231,44 @@ describe('BackgroundAgentManager', () => {
     expect((passed.glean as Record<string, unknown>).auth).toBeUndefined();
     expect(prepareBackgroundInvocation.mock.calls[0][0].disableNativeShellAndFilesystemTools).toBe(
       true,
+    );
+  });
+
+  it('warns when MCP servers with allowedTools go to a provider that ignores it', async () => {
+    const logger = makeLogger();
+    const manager = createManager({ logger });
+
+    await manager.spawn({
+      ...spawnInput,
+      mcpServers: {
+        postgram: {
+          transport: 'http',
+          url: 'http://mcp-server:3100/mcp',
+          allowedTools: ['search'],
+        },
+        other: { transport: 'stdio', command: 'other-mcp', args: [] },
+      },
+    });
+
+    expect(prepareBackgroundInvocation).toHaveBeenCalledTimes(1);
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: 'claude-code', mcpServers: ['postgram'] }),
+      'provider does not enforce MCP allowedTools; these servers expose all their tools',
+    );
+  });
+
+  it('does not warn about allowedTools when no MCP server declares it', async () => {
+    const logger = makeLogger();
+    const manager = createManager({ logger });
+
+    await manager.spawn({
+      ...spawnInput,
+      mcpServers: { other: { transport: 'stdio', command: 'other-mcp', args: [] } },
+    });
+
+    expect(logger.warn).not.toHaveBeenCalledWith(
+      expect.anything(),
+      'provider does not enforce MCP allowedTools; these servers expose all their tools',
     );
   });
 

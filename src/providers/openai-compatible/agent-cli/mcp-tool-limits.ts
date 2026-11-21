@@ -17,6 +17,7 @@ export type SerializableMcpServer =
       env?: Record<string, string>;
       timeoutMs?: number;
       toolOutputCap?: number;
+      allowedTools?: string[];
     }
   | {
       transport: 'http' | 'sse';
@@ -24,6 +25,7 @@ export type SerializableMcpServer =
       headers?: Record<string, string>;
       timeoutMs?: number;
       toolOutputCap?: number;
+      allowedTools?: string[];
     };
 
 export function isSerializableMcpServer(value: unknown): value is SerializableMcpServer {
@@ -38,7 +40,8 @@ export function isSerializableMcpServer(value: unknown): value is SerializableMc
       value.args.every((entry) => typeof entry === 'string') &&
       (value.env === undefined || isStringRecord(value.env)) &&
       (value.timeoutMs === undefined || isTimeoutMs(value.timeoutMs)) &&
-      (value.toolOutputCap === undefined || isToolOutputCap(value.toolOutputCap))
+      (value.toolOutputCap === undefined || isToolOutputCap(value.toolOutputCap)) &&
+      (value.allowedTools === undefined || isStringArray(value.allowedTools))
     );
   }
 
@@ -47,7 +50,8 @@ export function isSerializableMcpServer(value: unknown): value is SerializableMc
       typeof value.url === 'string' &&
       (value.headers === undefined || isStringRecord(value.headers)) &&
       (value.timeoutMs === undefined || isTimeoutMs(value.timeoutMs)) &&
-      (value.toolOutputCap === undefined || isToolOutputCap(value.toolOutputCap))
+      (value.toolOutputCap === undefined || isToolOutputCap(value.toolOutputCap)) &&
+      (value.allowedTools === undefined || isStringArray(value.allowedTools))
     );
   }
 
@@ -62,6 +66,10 @@ function isTimeoutMs(value: unknown): value is number {
 /** Per-server tool-output cap: non-negative integer (0 disables). */
 function isToolOutputCap(value: unknown): value is number {
   return typeof value === 'number' && Number.isInteger(value) && value >= 0;
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((entry) => typeof entry === 'string');
 }
 
 export function toMastraMcpServers(
@@ -106,6 +114,107 @@ export function toMastraMcpServers(
   }
 
   return servers;
+}
+
+/** What `allowedTools` did to one server's tools. */
+export interface McpAllowedToolsReport {
+  server: string;
+  /** Number of tools the server listed. */
+  total: number;
+  /** Number of those tools that `allowedTools` hid from the model. */
+  hidden: number;
+  /** Patterns (as written, including a leading `!`) that matched none of the server's tools. */
+  unmatchedPatterns: string[];
+}
+
+/**
+ * Applies each server's `allowedTools` to the tools that server listed and
+ * returns the allowed tools keyed `<server>_<tool>`, the same keys Mastra's
+ * `listTools()` produces. Takes the per-server grouping of
+ * `MCPClient.listToolsets()` so a tool is always judged by the list of the
+ * server that actually owns it; guessing the owner back from the prefixed
+ * key is ambiguous when one server name is a prefix of another.
+ *
+ * Servers without `allowedTools` keep all their tools. One report is returned
+ * per server that declares `allowedTools`.
+ */
+export function selectAllowedMcpTools<T>(
+  toolsets: Record<string, Record<string, T>>,
+  servers: Record<string, SerializableMcpServer>,
+): { tools: Record<string, T>; reports: McpAllowedToolsReport[] } {
+  const tools: Record<string, T> = {};
+  const reports: McpAllowedToolsReport[] = [];
+
+  for (const [serverName, serverTools] of Object.entries(toolsets)) {
+    const patterns = servers[serverName]?.allowedTools;
+    const bareNames = Object.keys(serverTools);
+
+    for (const bareName of bareNames) {
+      if (patterns === undefined || isMcpToolAllowed(bareName, patterns)) {
+        tools[`${serverName}_${bareName}`] = serverTools[bareName];
+      }
+    }
+
+    if (patterns !== undefined) {
+      const offered = bareNames.filter((bareName) => isMcpToolAllowed(bareName, patterns));
+      reports.push({
+        server: serverName,
+        total: bareNames.length,
+        hidden: bareNames.length - offered.length,
+        unmatchedPatterns: patterns.filter((pattern) => {
+          const glob = pattern.startsWith('!') ? pattern.slice(1) : pattern;
+          return !bareNames.some((bareName) => matchesToolPattern(glob, bareName));
+        }),
+      });
+    }
+  }
+
+  return { tools, reports };
+}
+
+/**
+ * One stderr line per server with `allowedTools`, so a list that hides more
+ * than intended (e.g. `"postgram_search"` instead of `"search"`) is visible
+ * to the operator instead of silently leaving the model without tools.
+ */
+export function formatMcpAllowedToolsReport(report: McpAllowedToolsReport): string {
+  let line =
+    `openai-compatible wrapper: MCP server "${report.server}" allowedTools hides ` +
+    `${report.hidden} of ${report.total} tools.`;
+  if (report.unmatchedPatterns.length > 0) {
+    line +=
+      ' Patterns matching no tool: ' +
+      report.unmatchedPatterns.map((pattern) => JSON.stringify(pattern)).join(', ') +
+      ' (patterns match the bare tool name, without the server prefix).';
+  }
+  return `${line}\n`;
+}
+
+/**
+ * Applies `allowedTools` patterns to a bare tool name. `*` matches any run of
+ * characters, `?` one character, and a leading `!` excludes. A tool is
+ * allowed when it matches no exclude pattern and either matches an include
+ * pattern or the list has only excludes. An empty list allows nothing.
+ */
+export function isMcpToolAllowed(bareToolName: string, patterns: readonly string[]): boolean {
+  const includes = patterns.filter((pattern) => !pattern.startsWith('!'));
+  const excludes = patterns
+    .filter((pattern) => pattern.startsWith('!'))
+    .map((pattern) => pattern.slice(1));
+
+  if (excludes.some((pattern) => matchesToolPattern(pattern, bareToolName))) return false;
+  if (includes.length === 0) return excludes.length > 0;
+  return includes.some((pattern) => matchesToolPattern(pattern, bareToolName));
+}
+
+function matchesToolPattern(pattern: string, toolName: string): boolean {
+  let source = '';
+  for (const char of pattern) {
+    if (char === '*') source += '.*';
+    else if (char === '?') source += '.';
+    else source += char.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+  }
+  return new RegExp(`^${source}$`).test(toolName);
 }
 
 export function resolveMcpToolOutputCap(

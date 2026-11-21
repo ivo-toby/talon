@@ -26,7 +26,9 @@ import {
 import { ToolOutputStore } from './tool-output-excerpter.js';
 import {
   applyMcpToolLimits,
+  formatMcpAllowedToolsReport,
   isSerializableMcpServer,
+  selectAllowedMcpTools,
   toMastraMcpServers,
   type SerializableMcpServer,
 } from './mcp-tool-limits.js';
@@ -218,13 +220,26 @@ async function main(): Promise<void> {
     }
 
     const mcpServers = toMastraMcpServers(input.mcpServers);
-    const rawMcpTools =
+    // listToolsets() groups the tools per server (unprefixed), so each
+    // server's allowedTools is applied to that server's own tools only.
+    // selectAllowedMcpTools rebuilds the `<server>_<tool>` keys listTools()
+    // would have produced.
+    const toolsets =
       Object.keys(mcpServers).length > 0
-        ? await (async (): Promise<Record<string, Tool<unknown, unknown, unknown, unknown>>> => {
+        ? await (async (): Promise<
+            Record<string, Record<string, Tool<unknown, unknown, unknown, unknown>>>
+          > => {
             mcpClient = new MCPClient({ servers: mcpServers });
-            return mcpClient.listTools();
+            return mcpClient.listToolsets();
           })()
         : {};
+    const { tools: allowedMcpTools, reports: allowedToolsReports } = selectAllowedMcpTools(
+      toolsets,
+      input.mcpServers,
+    );
+    for (const report of allowedToolsReports) {
+      process.stderr.write(formatMcpAllowedToolsReport(report));
+    }
 
     // Tool-output excerpting: bound the size of what enters the agent's
     // message history, retain the full output for this run, expose the
@@ -233,7 +248,7 @@ async function main(): Promise<void> {
     const toolOutputStore = new ToolOutputStore();
     let syntheticToolCallSeq = 0;
     const mcpTools = applyMcpToolLimits(
-      rawMcpTools,
+      allowedMcpTools,
       input.mcpServers,
       input.toolOutputCap,
       toolOutputStore,

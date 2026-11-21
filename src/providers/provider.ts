@@ -131,6 +131,12 @@ export type SkillLoaderTransport = 'in-process' | 'stdio';
 export interface AgentProvider {
   readonly name: ProviderName;
   readonly skillLoaderTransport: SkillLoaderTransport;
+  /**
+   * Whether the provider applies `allowedTools` from canonical MCP server
+   * entries. When false, every tool of such a server reaches the model and
+   * the runners log a warning (see `warnIfMcpAllowedToolsIgnored`).
+   */
+  readonly enforcesMcpAllowedTools: boolean;
   createExecutionStrategy(): ExecutionStrategy;
   prepareBackgroundInvocation(
     input: ProviderSpawnInput,
