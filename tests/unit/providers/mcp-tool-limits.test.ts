@@ -7,6 +7,7 @@ import {
 } from '../../../src/providers/openai-compatible/agent-cli/tool-output-excerpter.js';
 import {
   applyMcpToolLimits,
+  formatMcpAllowedToolsReport,
   isMcpToolAllowed,
   isSerializableMcpServer,
   resolveMcpToolOutputCap,
@@ -318,6 +319,34 @@ describe('selectAllowedMcpTools', () => {
       () => {},
     );
     expect(Object.keys(limited).sort()).toEqual(['fetch_tool_output', 'postgram_search']);
+  });
+});
+
+describe('formatMcpAllowedToolsReport', () => {
+  it('states how many tools a server hides', () => {
+    expect(
+      formatMcpAllowedToolsReport({
+        server: 'postgram',
+        total: 24,
+        hidden: 15,
+        unmatchedPatterns: [],
+      }),
+    ).toBe('openai-compatible wrapper: MCP server "postgram" allowedTools hides 15 of 24 tools.\n');
+  });
+
+  it('lists patterns that matched nothing, on the same line', () => {
+    const line = formatMcpAllowedToolsReport({
+      server: 'postgram',
+      total: 24,
+      hidden: 24,
+      unmatchedPatterns: ['postgram_search', '!delet'],
+    });
+    expect(line).toBe(
+      'openai-compatible wrapper: MCP server "postgram" allowedTools hides 24 of 24 tools. ' +
+        'Patterns matching no tool: "postgram_search", "!delet" ' +
+        '(patterns match the bare tool name, without the server prefix).\n',
+    );
+    expect(line.trimEnd()).not.toContain('\n');
   });
 });
 

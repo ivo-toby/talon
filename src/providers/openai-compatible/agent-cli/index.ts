@@ -26,6 +26,7 @@ import {
 import { ToolOutputStore } from './tool-output-excerpter.js';
 import {
   applyMcpToolLimits,
+  formatMcpAllowedToolsReport,
   isSerializableMcpServer,
   selectAllowedMcpTools,
   toMastraMcpServers,
@@ -232,7 +233,13 @@ async function main(): Promise<void> {
             return mcpClient.listToolsets();
           })()
         : {};
-    const { tools: allowedMcpTools } = selectAllowedMcpTools(toolsets, input.mcpServers);
+    const { tools: allowedMcpTools, reports: allowedToolsReports } = selectAllowedMcpTools(
+      toolsets,
+      input.mcpServers,
+    );
+    for (const report of allowedToolsReports) {
+      process.stderr.write(formatMcpAllowedToolsReport(report));
+    }
 
     // Tool-output excerpting: bound the size of what enters the agent's
     // message history, retain the full output for this run, expose the

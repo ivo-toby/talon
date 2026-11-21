@@ -145,7 +145,8 @@ character, and a leading `!` excludes. A tool is allowed when it matches no
 exclusion and either matches an inclusion or the list has only exclusions;
 an empty list allows nothing. Omit the field to allow every tool. Fewer tools
 also means a smaller prompt on every model call. Currently enforced by the
-`openai-compatible` provider.
+`openai-compatible` provider, which writes one line to stderr per server with
+`allowedTools`: how many tools it hides and which patterns matched no tool.
 
 ```json
 {

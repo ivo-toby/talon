@@ -173,6 +173,24 @@ export function selectAllowedMcpTools<T>(
 }
 
 /**
+ * One stderr line per server with `allowedTools`, so a list that hides more
+ * than intended (e.g. `"postgram_search"` instead of `"search"`) is visible
+ * to the operator instead of silently leaving the model without tools.
+ */
+export function formatMcpAllowedToolsReport(report: McpAllowedToolsReport): string {
+  let line =
+    `openai-compatible wrapper: MCP server "${report.server}" allowedTools hides ` +
+    `${report.hidden} of ${report.total} tools.`;
+  if (report.unmatchedPatterns.length > 0) {
+    line +=
+      ' Patterns matching no tool: ' +
+      report.unmatchedPatterns.map((pattern) => JSON.stringify(pattern)).join(', ') +
+      ' (patterns match the bare tool name, without the server prefix).';
+  }
+  return `${line}\n`;
+}
+
+/**
  * Applies `allowedTools` patterns to a bare tool name. `*` matches any run of
  * characters, `?` one character, and a leading `!` excludes. A tool is
  * allowed when it matches no exclude pattern and either matches an include
