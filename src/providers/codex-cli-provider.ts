@@ -48,6 +48,7 @@ interface RenderedCodexConfig {
 export class CodexCliProvider implements AgentProvider {
   readonly name: ProviderName;
   readonly skillLoaderTransport = 'stdio' as const;
+  readonly enforcesMcpAllowedTools = false;
 
   constructor(
     private readonly config: ProviderConfig,

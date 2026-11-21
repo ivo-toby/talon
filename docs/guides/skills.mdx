@@ -147,6 +147,9 @@ an empty list allows nothing. Omit the field to allow every tool. Fewer tools
 also means a smaller prompt on every model call. Currently enforced by the
 `openai-compatible` provider, which writes one line to stderr per server with
 `allowedTools`: how many tools it hides and which patterns matched no tool.
+Other providers (`claude-code`, `gemini-cli`, `codex-cli`) still offer every
+tool of such a server; Talon logs a warning naming the server when a run,
+foreground or background, goes to one of them.
 
 ```json
 {

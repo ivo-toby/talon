@@ -72,7 +72,9 @@ export interface McpServerConfig {
    * `["!delete"]` allows everything except `delete` and `[]` allows nothing
    * (e.g. `["search", "task_*", "!task_delete"]`).
    *
-   * Currently enforced by the openai-compatible provider only.
+   * Currently enforced by the openai-compatible provider only; other
+   * providers offer every tool and the runner logs a warning naming the
+   * affected servers (see `AgentProvider.enforcesMcpAllowedTools`).
    */
   allowedTools?: string[];
 
