@@ -18,6 +18,8 @@ import type {
   ThreadRow,
 } from '../../core/database/repositories/thread-repository.js';
 import type { BindingRepository } from '../../core/database/repositories/binding-repository.js';
+import type { MessageRefRepository } from '../../core/database/repositories/message-ref-repository.js';
+import type { AgentOutput, OutboundReplyTarget } from '../../channels/channel-types.js';
 import { ToolError } from '../../core/errors/error-types.js';
 import {
   isVoiceObservationContext,
@@ -66,7 +68,11 @@ export interface ChannelSendArgs {
   channelId: string;
   /** Message content in Markdown format. */
   content: string;
-  /** Optional thread or message ID to reply to. */
+  /**
+   * Provider message ID of a message in the recipient chat to send this as a
+   * native reply to (the "(id …)" shown in reply and reaction headers).
+   * Ignored by channels without native replies.
+   */
   replyTo?: string;
   /**
    * Explicit recipient chat id on the target channel (e.g. Telegram chat_id,
@@ -146,6 +152,13 @@ export class ChannelSendHandler {
        * delivery; acceptable for scheduled tasks (few per hour).
        */
       sessionTracker?: { rotateSession: (threadId: string) => void };
+      /**
+       * Message ledger. When provided, a `replyTo` target is completed from
+       * it (author and text, which some providers need to build a quote) and
+       * the sent message's provider ID is recorded on the recipient thread so
+       * later replies and reactions on it resolve.
+       */
+      messageRefRepository?: Pick<MessageRefRepository, 'find' | 'record'>;
       logger: pino.Logger;
     },
   ) {}
@@ -234,12 +247,12 @@ export class ChannelSendHandler {
     // persisted outbound row refer to the same message.
     const messageId = randomUUID();
 
-    // Build the AgentOutput and call send
-    const output = {
+    // Build the AgentOutput. The reply target is attached once the recipient
+    // chat is known, below.
+    const output: AgentOutput = {
       body: content,
       messageId,
       sourceRunId: context.runId,
-      ...(replyTo ? { metadata: { replyTo } } : {}),
     };
 
     // Resolve the thread's external_id (e.g. Telegram chat_id) from the DB.
@@ -308,6 +321,11 @@ export class ChannelSendHandler {
       return { requestId, tool: 'channel.send', status: 'error', error: msg };
     }
 
+    const replyTarget = this.resolveReplyTarget(replyTo, channelId, externalThreadId);
+    if (replyTarget !== undefined) {
+      output.replyTo = replyTarget;
+    }
+
     const result = await connector.send(externalThreadId, output);
 
     if (result.isErr()) {
@@ -336,6 +354,9 @@ export class ChannelSendHandler {
       personaId: context.personaId,
       runThreadId: context.threadId,
       messageId,
+      ...(result.value?.externalMessageId
+        ? { externalMessageId: result.value.externalMessageId }
+        : {}),
       ...(voiceObservation ? { voiceObservation } : {}),
     });
 
@@ -347,6 +368,43 @@ export class ChannelSendHandler {
     };
   }
 
+  /**
+   * Builds the explicit reply target for a `replyTo` argument. The ledger of
+   * the recipient thread supplies author and text when it knows the message;
+   * an unknown ID is passed through as-is, which is enough for providers that
+   * address a reply by ID alone.
+   */
+  private resolveReplyTarget(
+    replyTo: unknown,
+    channelName: string,
+    externalThreadId: string,
+  ): OutboundReplyTarget | undefined {
+    const externalMessageId = typeof replyTo === 'string' ? replyTo.trim() : '';
+    if (externalMessageId === '') {
+      return undefined;
+    }
+    const target: OutboundReplyTarget = { externalMessageId };
+    const refs = this.deps.messageRefRepository;
+    const channel = this.deps.channelRepository?.findByName(channelName);
+    if (refs === undefined || channel === undefined || channel.isErr() || !channel.value) {
+      return target;
+    }
+    const thread = this.deps.threadRepository.findByExternalId(channel.value.id, externalThreadId);
+    if (thread.isErr() || !thread.value) {
+      return target;
+    }
+    const ref = refs.find(thread.value.id, externalMessageId);
+    if (ref.isErr() || ref.value === null) {
+      return target;
+    }
+    return {
+      externalMessageId,
+      fromSelf: ref.value.direction === 'outbound',
+      ...(ref.value.sender_id !== null ? { author: ref.value.sender_id } : {}),
+      ...(ref.value.excerpt !== '' ? { text: ref.value.excerpt } : {}),
+    };
+  }
+
   private persistOutboundMessage(input: {
     requestId: string;
     runId: string;
@@ -355,6 +413,8 @@ export class ChannelSendHandler {
     content: string;
     personaId: string;
     messageId: string;
+    /** Provider ID of the sent message, when the connector reported one. */
+    externalMessageId?: string;
     /**
      * The thread the current run is executing on. When the resolved
      * recipient thread differs from this (cross-thread delivery — the
@@ -422,6 +482,26 @@ export class ChannelSendHandler {
           : 'channel.send: delivered message but failed to persist outbound context',
       );
       return;
+    }
+
+    // Record the sent message in the ledger of the thread it was persisted
+    // to, so a reply or reaction on it reaches that thread's conversation.
+    if (this.deps.messageRefRepository && input.externalMessageId) {
+      const recorded = this.deps.messageRefRepository.record({
+        thread_id: targetThread.id,
+        external_id: input.externalMessageId,
+        direction: 'outbound',
+        message_id: input.messageId,
+        text: input.content,
+      });
+      if (recorded.isErr()) {
+        this.deps.logger.warn(
+          input.voiceObservation
+            ? voiceDiagnosticFields(input.voiceObservation, { errorCategory: 'unknown' })
+            : { requestId: input.requestId, threadId: targetThread.id, err: recorded.error },
+          'channel.send: delivered message but failed to record its message ref',
+        );
+      }
     }
 
     // Cross-thread delivery: the outbound was persisted to a thread other

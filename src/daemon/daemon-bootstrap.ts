@@ -35,6 +35,7 @@ import {
   A2ATaskRepository,
   ImageRepository,
   ImageIngestionRepository,
+  MessageRefRepository,
   FindingRepository,
 } from '../core/database/repositories/index.js';
 import { buildAgentCardRegistry, A2ATaskMapper, A2AServer } from '../a2a/index.js';
@@ -228,6 +229,7 @@ export async function bootstrap(
     a2aTask: new A2ATaskRepository(db),
     image: new ImageRepository(db),
     imageIngestion: new ImageIngestionRepository(db),
+    messageRef: new MessageRefRepository(db),
   };
 
   // Canonical Finding ledger (TASK-011 contract). Deliberately NOT part of
@@ -1135,6 +1137,7 @@ export async function bootstrap(
     auditLogger,
     logger,
     imageIngestionCoordinator,
+    repos.messageRef,
   );
 
   registerChannels(config, channelRegistry, {

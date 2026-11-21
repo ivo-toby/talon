@@ -301,6 +301,7 @@ After creating a persona, show what capabilities it has and what's available.
 If yes, help the user decide which to add or remove:
 
 - For agents that should message other channels: `npx talonctl set-capabilities --persona <name> --add "channel.send:*"`
+- For agents that should react with emoji on Telegram or WhatsApp (👍 instead of a written "understood"): `npx talonctl set-capabilities --persona <name> --add "channel.react:*"`
 - For agents that need database access: `npx talonctl set-capabilities --persona <name> --add "db.query:own"`
 - For agents that delegate to other personas: `npx talonctl set-capabilities --persona <name> --add "persona.send:<target-persona>"` (one label per allowed target, so the persona can only delegate to those; `persona.send:*` allows any persona). The same label also grants `persona_list`, `persona_task_status` and `persona_task_cancel`. An unknown target name only logs a warning at startup
 - For agents that run background tasks: `npx talonctl set-capabilities --persona <name> --add "subagent.background"`

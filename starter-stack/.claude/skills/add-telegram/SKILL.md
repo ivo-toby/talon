@@ -187,6 +187,8 @@ Telegram-specific behaviour worth warning the user about:
 | "Unauthorized" errors in logs | Token is wrong or revoked — get new one from BotFather |
 | Bot responds to strangers | Add `allowedChatIds` to config (see Phase 4) |
 | Duplicate responses | Check if multiple instances of talond are running |
+| Reactions in a group are not noticed | Make the bot a group administrator — Telegram only sends reaction updates to admins |
+| Bot cannot react | Add `channel.react:*` to the persona's capabilities and restart |
 
 ## Config Reference
 
@@ -199,7 +201,17 @@ channels:
       pollingTimeoutSec: 30              # Optional (default: 30)
       allowedChatIds:                    # Optional — restrict to specific chats
         - "12345678"
+      replyToTrigger: groups             # Optional — never | groups (default) | always
+      inboundReactions: true             # Optional (default: true)
 ```
+
+### Replies, topics and reactions
+
+- **Replies**: when a user replies to a message, the agent sees which one. `replyToTrigger` decides whether the bot's answer is sent as a native reply to the message that triggered it: in group chats only (`groups`, the default), everywhere (`always`), or not at all (`never`).
+- **Groups**: with `allowGroupChats: true` the bot answers an @mention, a trigger word, or a native reply to one of its own messages.
+- **Topics**: a message inside a forum topic gets its own Talon thread (`<chat_id>:<topic_id>`), so each topic is a separate conversation and answers stay in the topic.
+- **Reactions from the bot**: add the `channel.react:*` capability to the persona (`npx talonctl set-capabilities --persona <name> --add "channel.react:*"`). The agent can then react with 👍 instead of writing "understood". Telegram only accepts its standard reaction emoji.
+- **Reactions from users**: a reaction on one of the bot's messages starts an agent run. Telegram delivers reactions in private chats, and in groups only when the bot is an administrator. Set `inboundReactions: false` to turn this off.
 
 ## How It Works
 

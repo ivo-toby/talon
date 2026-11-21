@@ -87,6 +87,7 @@ Use these exact labels.
 |---|---|---|
 | memory, remember, context, knowledge | `memory.access:*` | |
 | message, notify, send, communicate | | `channel.send:*` |
+| react, emoji, acknowledge, thumbs up | `channel.react:*` | |
 | search, fetch, http, api | `net.http` | |
 | queue async work, background jobs | `subagent.background` | |
 | ask another agent inline, specialist consultation | `subagent.invoke` | |

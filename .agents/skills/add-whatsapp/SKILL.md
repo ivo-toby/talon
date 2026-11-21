@@ -229,4 +229,12 @@ channels:
       triggerWords: ['@Talon']                   # Optional — require trigger word to activate
       allowedSenders:                            # Optional — restrict who can message the bot
         - '96490886312027'
+      replyToTrigger: groups                     # Optional — never | groups (default) | always
+      inboundReactions: true                     # Optional (default: true)
 ```
+
+### Replies and reactions
+
+- **Replies**: when a user quotes a message, the agent sees which one. `replyToTrigger` decides whether the bot's answer quotes the message that triggered it: in group chats only (`groups`, the default), everywhere (`always`), or not at all (`never`).
+- **Reactions from the bot**: add the `channel.react:*` capability to the persona (`npx talonctl set-capabilities --persona <name> --add "channel.react:*"`). The agent can then react with 👍 instead of writing "understood".
+- **Reactions from users**: a reaction on one of the bot's messages starts an agent run. It passes the same sender checks as a message but needs no trigger word. Set `inboundReactions: false` to turn this off.

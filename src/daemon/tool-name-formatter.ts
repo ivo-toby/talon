@@ -30,6 +30,7 @@ const NATIVE_TOOL_EMOJI: Record<string, string> = {
   memory_access: '💾',
   background_agent: '🤖',
   channel_send: '💬',
+  channel_react: '👍',
 };
 
 /**

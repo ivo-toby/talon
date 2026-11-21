@@ -39,6 +39,18 @@ export interface TelegramConfig {
    * the message reaches the agent. Applies to both DMs and group chats.
    */
   triggerWords?: string[];
+  /**
+   * When Talon's answer is sent as a native reply to the message that
+   * triggered it: `groups` (default) in group chats only, `always`, or
+   * `never`. A reply the agent requests explicitly is always sent as one.
+   */
+  replyToTrigger?: 'never' | 'groups' | 'always';
+  /**
+   * Forward emoji reactions that users place on Talon's messages to the
+   * agent. Defaults to true. Telegram only delivers reactions in private
+   * chats and in groups where the bot is an administrator.
+   */
+  inboundReactions?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -146,6 +158,46 @@ export interface TelegramMessage {
   document?: TelegramDocument;
   /** Platform sticker — always excluded from image ingestion. */
   sticker?: TelegramSticker;
+  /** Topic the message belongs to (forum supergroups and private chats). */
+  message_thread_id?: number;
+  /** True when the message was sent inside a topic. */
+  is_topic_message?: boolean;
+  /**
+   * The message this one replies to. In a topic, a message that replies to
+   * nothing still points at the topic's creation service message.
+   */
+  reply_to_message?: TelegramMessage;
+  /** The part of the replied-to message the sender chose to quote. */
+  quote?: { text?: string };
+  /** Present on the service message that created a forum topic. */
+  forum_topic_created?: unknown;
+}
+
+/**
+ * One reaction on a message (Bot API `ReactionType`). Only `emoji` reactions
+ * carry a portable emoji; `custom_emoji` and `paid` do not.
+ */
+export interface TelegramReactionType {
+  type: string;
+  emoji?: string;
+}
+
+/**
+ * A change of a user's reactions on a message (Bot API
+ * `MessageReactionUpdated`). Delivered only when `message_reaction` is listed
+ * in `allowed_updates`, and never for reactions set by bots.
+ */
+export interface TelegramMessageReactionUpdated {
+  chat: TelegramChat;
+  message_id: number;
+  /** The reacting user; absent for anonymous reactions. */
+  user?: TelegramUser;
+  /** The chat an anonymous reaction was made on behalf of. */
+  actor_chat?: TelegramChat;
+  /** Unix timestamp of the change. */
+  date: number;
+  old_reaction?: TelegramReactionType[];
+  new_reaction?: TelegramReactionType[];
 }
 
 /**
@@ -155,6 +207,7 @@ export interface TelegramMessage {
 export interface TelegramUpdate {
   update_id: number;
   message?: TelegramMessage;
+  message_reaction?: TelegramMessageReactionUpdated;
 }
 
 // ---------------------------------------------------------------------------
@@ -167,6 +220,16 @@ export interface TelegramUpdate {
 export interface TelegramSendResult {
   ok: boolean;
   result?: TelegramMessage;
+  description?: string;
+  error_code?: number;
+}
+
+/**
+ * Result of a Bot API call that returns `True` (setMessageReaction).
+ */
+export interface TelegramBooleanResult {
+  ok: boolean;
+  result?: boolean;
   description?: string;
   error_code?: number;
 }

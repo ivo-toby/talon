@@ -9,6 +9,9 @@
 export type { ChannelSendTool, ChannelSendArgs } from './channel-send.js';
 export { ChannelSendHandler } from './channel-send.js';
 
+export type { ChannelReactArgs } from './channel-react.js';
+export { ChannelReactHandler } from './channel-react.js';
+
 export type { PersonaSendTool, PersonaSendArgs } from './persona-send.js';
 export { PersonaSendHandler } from './persona-send.js';
 

@@ -29,6 +29,7 @@ import type {
   A2ATaskRepository,
   ImageRepository,
   ImageIngestionRepository,
+  MessageRefRepository,
 } from '../core/database/repositories/index.js';
 import type { ChannelRegistry } from '../channels/channel-registry.js';
 import type { QueueManager } from '../queue/queue-manager.js';
@@ -87,6 +88,12 @@ export interface DaemonRepos {
   readonly a2aTask: A2ATaskRepository;
   readonly image: ImageRepository;
   readonly imageIngestion: ImageIngestionRepository;
+  /**
+   * Message ledger for native replies and reactions. Optional so contexts
+   * built without it keep working: replies and reactions then degrade to
+   * plain sends and are never resolved.
+   */
+  readonly messageRef?: MessageRefRepository;
 }
 
 // ---------------------------------------------------------------------------

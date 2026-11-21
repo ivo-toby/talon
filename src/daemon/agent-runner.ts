@@ -38,6 +38,7 @@ import { getProviderAffinityResetAt } from '../threads/thread-metadata.js';
 import { readScheduleOriginExternalId } from './schedule-thread-utils.js';
 import { buildTimeContext } from '../core/time-context.js';
 import { formatToolCall } from './tool-name-formatter.js';
+import { RunDelivery } from './run-delivery.js';
 import type {
   AgentUsage,
   ContextUsage,
@@ -736,6 +737,36 @@ export class AgentRunner {
               : undefined;
             const showToolCalls = channelConfig?.showToolCalls ?? false;
 
+            // The run's own text goes through RunDelivery: it attaches the
+            // triggering message as an implicit reply target, records the
+            // provider message IDs for later replies/reactions, and honours
+            // the NO_REPLY directive. Progress notices stay plain sends.
+            const outboundMessageId = uuidv4();
+            const triggerRef =
+              item.type === 'message' &&
+              typeof item.messageId === 'string' &&
+              item.messageId.length > 0
+                ? this.ctx.repos.messageRef?.findInboundByMessageId(item.messageId)
+                : undefined;
+            const delivery =
+              connector !== undefined && externalId
+                ? new RunDelivery({
+                    connector,
+                    externalThreadId: externalId,
+                    threadId: item.threadId,
+                    outboundMessageId,
+                    ...(this.ctx.repos.messageRef
+                      ? { messageRefs: this.ctx.repos.messageRef }
+                      : {}),
+                    trigger: triggerRef !== undefined && triggerRef.isOk() ? triggerRef.value : null,
+                    recordRefs:
+                      threadResult.isOk() &&
+                      threadResult.value !== null &&
+                      threadResult.value.external_id === externalId,
+                    logger: this.ctx.logger,
+                  })
+                : undefined;
+
             // Send typing indicator and keep it alive every 4s while the agent works.
             // A2A tasks must not send typing indicators to the source thread's channel
             // — the human should not see activity from a delegated persona.
@@ -1287,10 +1318,8 @@ export class AgentRunner {
                             externalId
                           ) {
                             // Flush preceding text first, then show tool description (issue #102 + #108).
-                            if (outputText) {
-                              const flushResult = await connector.send(externalId, {
-                                body: outputText,
-                              });
+                            if (outputText && delivery !== undefined) {
+                              const flushResult = await delivery.sendText(outputText);
                               if (flushResult.isErr()) {
                                 throw new Error(
                                   `channel send failed: ${flushResult.error.message}`,
@@ -1641,12 +1670,11 @@ export class AgentRunner {
                 { runId, outputLength: fullOutputText.length },
                 'agent-sdk: skipping outbound reply for schedule item (agent must use channel.send to deliver)',
               );
-            } else if (connector !== undefined && externalId && outputText) {
+            } else if (delivery !== undefined && outputText) {
               // Send remaining text (final block). Intermediate blocks were flushed
               // during the stream when tool_use events were encountered (issue #102).
-              const sendResult = await connector.send(externalId, {
-                body: outputText,
-              });
+              // A block that is only the NO_REPLY directive is not delivered.
+              const sendResult = await delivery.sendText(outputText);
               if (sendResult.isErr()) {
                 throw new Error(`channel send failed: ${sendResult.error.message}`);
               }
@@ -1657,7 +1685,7 @@ export class AgentRunner {
             // The message is stored immediately after delivery (issue #164).
             if (!isVoiceTask && !isA2ATask && !isScheduleTask) {
               this.ctx.repos.message.insert({
-                id: uuidv4(),
+                id: outboundMessageId,
                 thread_id: item.threadId,
                 direction: 'outbound',
                 content: JSON.stringify({ body: fullOutputText }),

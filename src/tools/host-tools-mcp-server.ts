@@ -27,6 +27,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 import { MCP_TO_INTERNAL } from './tool-filter.js';
 import { getHostToolRequestTimeoutMs } from './tool-timeouts.js';
 import { TALOND_BRIDGE_SECRET_ENV } from './host-tools-bridge-auth.js';
+import { NO_REPLY_SENTINEL } from '../channels/no-reply.js';
 import {
   IMAGE_LOOKUP_OPERATIONS,
   IMAGE_LOOKUP_DEFAULT_LIMIT,
@@ -336,7 +337,8 @@ const TOOLS = [
         },
         replyTo: {
           type: 'string' as const,
-          description: 'Optional thread or message ID to reply to',
+          description:
+            'Optional message ID to send this as a native reply to (quotes that message). Use the "(id …)" value from a "[Replying to …]" or "[Reaction: …]" header. Ignored on channels without native replies.',
         },
         externalChatId: {
           type: 'string' as const,
@@ -345,6 +347,31 @@ const TOOLS = [
         },
       },
       required: ['channelId', 'content'],
+    },
+  },
+  {
+    name: 'channel_react',
+    description:
+      'Places an emoji reaction on a message in the current conversation (Telegram, WhatsApp). With no messageId it reacts to the message you are answering. '
+      + `Use it to acknowledge without writing a reply (e.g. 👍 for "understood"): react, then make your final response exactly ${NO_REPLY_SENTINEL} so no text message is sent. `
+      + 'Telegram only accepts its standard reaction set (👍 👎 ❤ 🔥 🎉 🙏 👌 🤔 👀 😁 😢 💯 and similar); an unsupported emoji returns an error naming the alternatives.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        emoji: {
+          type: 'string' as const,
+          description: 'A single emoji, e.g. 👍. Not needed when remove is true.',
+        },
+        messageId: {
+          type: 'string' as const,
+          description:
+            'Optional message ID to react to: the "(id …)" value from a "[Replying to …]" or "[Reaction: …]" header. Defaults to the message that started this run.',
+        },
+        remove: {
+          type: 'boolean' as const,
+          description: 'Remove your reaction from the message instead of adding one.',
+        },
+      },
     },
   },
   {

@@ -43,6 +43,9 @@ export const HOST_TOOL_REGISTRY: ReadonlyArray<{
   { capabilityPrefix: 'channel.send', internalName: 'channel.send', mcpName: 'channel_send' },
   { capabilityPrefix: 'channel.send', internalName: 'channel.list', mcpName: 'channel_list' },
   { capabilityPrefix: 'channel.send', internalName: 'channel.broadcast', mcpName: 'channel_broadcast' },
+  // Emoji reactions in the run's own conversation. A separate capability from
+  // channel.send: reacting never delivers text and never leaves the chat.
+  { capabilityPrefix: 'channel.react', internalName: 'channel.react', mcpName: 'channel_react' },
   { capabilityPrefix: 'persona.send', internalName: 'persona.send', mcpName: 'persona_send' },
   { capabilityPrefix: 'persona.send', internalName: 'persona.task_status', mcpName: 'persona_task_status' },
   { capabilityPrefix: 'persona.send', internalName: 'persona.task_cancel', mcpName: 'persona_task_cancel' },
@@ -109,6 +112,13 @@ export const CAPABILITY_DESCRIPTIONS: ReadonlyArray<{
     mcpName: 'channel_send',
     labels: [
       { label: 'channel.send:*', description: 'Send messages to any channel; also grants channel.list (discover targets) and channel.broadcast (fan out to all bound chats)' },
+    ],
+  },
+  {
+    toolPrefix: 'channel.react',
+    mcpName: 'channel_react',
+    labels: [
+      { label: 'channel.react:*', description: 'Place or remove emoji reactions on messages in the current conversation (Telegram, WhatsApp)' },
     ],
   },
   {

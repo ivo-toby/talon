@@ -60,12 +60,41 @@ Sends a Markdown message to another Talon channel.
 |---|---|---|
 | `channelId` | string | Required; this is the configured channel name |
 | `content` | string | Required Markdown body |
-| `replyTo` | string | Optional channel-specific thread or message ID |
+| `replyTo` | string | Optional message ID to send this as a native reply to: the `(id …)` value from a `[Replying to …]` or `[Reaction: …]` header. Ignored on channels without native replies |
+| `externalChatId` | string | Optional explicit recipient chat on the target channel |
 
 Notes:
 
 - The agent does not pass a thread ID directly; Talon resolves the current thread context for the target channel.
 - Output is converted to the target connector's native format automatically.
+- A `replyTo` reply is always sent as a native reply, regardless of the connector's `replyToTrigger` setting.
+
+---
+
+## `channel_react`
+
+Internal tool: `channel.react`
+
+Capability labels:
+
+- `channel.react:*`
+
+Places an emoji reaction on a message in the current conversation, or removes Talon's reaction from it. Supported on Telegram, WhatsApp Baileys and WhatsApp Business; other channels return an error.
+
+| Parameter | Type | Notes |
+|---|---|---|
+| `emoji` | string | A single emoji. Required unless `remove` is `true` |
+| `messageId` | string | Optional message ID to react to: the `(id …)` value from a `[Replying to …]` or `[Reaction: …]` header. Defaults to the message that started the run |
+| `remove` | boolean | Optional; removes Talon's reaction instead of adding one |
+
+Notes:
+
+- The tool takes no channel or chat argument: it only acts on the conversation the run belongs to.
+- `channel.react` is a separate capability from `channel.send`. A persona with only `channel.send` cannot react.
+- To acknowledge without sending text, react and then make the final response exactly `NO_REPLY`. A response that is only that word is not delivered to the chat.
+- Telegram accepts only its standard reaction set. An emoji outside it returns an error that lists the allowed emoji.
+- A run that was not started by a channel message (a schedule, a user reaction, a background agent) has no default target and must pass `messageId`.
+- Delegated (A2A) runs cannot react.
 
 ---
 

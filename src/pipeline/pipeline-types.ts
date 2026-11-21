@@ -48,9 +48,11 @@ export interface NormalizedMessage {
  * - `'enqueued'`   — message was persisted and a queue item was created.
  * - `'duplicate'`  — message was already present (idempotency_key matched).
  * - `'no_persona'` — no persona binding found for the channel+thread pair.
+ * - `'ignored'`    — a reaction event that does not target a message Talon
+ *                    sent (or a removed reaction); nothing was persisted.
  * - `'error'`      — an unexpected error occurred (details in the Err wrapper).
  */
-export type PipelineResult = 'enqueued' | 'duplicate' | 'no_persona' | 'error';
+export type PipelineResult = 'enqueued' | 'duplicate' | 'no_persona' | 'ignored' | 'error';
 
 // ---------------------------------------------------------------------------
 // PipelineStats
