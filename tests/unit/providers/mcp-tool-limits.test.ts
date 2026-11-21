@@ -7,10 +7,10 @@ import {
 } from '../../../src/providers/openai-compatible/agent-cli/tool-output-excerpter.js';
 import {
   applyMcpToolLimits,
-  filterAllowedMcpTools,
   isMcpToolAllowed,
   isSerializableMcpServer,
   resolveMcpToolOutputCap,
+  selectAllowedMcpTools,
   toMastraMcpServers,
 } from '../../../src/providers/openai-compatible/agent-cli/mcp-tool-limits.js';
 
@@ -200,63 +200,117 @@ describe('isMcpToolAllowed', () => {
   });
 });
 
-describe('filterAllowedMcpTools', () => {
-  const tools = {
-    postgram_search: makeTool('search'),
-    postgram_delete: makeTool('delete'),
-    postgram_task_list: makeTool('task_list'),
-    other_delete: makeTool('delete'),
-    __talond_host_tools_channel_send: makeTool('channel_send'),
-    unowned_tool: makeTool('unowned'),
+describe('selectAllowedMcpTools', () => {
+  const toolsets = {
+    postgram: {
+      search: makeTool('search'),
+      delete: makeTool('delete'),
+      task_list: makeTool('task_list'),
+    },
+    other: { delete: makeTool('delete') },
+    __talond_host_tools: { channel_send: makeTool('channel_send') },
   };
 
-  it('returns the original map when no server declares allowedTools', () => {
+  it('keys every tool <server>_<tool> when no server declares allowedTools', () => {
     const servers = { postgram: httpServer(), other: stdioServer() };
-    expect(filterAllowedMcpTools(tools, servers)).toBe(tools);
+    const { tools, reports } = selectAllowedMcpTools(toolsets, servers);
+    expect(Object.keys(tools).sort()).toEqual(
+      [
+        '__talond_host_tools_channel_send',
+        'other_delete',
+        'postgram_delete',
+        'postgram_search',
+        'postgram_task_list',
+      ].sort(),
+    );
+    expect(tools.postgram_search).toBe(toolsets.postgram.search);
+    expect(reports).toEqual([]);
   });
 
   it('filters only the tools of servers that declare allowedTools', () => {
     const servers = {
       postgram: httpServer({ allowedTools: ['search', 'task_*'] }),
       other: stdioServer(),
-      __talond_host_tools: stdioServer(),
     };
-    expect(Object.keys(filterAllowedMcpTools(tools, servers)).sort()).toEqual(
+    const { tools, reports } = selectAllowedMcpTools(toolsets, servers);
+    expect(Object.keys(tools).sort()).toEqual(
       [
         '__talond_host_tools_channel_send',
         'other_delete',
         'postgram_search',
         'postgram_task_list',
-        'unowned_tool',
       ].sort(),
     );
+    expect(reports).toEqual([{ server: 'postgram', total: 3, hidden: 1, unmatchedPatterns: [] }]);
   });
 
   it('removes every tool of a server with an empty allowedTools list', () => {
     const servers = { postgram: httpServer({ allowedTools: [] }), other: stdioServer() };
-    expect(Object.keys(filterAllowedMcpTools(tools, servers)).sort()).toEqual(
-      ['__talond_host_tools_channel_send', 'other_delete', 'unowned_tool'].sort(),
+    const { tools, reports } = selectAllowedMcpTools(toolsets, servers);
+    expect(Object.keys(tools).sort()).toEqual(
+      ['__talond_host_tools_channel_send', 'other_delete'].sort(),
     );
+    expect(reports).toEqual([{ server: 'postgram', total: 3, hidden: 3, unmatchedPatterns: [] }]);
   });
 
-  it('uses the longest owning server name and matches the bare tool name', () => {
+  it('judges a tool by its own server even when another server name is a prefix', () => {
+    // Server `git` exposes `hub_delete`, which Mastra keys `git_hub_delete` —
+    // the same prefix as server `git_hub`. Guessing the owner from the key
+    // would attribute it to `git_hub` (no allowlist) and let it through.
     const servers = {
-      a: httpServer({ allowedTools: ['b_x'] }),
-      a_b: httpServer({ allowedTools: ['y'] }),
+      git: stdioServer({ allowedTools: ['status'] }),
+      git_hub: stdioServer(),
     };
-    const nested = { a_b_x: makeTool('x'), a_b_y: makeTool('y'), a_c: makeTool('c') };
-    // a_b_x and a_b_y belong to server a_b (bare names x and y); a_c to server a.
-    expect(Object.keys(filterAllowedMcpTools(nested, servers))).toEqual(['a_b_y']);
+    const { tools } = selectAllowedMcpTools(
+      {
+        git: { status: makeTool('status'), hub_delete: makeTool('hub_delete') },
+        git_hub: { issues: makeTool('issues') },
+      },
+      servers,
+    );
+    expect(Object.keys(tools).sort()).toEqual(['git_hub_issues', 'git_status']);
   });
 
-  it('keeps the filtered tools wrappable by applyMcpToolLimits', async () => {
-    const servers = { postgram: httpServer({ allowedTools: ['search'], toolOutputCap: 10 }) };
-    const big = {
-      postgram_search: makeTool('search', async () => BIG_OUTPUT),
-      postgram_delete: makeTool('delete', async () => 'gone'),
+  it('reports patterns that match none of the server tools, exclusions included', () => {
+    const servers = {
+      postgram: httpServer({
+        allowedTools: ['postgram_search', 'task_*', '!delet', '!delete'],
+      }),
     };
+    const { tools, reports } = selectAllowedMcpTools({ postgram: toolsets.postgram }, servers);
+    expect(Object.keys(tools)).toEqual(['postgram_task_list']);
+    expect(reports).toEqual([
+      {
+        server: 'postgram',
+        total: 3,
+        hidden: 2,
+        unmatchedPatterns: ['postgram_search', '!delet'],
+      },
+    ]);
+  });
+
+  it('ignores allowedTools of servers that listed no tools', () => {
+    const servers = {
+      postgram: httpServer({ allowedTools: ['search'] }),
+      offline: httpServer({ allowedTools: ['anything'] }),
+    };
+    const { reports } = selectAllowedMcpTools({ postgram: toolsets.postgram }, servers);
+    expect(reports.map((report) => report.server)).toEqual(['postgram']);
+  });
+
+  it('keeps the selected tools wrappable by applyMcpToolLimits', async () => {
+    const servers = { postgram: httpServer({ allowedTools: ['search'], toolOutputCap: 10 }) };
+    const { tools } = selectAllowedMcpTools(
+      {
+        postgram: {
+          search: makeTool('search', async () => BIG_OUTPUT),
+          delete: makeTool('delete', async () => 'gone'),
+        },
+      },
+      servers,
+    );
     const limited = applyMcpToolLimits(
-      filterAllowedMcpTools(big, servers),
+      tools,
       servers,
       undefined,
       new ToolOutputStore(),

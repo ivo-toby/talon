@@ -116,35 +116,60 @@ export function toMastraMcpServers(
   return servers;
 }
 
-/**
- * Drops discovered MCP tools that their owning server's `allowedTools` does
- * not allow, so they are never offered to the model. Tools are keyed
- * `<server>_<tool>` by Mastra; the owner is the longest matching server name
- * and patterns are matched against the remaining bare tool name. Tools of
- * servers without `allowedTools` (and tools without an owner) pass through.
- * Returns the original map when no server declares an allowlist.
- */
-export function filterAllowedMcpTools<T>(
-  tools: Record<string, T>,
-  servers: Record<string, SerializableMcpServer>,
-): Record<string, T> {
-  const serverNames = Object.keys(servers);
-  if (!serverNames.some((name) => servers[name].allowedTools !== undefined)) {
-    return tools;
-  }
+/** What `allowedTools` did to one server's tools. */
+export interface McpAllowedToolsReport {
+  server: string;
+  /** Number of tools the server listed. */
+  total: number;
+  /** Number of those tools that `allowedTools` hid from the model. */
+  hidden: number;
+  /** Patterns (as written, including a leading `!`) that matched none of the server's tools. */
+  unmatchedPatterns: string[];
+}
 
-  const filtered: Record<string, T> = {};
-  for (const [toolName, tool] of Object.entries(tools)) {
-    const owner = findLongestOwningServer(toolName, serverNames);
-    const patterns = owner === undefined ? undefined : servers[owner].allowedTools;
-    if (
-      patterns === undefined ||
-      isMcpToolAllowed(toolName.slice((owner as string).length + 1), patterns)
-    ) {
-      filtered[toolName] = tool;
+/**
+ * Applies each server's `allowedTools` to the tools that server listed and
+ * returns the allowed tools keyed `<server>_<tool>`, the same keys Mastra's
+ * `listTools()` produces. Takes the per-server grouping of
+ * `MCPClient.listToolsets()` so a tool is always judged by the list of the
+ * server that actually owns it; guessing the owner back from the prefixed
+ * key is ambiguous when one server name is a prefix of another.
+ *
+ * Servers without `allowedTools` keep all their tools. One report is returned
+ * per server that declares `allowedTools`.
+ */
+export function selectAllowedMcpTools<T>(
+  toolsets: Record<string, Record<string, T>>,
+  servers: Record<string, SerializableMcpServer>,
+): { tools: Record<string, T>; reports: McpAllowedToolsReport[] } {
+  const tools: Record<string, T> = {};
+  const reports: McpAllowedToolsReport[] = [];
+
+  for (const [serverName, serverTools] of Object.entries(toolsets)) {
+    const patterns = servers[serverName]?.allowedTools;
+    const bareNames = Object.keys(serverTools);
+
+    for (const bareName of bareNames) {
+      if (patterns === undefined || isMcpToolAllowed(bareName, patterns)) {
+        tools[`${serverName}_${bareName}`] = serverTools[bareName];
+      }
+    }
+
+    if (patterns !== undefined) {
+      const offered = bareNames.filter((bareName) => isMcpToolAllowed(bareName, patterns));
+      reports.push({
+        server: serverName,
+        total: bareNames.length,
+        hidden: bareNames.length - offered.length,
+        unmatchedPatterns: patterns.filter((pattern) => {
+          const glob = pattern.startsWith('!') ? pattern.slice(1) : pattern;
+          return !bareNames.some((bareName) => matchesToolPattern(glob, bareName));
+        }),
+      });
     }
   }
-  return filtered;
+
+  return { tools, reports };
 }
 
 /**
