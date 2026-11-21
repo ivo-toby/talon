@@ -136,6 +136,48 @@ curl -s "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getMe"
 journalctl --user -u talond -f
 ```
 
+## Images (optional)
+
+Telegram photos and image-MIME documents are ingested automatically. To let the
+bound persona answer what a photo shows it needs exactly two things — existing
+personas gain neither on upgrade:
+
+```bash
+npx talonctl set-capabilities --persona <persona> --add subagent.invoke:*
+```
+
+plus `vision` in that persona's `subagents` list in `talond.yaml` (there is no
+`talonctl` command for persona sub-agent assignment). The shipped `vision` manifest
+declares `requiredCapabilities: []`, so no image capability is part of an
+Inspection. Pixels go only to the `vision` sub-agent; the persona itself stays
+text-only.
+
+Separately, `image.read:thread` is an **independent** model-free lookup grant for
+the thread's Images and saved Findings (`image_lookup`). It needs no vision
+assignment and never calls a model — recommended so the persona can re-read an
+existing Finding, but not required for Inspections.
+
+Telegram-specific behaviour worth warning the user about:
+
+- **Photos usually lose EXIF.** Telegram recompresses photos, so GPS and capture
+  time are typically gone. When metadata matters, tell the user to send the
+  **original as a document** — for a format Talon already accepts (see below); this
+  helps but cannot guarantee preservation.
+- **HEIC is rejected** (`unsupported_mime`), which matters because iOS photos
+  default to it. It must be **converted to JPEG, static PNG, or static WebP before
+  sending**. Sending a HEIC as a document does **not** work: an unsupported image
+  MIME in a document is rejected as `unsupported_mime` without even being
+  downloaded, and it still burns one of the message's upload slots.
+- **Albums stay separate messages**, each producing its own Image; a burst is not
+  coalesced.
+- **Up to 5 images per message** by default (`images.maxPerMessage`); the rest
+  are rejected `count_limit` without being downloaded.
+- **Polling is sequential.** While an image-bearing message is fetched and
+  normalized that connector delivers nothing else — up to roughly 120 seconds,
+  affecting every chat on this bot token.
+- Normalized files are deleted after `images.retentionHours` (default 24h).
+  Image records, GPS/EXIF and saved Findings persist beyond that.
+
 ## Troubleshooting
 
 | Problem | Fix |
@@ -145,6 +187,8 @@ journalctl --user -u talond -f
 | "Unauthorized" errors in logs | Token is wrong or revoked — get new one from BotFather |
 | Bot responds to strangers | Add `allowedChatIds` to config (see Phase 4) |
 | Duplicate responses | Check if multiple instances of talond are running |
+| Reactions in a group are not noticed | Make the bot a group administrator — Telegram only sends reaction updates to admins |
+| Bot cannot react | Add `channel.react:*` to the persona's capabilities and restart |
 
 ## Config Reference
 
@@ -157,11 +201,23 @@ channels:
       pollingTimeoutSec: 30              # Optional (default: 30)
       allowedChatIds:                    # Optional — restrict to specific chats
         - "12345678"
+      replyToTrigger: groups             # Optional — never | groups (default) | always
+      inboundReactions: true             # Optional (default: true)
 ```
+
+### Replies, topics and reactions
+
+- **Replies**: when a user replies to a message, the agent sees which one. `replyToTrigger` decides whether the bot's answer is sent as a native reply to the message that triggered it: in group chats only (`groups`, the default), everywhere (`always`), or not at all (`never`).
+- **Groups**: with `allowGroupChats: true` the bot answers an @mention, a trigger word, or a native reply to one of its own messages.
+- **Topics**: a message inside a forum topic gets its own Talon thread (`<chat_id>:<topic_id>`), so each topic is a separate conversation and answers stay in the topic.
+- **Reactions from the bot**: add the `channel.react:*` capability to the persona (`npx talonctl set-capabilities --persona <name> --add "channel.react:*"`). The agent can then react with 👍 instead of writing "understood". Telegram only accepts its standard reaction emoji.
+- **Reactions from users**: a reaction on one of the bot's messages starts an agent run. Telegram delivers reactions in private chats, and in groups only when the bot is an administrator. Set `inboundReactions: false` to turn this off.
 
 ## How It Works
 
 - Talon uses long-polling (`getUpdates`) — no webhook URL or public server needed
 - Each Telegram chat maps to one Talon thread
+- Of a photo's renditions, the largest one that fits the size limits becomes a
+  single Image; the others are not separate Images
 - Markdown formatting is auto-converted to Telegram's MarkdownV2
 - Typing indicator is shown while the agent processes

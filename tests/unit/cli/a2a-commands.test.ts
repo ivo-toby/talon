@@ -5,7 +5,21 @@ import { PersonaRepository } from '../../../src/core/database/repositories/perso
 import { ChannelRepository } from '../../../src/core/database/repositories/channel-repository.js';
 import { ThreadRepository } from '../../../src/core/database/repositories/thread-repository.js';
 import { A2ATaskRepository } from '../../../src/core/database/repositories/a2a-task-repository.js';
-import { listA2ATasks, sendA2ATask } from '../../../src/cli/commands/a2a.js';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import pino from 'pino';
+import { vi } from 'vitest';
+import {
+  a2aCancelCommand,
+  cancelA2ATask,
+  cancelA2ATaskViaDaemonOrDb,
+  listA2ATasks,
+  sendA2ATask,
+} from '../../../src/cli/commands/a2a.js';
+import { DaemonIpcServer } from '../../../src/ipc/daemon-ipc-server.js';
+import type { DaemonCommand, DaemonResponse } from '../../../src/ipc/daemon-ipc.js';
+import { defaultA2ALimits } from '../../../src/a2a/a2a-types.js';
 import { createTestDb, uuid } from '../core/database/repositories/helpers.js';
 
 // ---------------------------------------------------------------------------
@@ -184,14 +198,260 @@ describe('sendA2ATask()', () => {
       .toThrow(/Unknown target persona/);
   });
 
-  it('throws when target persona already has an active task', () => {
+  it('queues a second task for a busy target instead of rejecting it', () => {
     seedPersona(db, 'busy-bot');
 
-    // First task succeeds
-    sendA2ATask({ db, targetPersona: 'busy-bot', message: 'First task' });
+    const first = sendA2ATask({ db, targetPersona: 'busy-bot', message: 'First task' });
+    const second = sendA2ATask({ db, targetPersona: 'busy-bot', message: 'Second task' });
 
-    // Second should be rejected
-    expect(() => sendA2ATask({ db, targetPersona: 'busy-bot', message: 'Second task' }))
-      .toThrow(/already has .* active task/);
+    expect(second.state).toBe('submitted');
+    expect(second.taskId).not.toBe(first.taskId);
+  });
+
+  it('rejects once the queued backlog for the target is full', () => {
+    seedPersona(db, 'busy-bot');
+    const limits = { ...defaultA2ALimits(), maxQueuedPerTarget: 1 };
+
+    sendA2ATask({ db, targetPersona: 'busy-bot', message: 'First task', limits });
+    expect(() =>
+      sendA2ATask({ db, targetPersona: 'busy-bot', message: 'Second task', limits }),
+    ).toThrow(/queued task/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// cancelA2ATask() — direct DB
+// ---------------------------------------------------------------------------
+
+describe('cancelA2ATask()', () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = createTestDb();
+  });
+
+  afterEach(() => {
+    db.close();
+  });
+
+  it('cancels a submitted task and its pending queue item, recording the reason', () => {
+    seedPersona(db, 'cancel-bot');
+    const sent = sendA2ATask({ db, targetPersona: 'cancel-bot', message: 'Do it' });
+
+    const result = cancelA2ATask({ db, taskId: sent.taskId, reason: 'no longer needed' });
+
+    expect(result).toEqual({ taskId: sent.taskId, found: true, canceled: true, state: 'canceled' });
+    const row = db.prepare('SELECT state, error_message, queue_item_id FROM a2a_tasks WHERE id = ?').get(sent.taskId) as {
+      state: string;
+      error_message: string;
+      queue_item_id: string;
+    };
+    expect(row.state).toBe('canceled');
+    expect(row.error_message).toBe('no longer needed');
+    const queue = db.prepare('SELECT status FROM queue_items WHERE id = ?').get(row.queue_item_id) as { status: string };
+    expect(queue.status).not.toBe('pending');
+  });
+
+  it('uses a default reason when none is given', () => {
+    const taskId = insertTask(db, { state: 'working' });
+    cancelA2ATask({ db, taskId });
+    const row = db.prepare('SELECT error_message FROM a2a_tasks WHERE id = ?').get(taskId) as { error_message: string };
+    expect(row.error_message).toBe('canceled via talonctl');
+  });
+
+  it('reports an already-terminal task as not canceled, with its real state, and leaves it untouched', () => {
+    const taskId = insertTask(db, { state: 'completed' });
+
+    const result = cancelA2ATask({ db, taskId });
+
+    expect(result).toEqual({ taskId, found: true, canceled: false, state: 'completed' });
+    const row = db.prepare('SELECT state FROM a2a_tasks WHERE id = ?').get(taskId) as { state: string };
+    expect(row.state).toBe('completed');
+  });
+
+  it('reports an unknown task as not found', () => {
+    expect(cancelA2ATask({ db, taskId: 'missing' })).toEqual({ taskId: 'missing', found: false, canceled: false });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// cancelA2ATaskViaDaemonOrDb() / a2aCancelCommand() — IPC first, DB fallback
+// ---------------------------------------------------------------------------
+
+describe('cancelA2ATaskViaDaemonOrDb()', () => {
+  let tmpDir: string;
+  let db: Database.Database;
+  let server: DaemonIpcServer | null = null;
+
+  const openDatabase = () => {
+    let closed = false;
+    const wrapped = new Proxy(db, {
+      get(target, prop) {
+        if (prop === 'close') return () => { closed = true; void closed; };
+        const value = Reflect.get(target, prop, target) as unknown;
+        return typeof value === 'function' ? (value as (...a: unknown[]) => unknown).bind(target) : value;
+      },
+    });
+    return { db: wrapped, a2aLimits: defaultA2ALimits() };
+  };
+
+  function startFakeDaemon(handler: (command: DaemonCommand) => DaemonResponse | Partial<DaemonResponse>) {
+    server = new DaemonIpcServer({
+      inputDir: path.join(tmpDir, 'input'),
+      outputDir: path.join(tmpDir, 'output'),
+      errorsDir: path.join(tmpDir, 'errors'),
+      logger: pino({ level: 'silent' }),
+      pollIntervalMs: 20,
+      commandHandler: async (command) => ({
+        id: '22222222-2222-4222-8222-222222222222',
+        commandId: command.id,
+        success: true,
+        ...handler(command),
+      }),
+    });
+    server.start();
+  }
+
+  beforeEach(async () => {
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'a2a-cancel-test-'));
+    db = createTestDb();
+  });
+
+  afterEach(async () => {
+    server?.stop();
+    server = null;
+    db.close();
+    await fs.rm(tmpDir, { recursive: true, force: true });
+    vi.restoreAllMocks();
+  });
+
+  it('prefers the daemon: sends a2a-cancel with the task id and reason and uses its answer', async () => {
+    let received: DaemonCommand | null = null;
+    startFakeDaemon((command) => {
+      received = command;
+      return { data: { taskId: 't-1', found: true, canceled: true, state: 'canceled' } };
+    });
+    const open = vi.fn(openDatabase);
+
+    const result = await cancelA2ATaskViaDaemonOrDb({
+      taskId: 't-1',
+      reason: 'because',
+      ipcDir: tmpDir,
+      timeoutMs: 3000,
+      openDatabase: open,
+    });
+
+    expect(result).toEqual({ taskId: 't-1', found: true, canceled: true, state: 'canceled', via: 'daemon' });
+    expect(received).toMatchObject({ command: 'a2a-cancel', payload: { taskId: 't-1', reason: 'because' } });
+    expect(open).not.toHaveBeenCalled();
+  });
+
+  it('relays the daemon\'s already-terminal and not-found answers', async () => {
+    startFakeDaemon((command) =>
+      command.payload?.taskId === 'gone'
+        ? { data: { taskId: 'gone', found: false, canceled: false } }
+        : { data: { taskId: 'done', found: true, canceled: false, state: 'failed' } },
+    );
+
+    const done = await cancelA2ATaskViaDaemonOrDb({ taskId: 'done', ipcDir: tmpDir, timeoutMs: 3000, openDatabase });
+    expect(done).toMatchObject({ found: true, canceled: false, state: 'failed', via: 'daemon' });
+
+    const gone = await cancelA2ATaskViaDaemonOrDb({ taskId: 'gone', ipcDir: tmpDir, timeoutMs: 3000, openDatabase });
+    expect(gone).toMatchObject({ found: false, canceled: false, via: 'daemon' });
+  });
+
+  it('throws the daemon error when the daemon answers with a failure (no DB fallback)', async () => {
+    startFakeDaemon(() => ({ success: false, error: 'A2A is not available in this daemon' }));
+    const open = vi.fn(openDatabase);
+
+    await expect(
+      cancelA2ATaskViaDaemonOrDb({ taskId: 't', ipcDir: tmpDir, timeoutMs: 3000, openDatabase: open }),
+    ).rejects.toThrow('A2A is not available');
+    expect(open).not.toHaveBeenCalled();
+  });
+
+  it('falls back to a direct DB cancel when no daemon answers, and removes its stale command file', async () => {
+    const taskId = insertTask(db, { state: 'working' });
+
+    const result = await cancelA2ATaskViaDaemonOrDb({
+      taskId,
+      reason: 'cli',
+      ipcDir: tmpDir,
+      timeoutMs: 150,
+      openDatabase,
+    });
+
+    expect(result).toEqual({ taskId, found: true, canceled: true, state: 'canceled', via: 'database' });
+    const row = db.prepare('SELECT state, error_message FROM a2a_tasks WHERE id = ?').get(taskId) as {
+      state: string;
+      error_message: string;
+    };
+    expect(row).toEqual({ state: 'canceled', error_message: 'cli' });
+    expect(await fs.readdir(path.join(tmpDir, 'input'))).toEqual([]);
+  });
+
+  it('fallback reports not found for an unknown task', async () => {
+    const result = await cancelA2ATaskViaDaemonOrDb({ taskId: 'missing', ipcDir: tmpDir, timeoutMs: 100, openDatabase });
+    expect(result).toMatchObject({ found: false, canceled: false, via: 'database' });
+  });
+});
+
+describe('a2aCancelCommand() output and exit codes', () => {
+  let tmpDir: string;
+  let server: DaemonIpcServer | null = null;
+  let logs: string[];
+  let errors: string[];
+  let exitSpy: ReturnType<typeof vi.spyOn>;
+
+  async function run(data: Record<string, unknown>) {
+    server = new DaemonIpcServer({
+      inputDir: path.join(tmpDir, 'input'),
+      outputDir: path.join(tmpDir, 'output'),
+      errorsDir: path.join(tmpDir, 'errors'),
+      logger: pino({ level: 'silent' }),
+      pollIntervalMs: 20,
+      commandHandler: async (command) => ({
+        id: '33333333-3333-4333-8333-333333333333',
+        commandId: command.id,
+        success: true,
+        data,
+      }),
+    });
+    server.start();
+    await a2aCancelCommand({ taskId: 'task-9', ipcDir: tmpDir, timeoutMs: 3000 });
+  }
+
+  beforeEach(async () => {
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'a2a-cancel-cmd-'));
+    logs = [];
+    errors = [];
+    vi.spyOn(console, 'log').mockImplementation((...a: unknown[]) => { logs.push(a.join(' ')); });
+    vi.spyOn(console, 'error').mockImplementation((...a: unknown[]) => { errors.push(a.join(' ')); });
+    exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+  });
+
+  afterEach(async () => {
+    server?.stop();
+    server = null;
+    vi.restoreAllMocks();
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  it('prints canceled and exits 0', async () => {
+    await run({ taskId: 'task-9', found: true, canceled: true, state: 'canceled' });
+    expect(logs.join('\n')).toContain('Task task-9 canceled.');
+    expect(exitSpy).not.toHaveBeenCalled();
+  });
+
+  it('prints already <state> and exits 0 for a finished task', async () => {
+    await run({ taskId: 'task-9', found: true, canceled: false, state: 'completed' });
+    expect(logs.join('\n')).toContain('already completed');
+    expect(exitSpy).not.toHaveBeenCalled();
+  });
+
+  it('prints not found and exits 1', async () => {
+    await run({ taskId: 'task-9', found: false, canceled: false });
+    expect(errors.join('\n')).toContain('A2A task not found: task-9');
+    expect(exitSpy).toHaveBeenCalledWith(1);
   });
 });

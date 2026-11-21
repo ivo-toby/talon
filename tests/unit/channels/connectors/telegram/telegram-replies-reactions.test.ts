@@ -1,0 +1,1368 @@
+/**
+ * Unit tests for Telegram native replies, emoji reactions and topic threads.
+ *
+ * Covers the pure helpers (`telegram-threads.ts`, `telegram-reactions.ts`) and
+ * the connector's inbound reply/reaction normalisation, outbound `send()`
+ * reply/topic payloads, `react()`, `getUpdates` and `sendTyping`.
+ *
+ * All Telegram Bot API calls are intercepted via vi.stubGlobal('fetch', ...).
+ * No real HTTP requests are made.
+ */
+
+import { describe, it, expect, afterEach, vi } from 'vitest';
+import pino from 'pino';
+import { TelegramConnector } from '../../../../../src/channels/connectors/telegram/telegram-connector.js';
+import type {
+  TelegramConfig,
+  TelegramMessage,
+  TelegramReactionType,
+} from '../../../../../src/channels/connectors/telegram/telegram-types.js';
+import {
+  isTelegramGroupChatId,
+  parseTelegramThreadId,
+  telegramThreadIdForMessage,
+} from '../../../../../src/channels/connectors/telegram/telegram-threads.js';
+import {
+  TELEGRAM_REACTION_EMOJI,
+  addedReactionEmoji,
+  normalizeTelegramReactionEmoji,
+} from '../../../../../src/channels/connectors/telegram/telegram-reactions.js';
+import type { InboundEvent } from '../../../../../src/channels/channel-types.js';
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/** The bot identity every getMe call resolves to. */
+const BOT_ID = 12345;
+const BOT_USERNAME = 'test_bot';
+
+const GET_ME_RESPONSE = {
+  ok: true,
+  result: { id: BOT_ID, is_bot: true, first_name: 'TestBot', username: BOT_USERNAME },
+};
+
+const DM_CHAT_ID = 555;
+const GROUP_CHAT_ID = -1001234567890;
+const USER_ID = 999;
+const OTHER_USER_ID = 777;
+
+/** Emoji literals written as escapes so the exact code points are explicit. */
+const THUMBS_UP = '\u{1F44D}';
+const THUMBS_UP_MEDIUM_SKIN = '\u{1F44D}\u{1F3FD}';
+const HEART = '❤';
+const HEART_WITH_VS16 = '❤️';
+const FIRE = '\u{1F525}';
+const CHECK_MARK = '✅';
+
+function silentLogger(): pino.Logger {
+  return pino({ level: 'silent' });
+}
+
+function defaultConfig(overrides?: Partial<TelegramConfig>): TelegramConfig {
+  return {
+    botToken: 'test-token',
+    pollingTimeoutSec: 1,
+    ...overrides,
+  };
+}
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    json: () => Promise.resolve(body),
+  } as unknown as Response;
+}
+
+/**
+ * Build a fake fetch function that returns the given JSON bodies in order.
+ * Calls to the `getMe` endpoint always return the standard bot identity
+ * without consuming from the queue. Once the queue is exhausted, calls hang
+ * until their AbortSignal fires (what an idle long poll looks like).
+ */
+function makeMockFetch(responses: Array<unknown>): ReturnType<typeof vi.fn> {
+  let callIndex = 0;
+  return vi.fn().mockImplementation((url: string, opts?: RequestInit) => {
+    if (typeof url === 'string' && url.endsWith('/getMe')) {
+      return Promise.resolve(jsonResponse(GET_ME_RESPONSE));
+    }
+
+    const idx = callIndex++;
+    if (idx < responses.length) {
+      return Promise.resolve(jsonResponse(responses[idx]));
+    }
+    return new Promise((_resolve, reject) => {
+      const signal = opts?.signal;
+      if (!signal) return;
+      const abort = (): void =>
+        reject(new DOMException('The operation was aborted.', 'AbortError'));
+      if (signal.aborted) {
+        abort();
+        return;
+      }
+      signal.addEventListener('abort', abort);
+    });
+  });
+}
+
+/** A fetch mock that answers every call with the same JSON body. */
+function stubFetchJson(body: unknown, status = 200): ReturnType<typeof vi.fn> {
+  const mockFetch = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse(body, status)));
+  vi.stubGlobal('fetch', mockFetch);
+  return mockFetch;
+}
+
+/** A successful sendMessage response carrying the given message_id. */
+function sendOkResponse(messageId = 4242): object {
+  return {
+    ok: true,
+    result: {
+      message_id: messageId,
+      chat: { id: 1234, type: 'private' },
+      date: 1_700_000_000,
+      text: 'hello',
+    },
+  };
+}
+
+/** The JSON body of the n-th fetch call. */
+function requestBody(mockFetch: ReturnType<typeof vi.fn>, callIndex = 0): Record<string, unknown> {
+  const init = mockFetch.mock.calls[callIndex][1] as RequestInit;
+  return JSON.parse(init.body as string) as Record<string, unknown>;
+}
+
+/** The URL of the n-th fetch call. */
+function requestUrl(mockFetch: ReturnType<typeof vi.fn>, callIndex = 0): string {
+  return mockFetch.mock.calls[callIndex][0] as string;
+}
+
+/** A text message in a private chat. */
+function dmMessage(overrides: Partial<TelegramMessage> = {}): TelegramMessage {
+  return {
+    message_id: 1010,
+    from: { id: USER_ID, first_name: 'Test', username: 'testuser' },
+    chat: { id: DM_CHAT_ID, type: 'private' },
+    date: 1_700_000_000,
+    text: 'hello bot',
+    ...overrides,
+  };
+}
+
+/** A text message in a supergroup. */
+function groupMessage(overrides: Partial<TelegramMessage> = {}): TelegramMessage {
+  return {
+    message_id: 2020,
+    from: { id: USER_ID, first_name: 'Test', username: 'testuser' },
+    chat: { id: GROUP_CHAT_ID, type: 'supergroup', title: 'Team' },
+    date: 1_700_000_000,
+    text: 'hello group',
+    ...overrides,
+  };
+}
+
+/** A message the bot itself sent earlier (what a user replies to). */
+function botMessage(chatId: number, overrides: Partial<TelegramMessage> = {}): TelegramMessage {
+  return {
+    message_id: 900,
+    from: { id: BOT_ID, is_bot: true, first_name: 'TestBot', username: BOT_USERNAME },
+    chat: { id: chatId, type: chatId < 0 ? 'supergroup' : 'private' },
+    date: 1_699_999_000,
+    text: 'the bot said this',
+    ...overrides,
+  };
+}
+
+/** A message another human sent earlier. */
+function otherUserMessage(
+  chatId: number,
+  overrides: Partial<TelegramMessage> = {},
+): TelegramMessage {
+  return {
+    message_id: 901,
+    from: { id: OTHER_USER_ID, first_name: 'Other', username: 'otheruser' },
+    chat: { id: chatId, type: chatId < 0 ? 'supergroup' : 'private' },
+    date: 1_699_999_000,
+    text: 'someone else said this',
+    ...overrides,
+  };
+}
+
+function messageUpdate(updateId: number, message: TelegramMessage): object {
+  return { update_id: updateId, message };
+}
+
+interface ReactionUpdateOptions {
+  chatId?: number;
+  chatType?: string;
+  messageId?: number;
+  user?: { id: number; is_bot?: boolean; first_name: string };
+  oldReaction?: TelegramReactionType[];
+  newReaction?: TelegramReactionType[];
+}
+
+/** A `message_reaction` update; defaults to a user adding a thumbs-up in a DM. */
+function reactionUpdate(updateId: number, opts: ReactionUpdateOptions = {}): object {
+  return {
+    update_id: updateId,
+    message_reaction: {
+      chat: { id: opts.chatId ?? DM_CHAT_ID, type: opts.chatType ?? 'private' },
+      message_id: opts.messageId ?? 900,
+      user: opts.user ?? { id: USER_ID, first_name: 'Test' },
+      date: 1_700_000_000,
+      old_reaction: opts.oldReaction ?? [],
+      new_reaction: opts.newReaction ?? [{ type: 'emoji', emoji: THUMBS_UP }],
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Connector lifecycle shared by all connector tests
+// ---------------------------------------------------------------------------
+
+const connectors: TelegramConnector[] = [];
+
+function makeConnector(overrides?: Partial<TelegramConfig>): TelegramConnector {
+  const connector = new TelegramConnector(defaultConfig(overrides), 'test-bot', silentLogger());
+  connectors.push(connector);
+  return connector;
+}
+
+/** Collect every event the connector hands to its onMessage handler. */
+function collectEvents(connector: TelegramConnector): InboundEvent[] {
+  const received: InboundEvent[] = [];
+  connector.onMessage(async (event) => {
+    received.push(event);
+  });
+  return received;
+}
+
+/**
+ * Start the connector against a fetch mock that answers getMe and then leaves
+ * the long poll hanging, so the bot's own identity (id + username) resolves
+ * exactly as in production. The connector is stopped in afterEach.
+ */
+async function startWithIdentity(connector: TelegramConnector): Promise<ReturnType<typeof vi.fn>> {
+  const mockFetch = makeMockFetch([]);
+  vi.stubGlobal('fetch', mockFetch);
+  await connector.start();
+  expect(connector.botUserId).toBe(String(BOT_ID));
+  return mockFetch;
+}
+
+afterEach(async () => {
+  // Stop first so any hanging long poll is aborted before fetch is restored.
+  for (const connector of connectors.splice(0)) {
+    await connector.stop();
+  }
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
+
+// ---------------------------------------------------------------------------
+// Pure helpers: thread addressing
+// ---------------------------------------------------------------------------
+
+describe('telegram-threads', () => {
+  describe('parseTelegramThreadId', () => {
+    it('returns a plain positive chat id as chatId only', () => {
+      expect(parseTelegramThreadId('12345')).toStrictEqual({ chatId: '12345' });
+    });
+
+    it('returns a plain negative (supergroup) chat id as chatId only', () => {
+      expect(parseTelegramThreadId('-1001234567890')).toStrictEqual({ chatId: '-1001234567890' });
+    });
+
+    it('splits "<chat_id>:<topic_id>" into chatId and a numeric topicId', () => {
+      expect(parseTelegramThreadId('-1001234567890:42')).toStrictEqual({
+        chatId: '-1001234567890',
+        topicId: 42,
+      });
+    });
+
+    it('splits a positive chat id with a topic', () => {
+      expect(parseTelegramThreadId('12345:3')).toStrictEqual({ chatId: '12345', topicId: 3 });
+    });
+
+    it('splits "@channelname:<topic_id>"', () => {
+      expect(parseTelegramThreadId('@channelname:7')).toStrictEqual({
+        chatId: '@channelname',
+        topicId: 7,
+      });
+    });
+
+    it('returns an @username without a topic whole', () => {
+      expect(parseTelegramThreadId('@channelname')).toStrictEqual({ chatId: '@channelname' });
+    });
+
+    it.each([
+      ['a WhatsApp JID', '491701234567@s.whatsapp.net'],
+      ['a WhatsApp device JID containing a colon', '491701234567:12@s.whatsapp.net'],
+      ['a non-numeric pair', 'abc:def'],
+      ['a non-numeric topic', '-100123:abc'],
+      ['a negative topic', '-100123:-4'],
+      ['a trailing colon', '-100123:'],
+      ['three segments', '-100123:4:5'],
+    ])('returns %s whole as chatId', (_label, value) => {
+      expect(parseTelegramThreadId(value)).toStrictEqual({ chatId: value });
+    });
+  });
+
+  describe('telegramThreadIdForMessage', () => {
+    it('keys a topic message as "<chat>:<topic>"', () => {
+      const message = groupMessage({ is_topic_message: true, message_thread_id: 42 });
+      expect(telegramThreadIdForMessage(message)).toBe(`${GROUP_CHAT_ID}:42`);
+    });
+
+    it('keys a message with message_thread_id but no is_topic_message by chat only', () => {
+      // A plain reply thread in a non-forum group also carries message_thread_id.
+      const message = groupMessage({ message_thread_id: 42 });
+      expect(telegramThreadIdForMessage(message)).toBe(String(GROUP_CHAT_ID));
+    });
+
+    it('keys a message with is_topic_message false by chat only', () => {
+      const message = groupMessage({ is_topic_message: false, message_thread_id: 42 });
+      expect(telegramThreadIdForMessage(message)).toBe(String(GROUP_CHAT_ID));
+    });
+
+    it('keys an ordinary message by chat only', () => {
+      expect(telegramThreadIdForMessage(dmMessage())).toBe(String(DM_CHAT_ID));
+    });
+
+    it('round-trips through parseTelegramThreadId', () => {
+      const message = groupMessage({ is_topic_message: true, message_thread_id: 42 });
+      expect(parseTelegramThreadId(telegramThreadIdForMessage(message))).toStrictEqual({
+        chatId: String(GROUP_CHAT_ID),
+        topicId: 42,
+      });
+    });
+  });
+
+  describe('isTelegramGroupChatId', () => {
+    it('is true for negative (group and supergroup) chat ids', () => {
+      expect(isTelegramGroupChatId('-1001234567890')).toBe(true);
+      expect(isTelegramGroupChatId('-4567')).toBe(true);
+    });
+
+    it('is false for positive (private) chat ids and usernames', () => {
+      expect(isTelegramGroupChatId('12345')).toBe(false);
+      expect(isTelegramGroupChatId('@channelname')).toBe(false);
+      expect(isTelegramGroupChatId('')).toBe(false);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Pure helpers: reactions
+// ---------------------------------------------------------------------------
+
+describe('telegram-reactions', () => {
+  describe('normalizeTelegramReactionEmoji', () => {
+    it('passes an allowed emoji through unchanged', () => {
+      expect(normalizeTelegramReactionEmoji(THUMBS_UP)).toBe(THUMBS_UP);
+    });
+
+    it('strips the emoji presentation selector (U+FE0F) from a heart', () => {
+      expect(HEART_WITH_VS16).not.toBe(HEART);
+      expect(normalizeTelegramReactionEmoji(HEART_WITH_VS16)).toBe(HEART);
+    });
+
+    it('strips a skin-tone modifier', () => {
+      expect(normalizeTelegramReactionEmoji(THUMBS_UP_MEDIUM_SKIN)).toBe(THUMBS_UP);
+    });
+
+    it('trims surrounding whitespace', () => {
+      expect(normalizeTelegramReactionEmoji(` ${THUMBS_UP} `)).toBe(THUMBS_UP);
+    });
+
+    it('returns null for an emoji outside the allowed set', () => {
+      expect(normalizeTelegramReactionEmoji(CHECK_MARK)).toBeNull();
+    });
+
+    it('returns null for plain text and the empty string', () => {
+      expect(normalizeTelegramReactionEmoji('ok')).toBeNull();
+      expect(normalizeTelegramReactionEmoji('')).toBeNull();
+    });
+
+    it('exposes the allowed set with the bare heart and thumbs-up but not the check mark', () => {
+      expect(TELEGRAM_REACTION_EMOJI).toContain(HEART);
+      expect(TELEGRAM_REACTION_EMOJI).toContain(THUMBS_UP);
+      expect(TELEGRAM_REACTION_EMOJI).not.toContain(CHECK_MARK);
+    });
+  });
+
+  describe('addedReactionEmoji', () => {
+    it('returns an emoji present in the new list but not in the old one', () => {
+      expect(addedReactionEmoji([], [{ type: 'emoji', emoji: THUMBS_UP }])).toEqual([THUMBS_UP]);
+    });
+
+    it('returns only the newly added emoji when the user already had one', () => {
+      expect(
+        addedReactionEmoji(
+          [{ type: 'emoji', emoji: THUMBS_UP }],
+          [
+            { type: 'emoji', emoji: THUMBS_UP },
+            { type: 'emoji', emoji: FIRE },
+          ],
+        ),
+      ).toEqual([FIRE]);
+    });
+
+    it('returns the new emoji when one reaction replaces another', () => {
+      expect(
+        addedReactionEmoji([{ type: 'emoji', emoji: THUMBS_UP }], [{ type: 'emoji', emoji: FIRE }]),
+      ).toEqual([FIRE]);
+    });
+
+    it('returns [] for a pure removal', () => {
+      expect(addedReactionEmoji([{ type: 'emoji', emoji: THUMBS_UP }], [])).toEqual([]);
+    });
+
+    it('returns [] when nothing changed', () => {
+      expect(
+        addedReactionEmoji(
+          [{ type: 'emoji', emoji: THUMBS_UP }],
+          [{ type: 'emoji', emoji: THUMBS_UP }],
+        ),
+      ).toEqual([]);
+    });
+
+    it('treats undefined lists as empty', () => {
+      expect(addedReactionEmoji(undefined, undefined)).toEqual([]);
+      expect(addedReactionEmoji(undefined, [{ type: 'emoji', emoji: THUMBS_UP }])).toEqual([
+        THUMBS_UP,
+      ]);
+    });
+
+    it('skips custom_emoji and paid reactions', () => {
+      const custom = { type: 'custom_emoji', custom_emoji_id: '5368324170671202286' };
+      expect(
+        addedReactionEmoji(
+          [],
+          [custom as TelegramReactionType, { type: 'paid' }, { type: 'emoji', emoji: FIRE }],
+        ),
+      ).toEqual([FIRE]);
+      expect(addedReactionEmoji([], [custom as TelegramReactionType, { type: 'paid' }])).toEqual(
+        [],
+      );
+    });
+
+    it('skips an emoji-typed reaction with a missing or empty emoji', () => {
+      expect(addedReactionEmoji([], [{ type: 'emoji' }, { type: 'emoji', emoji: '' }])).toEqual([]);
+    });
+
+    it('collapses duplicates in the new list', () => {
+      expect(
+        addedReactionEmoji(
+          [],
+          [
+            { type: 'emoji', emoji: THUMBS_UP },
+            { type: 'emoji', emoji: THUMBS_UP },
+            { type: 'emoji', emoji: FIRE },
+          ],
+        ),
+      ).toEqual([THUMBS_UP, FIRE]);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Inbound messages
+// ---------------------------------------------------------------------------
+
+describe('TelegramConnector inbound replies and topics', () => {
+  it('carries the Telegram message_id as externalMessageId', async () => {
+    const connector = makeConnector();
+    const received = collectEvents(connector);
+
+    await connector.handleUpdatePublic(messageUpdate(101, dmMessage({ message_id: 3131 })));
+
+    expect(received).toHaveLength(1);
+    expect(received[0].externalMessageId).toBe('3131');
+    // Distinct from the idempotency key, which stays the update_id.
+    expect(received[0].idempotencyKey).toBe('101');
+    expect(received[0].externalThreadId).toBe(String(DM_CHAT_ID));
+    expect(received[0].content).toBe('hello bot');
+  });
+
+  it('has no replyTo when the message replies to nothing', async () => {
+    const connector = makeConnector();
+    const received = collectEvents(connector);
+
+    await connector.handleUpdatePublic(messageUpdate(102, dmMessage()));
+
+    expect(received).toHaveLength(1);
+    expect('replyTo' in received[0]).toBe(false);
+  });
+
+  it('marks a reply to the bot own message as fromSelf', async () => {
+    const connector = makeConnector();
+    const received = collectEvents(connector);
+    await startWithIdentity(connector);
+
+    await connector.handleUpdatePublic(
+      messageUpdate(
+        103,
+        dmMessage({ text: 'what do you mean?', reply_to_message: botMessage(DM_CHAT_ID) }),
+      ),
+    );
+
+    expect(received).toHaveLength(1);
+    expect(received[0].replyTo).toEqual({
+      externalMessageId: '900',
+      senderId: String(BOT_ID),
+      fromSelf: true,
+      text: 'the bot said this',
+    });
+    expect(received[0].content).toBe('what do you mean?');
+  });
+
+  it('marks a reply to another user message as not fromSelf', async () => {
+    const connector = makeConnector();
+    const received = collectEvents(connector);
+    await startWithIdentity(connector);
+
+    await connector.handleUpdatePublic(
+      messageUpdate(104, dmMessage({ reply_to_message: otherUserMessage(DM_CHAT_ID) })),
+    );
+
+    expect(received).toHaveLength(1);
+    expect(received[0].replyTo).toEqual({
+      externalMessageId: '901',
+      senderId: String(OTHER_USER_ID),
+      fromSelf: false,
+      text: 'someone else said this',
+    });
+  });
+
+  it('does not claim fromSelf before the bot identity is resolved by getMe', async () => {
+    // start() was never called, so the connector does not know its own id.
+    const connector = makeConnector();
+    const received = collectEvents(connector);
+    expect(connector.botUserId).toBeUndefined();
+
+    await connector.handleUpdatePublic(
+      messageUpdate(105, dmMessage({ reply_to_message: botMessage(DM_CHAT_ID) })),
+    );
+
+    expect(received).toHaveLength(1);
+    expect(received[0].replyTo?.senderId).toBe(String(BOT_ID));
+    expect(received[0].replyTo?.fromSelf).toBe(false);
+  });
+
+  it('reports fromSelf false and no senderId when the replied message has no sender', async () => {
+    const connector = makeConnector();
+    const received = collectEvents(connector);
+    await startWithIdentity(connector);
+
+    const replied = otherUserMessage(DM_CHAT_ID);
+    delete replied.from;
+    await connector.handleUpdatePublic(
+      messageUpdate(106, dmMessage({ reply_to_message: replied })),
+    );
+
+    expect(received).toHaveLength(1);
+    expect(received[0].replyTo).toEqual({
+      externalMessageId: '901',
+      fromSelf: false,
+      text: 'someone else said this',
+    });
+  });
+
+  it('prefers the quoted selection over the replied message text', async () => {
+    const connector = makeConnector();
+    const received = collectEvents(connector);
+    await startWithIdentity(connector);
+
+    await connector.handleUpdatePublic(
+      messageUpdate(
+        107,
+        dmMessage({
+          reply_to_message: botMessage(DM_CHAT_ID, { text: 'a long answer with several points' }),
+          quote: { text: 'several points' },
+        }),
+      ),
+    );
+
+    expect(received).toHaveLength(1);
+    expect(received[0].replyTo?.text).toBe('several points');
+    expect(received[0].replyTo?.externalMessageId).toBe('900');
+  });
+
+  it('falls back to the replied message caption when it has no text', async () => {
+    const connector = makeConnector();
+    const received = collectEvents(connector);
+    await startWithIdentity(connector);
+
+    const replied = otherUserMessage(DM_CHAT_ID, { caption: 'photo caption' });
+    delete replied.text;
+    await connector.handleUpdatePublic(
+      messageUpdate(108, dmMessage({ reply_to_message: replied })),
+    );
+
+    expect(received).toHaveLength(1);
+    expect(received[0].replyTo?.text).toBe('photo caption');
+  });
+
+  it('omits replyTo.text when the replied message has neither text nor caption', async () => {
+    const connector = makeConnector();
+    const received = collectEvents(connector);
+    await startWithIdentity(connector);
+
+    const replied = otherUserMessage(DM_CHAT_ID);
+    delete replied.text;
+    await connector.handleUpdatePublic(
+      messageUpdate(109, dmMessage({ reply_to_message: replied })),
+    );
+
+    expect(received).toHaveLength(1);
+    expect(received[0].replyTo).toEqual({
+      externalMessageId: '901',
+      senderId: String(OTHER_USER_ID),
+      fromSelf: false,
+    });
+  });
+
+  describe('topics', () => {
+    /** A topic message in a supergroup that @mentions the bot so it passes the group gate. */
+    function topicMessage(overrides: Partial<TelegramMessage> = {}): TelegramMessage {
+      return groupMessage({
+        text: `@${BOT_USERNAME} hello topic`,
+        entities: [{ type: 'mention', offset: 0, length: BOT_USERNAME.length + 1 }],
+        is_topic_message: true,
+        message_thread_id: 42,
+        ...overrides,
+      });
+    }
+
+    it('has no replyTo when reply_to_message is the topic root by id', async () => {
+      const connector = makeConnector({ allowGroupChats: true });
+      const received = collectEvents(connector);
+      await startWithIdentity(connector);
+
+      await connector.handleUpdatePublic(
+        messageUpdate(
+          120,
+          topicMessage({
+            // No forum_topic_created here: the id match alone must be enough.
+            reply_to_message: otherUserMessage(GROUP_CHAT_ID, { message_id: 42 }),
+          }),
+        ),
+      );
+
+      expect(received).toHaveLength(1);
+      expect('replyTo' in received[0]).toBe(false);
+      expect(received[0].externalThreadId).toBe(`${GROUP_CHAT_ID}:42`);
+      expect(received[0].content).toBe('hello topic');
+    });
+
+    it('has no replyTo when reply_to_message is the forum_topic_created service message', async () => {
+      const connector = makeConnector({ allowGroupChats: true });
+      const received = collectEvents(connector);
+      await startWithIdentity(connector);
+
+      const topicRoot = otherUserMessage(GROUP_CHAT_ID, {
+        // A different id than message_thread_id: forum_topic_created alone must be enough.
+        message_id: 41,
+        forum_topic_created: { name: 'Releases', icon_color: 7322096 },
+      });
+      delete topicRoot.text;
+      await connector.handleUpdatePublic(
+        messageUpdate(121, topicMessage({ reply_to_message: topicRoot })),
+      );
+
+      expect(received).toHaveLength(1);
+      expect('replyTo' in received[0]).toBe(false);
+      expect(received[0].externalThreadId).toBe(`${GROUP_CHAT_ID}:42`);
+    });
+
+    it('keeps replyTo for a real reply to another message inside the topic', async () => {
+      const connector = makeConnector({ allowGroupChats: true });
+      const received = collectEvents(connector);
+      await startWithIdentity(connector);
+
+      await connector.handleUpdatePublic(
+        messageUpdate(
+          122,
+          topicMessage({
+            reply_to_message: otherUserMessage(GROUP_CHAT_ID, {
+              message_id: 57,
+              is_topic_message: true,
+              message_thread_id: 42,
+            }),
+          }),
+        ),
+      );
+
+      expect(received).toHaveLength(1);
+      expect(received[0].replyTo).toEqual({
+        externalMessageId: '57',
+        senderId: String(OTHER_USER_ID),
+        fromSelf: false,
+        text: 'someone else said this',
+      });
+      expect(received[0].externalThreadId).toBe(`${GROUP_CHAT_ID}:42`);
+    });
+
+    it('keeps a non-topic message with a message_thread_id in the chat thread', async () => {
+      const connector = makeConnector({ allowGroupChats: true });
+      const received = collectEvents(connector);
+      await startWithIdentity(connector);
+
+      // A reply chain in a non-forum group: message_thread_id is the replied
+      // message id, but is_topic_message is absent.
+      await connector.handleUpdatePublic(
+        messageUpdate(
+          123,
+          topicMessage({
+            is_topic_message: undefined,
+            message_thread_id: 57,
+            reply_to_message: otherUserMessage(GROUP_CHAT_ID, { message_id: 57 }),
+          }),
+        ),
+      );
+
+      expect(received).toHaveLength(1);
+      expect(received[0].externalThreadId).toBe(String(GROUP_CHAT_ID));
+      expect(received[0].replyTo?.externalMessageId).toBe('57');
+    });
+  });
+
+  describe('group reply gate', () => {
+    it('delivers a reply to the bot own message with the full text, without a mention', async () => {
+      const connector = makeConnector({ allowGroupChats: true });
+      const received = collectEvents(connector);
+      await startWithIdentity(connector);
+
+      await connector.handleUpdatePublic(
+        messageUpdate(
+          130,
+          groupMessage({
+            text: 'and what about tomorrow?',
+            reply_to_message: botMessage(GROUP_CHAT_ID),
+          }),
+        ),
+      );
+
+      expect(received).toHaveLength(1);
+      expect(received[0].content).toBe('and what about tomorrow?');
+      expect(received[0].externalThreadId).toBe(String(GROUP_CHAT_ID));
+      expect(received[0].externalMessageId).toBe('2020');
+      expect(received[0].replyTo).toEqual({
+        externalMessageId: '900',
+        senderId: String(BOT_ID),
+        fromSelf: true,
+        text: 'the bot said this',
+      });
+    });
+
+    it('drops a reply to someone else message that has no mention or trigger word', async () => {
+      const connector = makeConnector({ allowGroupChats: true });
+      const received = collectEvents(connector);
+      await startWithIdentity(connector);
+
+      await connector.handleUpdatePublic(
+        messageUpdate(
+          131,
+          groupMessage({
+            text: 'and what about tomorrow?',
+            reply_to_message: otherUserMessage(GROUP_CHAT_ID),
+          }),
+        ),
+      );
+
+      expect(received).toHaveLength(0);
+    });
+
+    it('drops a plain group message with no reply, mention or trigger word', async () => {
+      const connector = makeConnector({ allowGroupChats: true });
+      const received = collectEvents(connector);
+      await startWithIdentity(connector);
+
+      await connector.handleUpdatePublic(messageUpdate(132, groupMessage()));
+
+      expect(received).toHaveLength(0);
+    });
+
+    it('drops a reply to the bot when group chats are not enabled', async () => {
+      const connector = makeConnector();
+      const received = collectEvents(connector);
+      await startWithIdentity(connector);
+
+      await connector.handleUpdatePublic(
+        messageUpdate(133, groupMessage({ reply_to_message: botMessage(GROUP_CHAT_ID) })),
+      );
+
+      expect(received).toHaveLength(0);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Inbound reactions
+// ---------------------------------------------------------------------------
+
+describe('TelegramConnector inbound reactions', () => {
+  it('turns an added emoji into a reaction event', async () => {
+    const connector = makeConnector();
+    const received = collectEvents(connector);
+    const update = reactionUpdate(201, { messageId: 900 });
+
+    await connector.handleUpdatePublic(update);
+
+    expect(received).toHaveLength(1);
+    const event = received[0];
+    expect(event.reaction).toEqual({ targetMessageId: '900', emoji: THUMBS_UP });
+    expect(event.content).toBe('');
+    expect(event.externalThreadId).toBe(String(DM_CHAT_ID));
+    expect(event.idempotencyKey).toBe('201');
+    expect(event.senderId).toBe(String(USER_ID));
+    expect('externalMessageId' in event).toBe(false);
+    expect('replyTo' in event).toBe(false);
+    expect(event.channelType).toBe('telegram');
+    expect(event.channelName).toBe('test-bot');
+    expect(event.timestamp).toBe(1_700_000_000_000);
+    expect(event.raw).toBe(update);
+  });
+
+  it('reports only the emoji that was added on top of an existing reaction', async () => {
+    const connector = makeConnector();
+    const received = collectEvents(connector);
+
+    await connector.handleUpdatePublic(
+      reactionUpdate(202, {
+        oldReaction: [{ type: 'emoji', emoji: THUMBS_UP }],
+        newReaction: [
+          { type: 'emoji', emoji: THUMBS_UP },
+          { type: 'emoji', emoji: FIRE },
+        ],
+      }),
+    );
+
+    expect(received).toHaveLength(1);
+    expect(received[0].reaction).toEqual({ targetMessageId: '900', emoji: FIRE });
+  });
+
+  it('forwards a reaction from a group chat when allowGroupChats is enabled', async () => {
+    const connector = makeConnector({ allowGroupChats: true });
+    const received = collectEvents(connector);
+
+    await connector.handleUpdatePublic(
+      reactionUpdate(203, { chatId: GROUP_CHAT_ID, chatType: 'supergroup', messageId: 77 }),
+    );
+
+    expect(received).toHaveLength(1);
+    // The update does not name the topic, so the event carries the bare chat id.
+    expect(received[0].externalThreadId).toBe(String(GROUP_CHAT_ID));
+    expect(received[0].reaction).toEqual({ targetMessageId: '77', emoji: THUMBS_UP });
+  });
+
+  it('forwards a reaction from a chat listed in allowedChatIds', async () => {
+    const connector = makeConnector({ allowedChatIds: [String(DM_CHAT_ID)] });
+    const received = collectEvents(connector);
+
+    await connector.handleUpdatePublic(reactionUpdate(204));
+
+    expect(received).toHaveLength(1);
+  });
+
+  describe('dropped', () => {
+    it('when inboundReactions is false', async () => {
+      const connector = makeConnector({ inboundReactions: false });
+      const received = collectEvents(connector);
+
+      await connector.handleUpdatePublic(reactionUpdate(210));
+
+      expect(received).toHaveLength(0);
+    });
+
+    it('when the reaction was removed (new_reaction empty)', async () => {
+      const connector = makeConnector();
+      const received = collectEvents(connector);
+
+      await connector.handleUpdatePublic(
+        reactionUpdate(211, {
+          oldReaction: [{ type: 'emoji', emoji: THUMBS_UP }],
+          newReaction: [],
+        }),
+      );
+
+      expect(received).toHaveLength(0);
+    });
+
+    it('when only a custom_emoji reaction was added', async () => {
+      const connector = makeConnector();
+      const received = collectEvents(connector);
+
+      await connector.handleUpdatePublic(
+        reactionUpdate(212, {
+          newReaction: [
+            {
+              type: 'custom_emoji',
+              custom_emoji_id: '5368324170671202286',
+            } as TelegramReactionType,
+          ],
+        }),
+      );
+
+      expect(received).toHaveLength(0);
+    });
+
+    it('when the reacting user is a bot', async () => {
+      const connector = makeConnector();
+      const received = collectEvents(connector);
+
+      await connector.handleUpdatePublic(
+        reactionUpdate(213, { user: { id: 4321, is_bot: true, first_name: 'OtherBot' } }),
+      );
+
+      expect(received).toHaveLength(0);
+    });
+
+    it('when it comes from a group chat and allowGroupChats is not enabled', async () => {
+      const connector = makeConnector();
+      const received = collectEvents(connector);
+
+      await connector.handleUpdatePublic(
+        reactionUpdate(214, { chatId: GROUP_CHAT_ID, chatType: 'supergroup' }),
+      );
+      await connector.handleUpdatePublic(reactionUpdate(215, { chatId: -4567, chatType: 'group' }));
+
+      expect(received).toHaveLength(0);
+    });
+
+    it('when the chat is not in allowedChatIds', async () => {
+      const connector = makeConnector({ allowedChatIds: ['111'] });
+      const received = collectEvents(connector);
+
+      await connector.handleUpdatePublic(reactionUpdate(216));
+
+      expect(received).toHaveLength(0);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Outbound send()
+// ---------------------------------------------------------------------------
+
+describe('TelegramConnector send() replies and topics', () => {
+  const DM_THREAD = '1234';
+  const GROUP_THREAD = '-100123';
+
+  it('returns the sent message_id as the receipt', async () => {
+    const connector = makeConnector();
+    stubFetchJson(sendOkResponse(4242));
+
+    const result = await connector.send(DM_THREAD, { body: 'Hello' });
+
+    expect(result.isOk()).toBe(true);
+    expect(result._unsafeUnwrap()).toEqual({ externalMessageId: '4242' });
+  });
+
+  it('sends exactly chat_id, text and parse_mode when there is no reply target and no topic', async () => {
+    const connector = makeConnector();
+    const mockFetch = stubFetchJson(sendOkResponse());
+
+    await connector.send(DM_THREAD, { body: 'Hello' });
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(requestUrl(mockFetch)).toBe('https://api.telegram.org/bottest-token/sendMessage');
+    expect(requestBody(mockFetch)).toStrictEqual({
+      chat_id: DM_THREAD,
+      text: connector.format('Hello'),
+      parse_mode: 'MarkdownV2',
+    });
+  });
+
+  it('delivers a topic thread into its topic', async () => {
+    const connector = makeConnector();
+    const mockFetch = stubFetchJson(sendOkResponse());
+
+    const result = await connector.send('-100123:42', { body: 'Hello' });
+
+    expect(result.isOk()).toBe(true);
+    expect(requestBody(mockFetch)).toStrictEqual({
+      chat_id: '-100123',
+      text: connector.format('Hello'),
+      parse_mode: 'MarkdownV2',
+      message_thread_id: 42,
+    });
+  });
+
+  it('sends an explicit reply target as a native reply in a DM', async () => {
+    const connector = makeConnector();
+    const mockFetch = stubFetchJson(sendOkResponse());
+
+    const result = await connector.send(DM_THREAD, {
+      body: 'Hello',
+      replyTo: { externalMessageId: '77' },
+    });
+
+    expect(result.isOk()).toBe(true);
+    expect(requestBody(mockFetch)).toStrictEqual({
+      chat_id: DM_THREAD,
+      text: connector.format('Hello'),
+      parse_mode: 'MarkdownV2',
+      reply_parameters: { message_id: 77, allow_sending_without_reply: true },
+    });
+  });
+
+  it('sends an explicit reply target as a native reply even with replyToTrigger "never"', async () => {
+    const connector = makeConnector({ replyToTrigger: 'never' });
+    const mockFetch = stubFetchJson(sendOkResponse());
+
+    await connector.send(DM_THREAD, { body: 'Hello', replyTo: { externalMessageId: '77' } });
+
+    expect(requestBody(mockFetch).reply_parameters).toEqual({
+      message_id: 77,
+      allow_sending_without_reply: true,
+    });
+  });
+
+  it('combines a topic and a reply target', async () => {
+    const connector = makeConnector();
+    const mockFetch = stubFetchJson(sendOkResponse());
+
+    await connector.send('-100123:42', {
+      body: 'Hello',
+      replyTo: { externalMessageId: '77', implicit: true },
+    });
+
+    expect(requestBody(mockFetch)).toStrictEqual({
+      chat_id: '-100123',
+      text: connector.format('Hello'),
+      parse_mode: 'MarkdownV2',
+      message_thread_id: 42,
+      reply_parameters: { message_id: 77, allow_sending_without_reply: true },
+    });
+  });
+
+  describe('implicit reply target', () => {
+    const implicitOutput = {
+      body: 'Hello',
+      replyTo: { externalMessageId: '77', implicit: true },
+    };
+    const nativeReply = { message_id: 77, allow_sending_without_reply: true };
+
+    it('is not sent as a reply in a DM by default', async () => {
+      const connector = makeConnector();
+      const mockFetch = stubFetchJson(sendOkResponse());
+
+      const result = await connector.send(DM_THREAD, implicitOutput);
+
+      expect(result.isOk()).toBe(true);
+      expect(requestBody(mockFetch)).toStrictEqual({
+        chat_id: DM_THREAD,
+        text: connector.format('Hello'),
+        parse_mode: 'MarkdownV2',
+      });
+    });
+
+    it('is sent as a reply in a group by default', async () => {
+      const connector = makeConnector();
+      const mockFetch = stubFetchJson(sendOkResponse());
+
+      await connector.send(GROUP_THREAD, implicitOutput);
+
+      const body = requestBody(mockFetch);
+      expect(body.chat_id).toBe(GROUP_THREAD);
+      expect(body.reply_parameters).toEqual(nativeReply);
+    });
+
+    it('behaves the same with replyToTrigger "groups" set explicitly', async () => {
+      const connector = makeConnector({ replyToTrigger: 'groups' });
+      const mockFetch = stubFetchJson(sendOkResponse());
+
+      await connector.send(DM_THREAD, implicitOutput);
+      await connector.send(GROUP_THREAD, implicitOutput);
+
+      expect('reply_parameters' in requestBody(mockFetch, 0)).toBe(false);
+      expect(requestBody(mockFetch, 1).reply_parameters).toEqual(nativeReply);
+    });
+
+    it('is sent as a reply in a DM with replyToTrigger "always"', async () => {
+      const connector = makeConnector({ replyToTrigger: 'always' });
+      const mockFetch = stubFetchJson(sendOkResponse());
+
+      await connector.send(DM_THREAD, implicitOutput);
+
+      const body = requestBody(mockFetch);
+      expect(body.chat_id).toBe(DM_THREAD);
+      expect(body.reply_parameters).toEqual(nativeReply);
+    });
+
+    it('is not sent as a reply in a group with replyToTrigger "never"', async () => {
+      const connector = makeConnector({ replyToTrigger: 'never' });
+      const mockFetch = stubFetchJson(sendOkResponse());
+
+      const result = await connector.send(GROUP_THREAD, implicitOutput);
+
+      expect(result.isOk()).toBe(true);
+      expect(requestBody(mockFetch)).toStrictEqual({
+        chat_id: GROUP_THREAD,
+        text: connector.format('Hello'),
+        parse_mode: 'MarkdownV2',
+      });
+    });
+  });
+
+  it.each([
+    ['a WhatsApp message id', 'wamid.HBgLNDkxNzAxMjM0NTY3'],
+    ['a negative number', '-5'],
+    ['zero', '0'],
+    ['a decimal', '7.5'],
+    ['the empty string', ''],
+  ])('degrades to a plain send when the reply id is %s', async (_label, externalMessageId) => {
+    const connector = makeConnector();
+    const mockFetch = stubFetchJson(sendOkResponse(4242));
+
+    const result = await connector.send(DM_THREAD, {
+      body: 'Hello',
+      replyTo: { externalMessageId },
+    });
+
+    expect(result.isOk()).toBe(true);
+    expect(result._unsafeUnwrap()).toEqual({ externalMessageId: '4242' });
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(requestBody(mockFetch)).toStrictEqual({
+      chat_id: DM_THREAD,
+      text: connector.format('Hello'),
+      parse_mode: 'MarkdownV2',
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Outbound react()
+// ---------------------------------------------------------------------------
+
+describe('TelegramConnector react()', () => {
+  it('calls setMessageReaction with the chat, numeric message id and emoji', async () => {
+    const connector = makeConnector();
+    const mockFetch = stubFetchJson({ ok: true, result: true });
+
+    const result = await connector.react('1234', { externalMessageId: '77' }, THUMBS_UP);
+
+    expect(result.isOk()).toBe(true);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(requestUrl(mockFetch)).toBe('https://api.telegram.org/bottest-token/setMessageReaction');
+    const init = mockFetch.mock.calls[0][1] as RequestInit;
+    expect(init.method).toBe('POST');
+    expect((init.headers as Record<string, string>)['Content-Type']).toBe('application/json');
+    expect(requestBody(mockFetch)).toStrictEqual({
+      chat_id: '1234',
+      message_id: 77,
+      reaction: [{ type: 'emoji', emoji: THUMBS_UP }],
+    });
+  });
+
+  it('sends a heart with a presentation selector as the bare heart', async () => {
+    const connector = makeConnector();
+    const mockFetch = stubFetchJson({ ok: true, result: true });
+
+    const result = await connector.react('1234', { externalMessageId: '77' }, HEART_WITH_VS16);
+
+    expect(result.isOk()).toBe(true);
+    expect(requestBody(mockFetch).reaction).toEqual([{ type: 'emoji', emoji: HEART }]);
+  });
+
+  it('sends a skin-toned thumbs-up as the plain thumbs-up', async () => {
+    const connector = makeConnector();
+    const mockFetch = stubFetchJson({ ok: true, result: true });
+
+    await connector.react('1234', { externalMessageId: '77' }, THUMBS_UP_MEDIUM_SKIN);
+
+    expect(requestBody(mockFetch).reaction).toEqual([{ type: 'emoji', emoji: THUMBS_UP }]);
+  });
+
+  it('clears the reaction when the emoji is empty', async () => {
+    const connector = makeConnector();
+    const mockFetch = stubFetchJson({ ok: true, result: true });
+
+    const result = await connector.react('1234', { externalMessageId: '77' }, '');
+
+    expect(result.isOk()).toBe(true);
+    expect(requestBody(mockFetch)).toStrictEqual({ chat_id: '1234', message_id: 77, reaction: [] });
+  });
+
+  it('refuses an unsupported emoji with the allowed alternatives and makes no request', async () => {
+    const connector = makeConnector();
+    const mockFetch = stubFetchJson({ ok: true, result: true });
+
+    const result = await connector.react('1234', { externalMessageId: '77' }, CHECK_MARK);
+
+    expect(result.isErr()).toBe(true);
+    const message = result._unsafeUnwrapErr().message;
+    expect(message).toContain(CHECK_MARK);
+    expect(message).toContain(THUMBS_UP);
+    expect(message).toContain(HEART);
+    expect(message).toContain(TELEGRAM_REACTION_EMOJI.join(' '));
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['a WhatsApp message id', 'wamid.HBgLNDkxNzAxMjM0NTY3'],
+    ['a negative number', '-5'],
+    ['zero', '0'],
+    ['the empty string', ''],
+  ])('refuses %s as the message id and makes no request', async (_label, externalMessageId) => {
+    const connector = makeConnector();
+    const mockFetch = stubFetchJson({ ok: true, result: true });
+
+    const result = await connector.react('1234', { externalMessageId }, THUMBS_UP);
+
+    expect(result.isErr()).toBe(true);
+    expect(result._unsafeUnwrapErr().message).toContain('is not a Telegram message id');
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('returns Err with the API description when Telegram answers ok: false', async () => {
+    const connector = makeConnector();
+    stubFetchJson(
+      { ok: false, error_code: 400, description: 'Bad Request: REACTION_INVALID' },
+      400,
+    );
+
+    const result = await connector.react('1234', { externalMessageId: '77' }, THUMBS_UP);
+
+    expect(result.isErr()).toBe(true);
+    const message = result._unsafeUnwrapErr().message;
+    expect(message).toContain('Bad Request: REACTION_INVALID');
+    expect(message).toContain('400');
+  });
+
+  it('returns Err when the request throws', async () => {
+    const connector = makeConnector();
+    const mockFetch = vi.fn().mockRejectedValue(new Error('ECONNRESET'));
+    vi.stubGlobal('fetch', mockFetch);
+
+    const result = await connector.react('1234', { externalMessageId: '77' }, THUMBS_UP);
+
+    expect(result.isErr()).toBe(true);
+    expect(result._unsafeUnwrapErr().message).toContain('ECONNRESET');
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns Err when the response body is not JSON', async () => {
+    const connector = makeConnector();
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 502,
+      json: () => Promise.reject(new SyntaxError('Unexpected token <')),
+    } as unknown as Response);
+    vi.stubGlobal('fetch', mockFetch);
+
+    const result = await connector.react('1234', { externalMessageId: '77' }, THUMBS_UP);
+
+    expect(result.isErr()).toBe(true);
+    expect(result._unsafeUnwrapErr().message).toContain('502');
+  });
+
+  it('addresses the bare chat for a topic thread', async () => {
+    const connector = makeConnector();
+    const mockFetch = stubFetchJson({ ok: true, result: true });
+
+    const result = await connector.react('-100123:42', { externalMessageId: '77' }, THUMBS_UP);
+
+    expect(result.isOk()).toBe(true);
+    expect(requestBody(mockFetch)).toStrictEqual({
+      chat_id: '-100123',
+      message_id: 77,
+      reaction: [{ type: 'emoji', emoji: THUMBS_UP }],
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getUpdates / sendTyping
+// ---------------------------------------------------------------------------
+
+describe('TelegramConnector getUpdates allowed_updates', () => {
+  /** Start the poll loop, wait for the first long poll, and return its URL. */
+  async function firstGetUpdatesUrl(connector: TelegramConnector): Promise<URL> {
+    const mockFetch = makeMockFetch([]);
+    vi.stubGlobal('fetch', mockFetch);
+
+    const getUpdatesCalls = (): string[] =>
+      mockFetch.mock.calls
+        .map((call) => call[0] as string)
+        .filter((url) => url.includes('/getUpdates'));
+
+    await connector.start();
+    await vi.waitFor(() => expect(getUpdatesCalls().length).toBeGreaterThan(0), { timeout: 2000 });
+    await connector.stop();
+
+    return new URL(getUpdatesCalls()[0]);
+  }
+
+  it('asks for message and message_reaction updates by default', async () => {
+    const url = await firstGetUpdatesUrl(makeConnector());
+
+    expect(url.pathname).toBe('/bottest-token/getUpdates');
+    const allowed = url.searchParams.get('allowed_updates');
+    expect(allowed).not.toBeNull();
+    expect(JSON.parse(allowed as string)).toEqual(['message', 'message_reaction']);
+    expect(url.searchParams.get('offset')).toBe('0');
+    expect(url.searchParams.get('timeout')).toBe('1');
+  });
+
+  it('asks for message and message_reaction updates when inboundReactions is true', async () => {
+    const url = await firstGetUpdatesUrl(makeConnector({ inboundReactions: true }));
+
+    expect(JSON.parse(url.searchParams.get('allowed_updates') as string)).toEqual([
+      'message',
+      'message_reaction',
+    ]);
+  });
+
+  it('asks for message updates only when inboundReactions is false', async () => {
+    const url = await firstGetUpdatesUrl(makeConnector({ inboundReactions: false }));
+
+    const allowed = url.searchParams.get('allowed_updates');
+    expect(allowed).not.toBeNull();
+    expect(JSON.parse(allowed as string)).toEqual(['message']);
+  });
+
+  it('delivers a polled message_reaction update to the handler', async () => {
+    const connector = makeConnector();
+    const received = collectEvents(connector);
+    const mockFetch = makeMockFetch([
+      { ok: true, result: [reactionUpdate(301, { messageId: 88 })] },
+    ]);
+    vi.stubGlobal('fetch', mockFetch);
+
+    await connector.start();
+    await vi.waitFor(() => expect(received.length).toBe(1), { timeout: 2000 });
+    await connector.stop();
+
+    expect(received[0].reaction).toEqual({ targetMessageId: '88', emoji: THUMBS_UP });
+    expect(received[0].idempotencyKey).toBe('301');
+  });
+});
+
+describe('TelegramConnector sendTyping()', () => {
+  it('sends message_thread_id for a topic thread', async () => {
+    const connector = makeConnector();
+    const mockFetch = stubFetchJson({ ok: true, result: true });
+
+    await connector.sendTyping('-100123:42');
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(requestUrl(mockFetch)).toBe('https://api.telegram.org/bottest-token/sendChatAction');
+    expect(requestBody(mockFetch)).toStrictEqual({
+      chat_id: '-100123',
+      action: 'typing',
+      message_thread_id: 42,
+    });
+  });
+
+  it('sends no message_thread_id for a plain chat thread', async () => {
+    const connector = makeConnector();
+    const mockFetch = stubFetchJson({ ok: true, result: true });
+
+    await connector.sendTyping('1234');
+
+    expect(requestBody(mockFetch)).toStrictEqual({ chat_id: '1234', action: 'typing' });
+  });
+});

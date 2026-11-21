@@ -70,8 +70,8 @@ Examples:
 | Tier | Use when intent suggests | Claude provider | Gemini provider |
 |---|---|---|---|
 | `strong` | review, audit, analyze, plan, architect | `claude-opus-4-6` | `gemini-2.5-pro` |
-| `balanced` | summarize, draft, write, general assistance | `claude-sonnet-4-6` | `gemini-2.5-flash` |
-| `fast` | classify, tag, triage, quick, simple | `claude-haiku-4-5` | `gemini-2.5-flash` |
+| `balanced` | summarize, draft, write, general assistance | `claude-sonnet-5-5` | `gemini-2.5-flash` |
+| `fast` | classify, tag, triage, quick, simple | `claude-haiku-5-5` | `gemini-2.5-flash` |
 
 **`backgroundProvider`** *(optional)* — provider used when this persona spawns a background agent. Resolution order: explicit tool arg → `backgroundProvider` → persona's foreground `provider` (only if it is also enabled under `backgroundAgent.providers`) → `backgroundAgent.defaultProvider`. Set when the foreground provider is unsuitable for background work (e.g. local Ollama running short-context models). Must be enabled under `backgroundAgent.providers` — the daemon refuses to start otherwise.
 
@@ -87,11 +87,25 @@ Use these exact labels.
 |---|---|---|
 | memory, remember, context, knowledge | `memory.access:*` | |
 | message, notify, send, communicate | | `channel.send:*` |
+| react, emoji, acknowledge, thumbs up | `channel.react:*` | |
 | search, fetch, http, api | `net.http` | |
 | queue async work, background jobs | `subagent.background` | |
 | ask another agent inline, specialist consultation | `subagent.invoke` | |
+| image, photo, screenshot, what does this show | `image.read:thread` | |
 | schedule, cron, recurring tasks | | `schedule.manage` |
 | query, database, SQL | | `db.query` |
+
+`image.read:thread` exposes `image_lookup`: text-only discovery of the thread's
+Images and saved Findings. It never returns pixels, never calls a model, and needs
+no credentials, so it is safe to grant on its own.
+
+If the persona should actually answer what an image shows, capability labels are
+not enough — it also needs `subagent.invoke` **and** `vision` listed under the
+persona's `subagents` key in `talond.yaml`. There is no `talonctl add-persona`
+flag for sub-agent assignment, so edit the config (or note it in the summary for
+the user to add afterwards). Pixels go only to the `vision` sub-agent; the persona
+itself remains text-only. Warn that uploaded GPS/EXIF and Findings persist after
+the image file expires (default 24h) and can appear in replies.
 
 **Provider-native**
 

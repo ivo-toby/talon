@@ -23,6 +23,9 @@ export { ThreadRepository } from './thread-repository.js';
 export type { MessageRow, InsertMessageInput } from './message-repository.js';
 export { MessageRepository } from './message-repository.js';
 
+export type { MessageRefRow, RecordMessageRefInput } from './message-ref-repository.js';
+export { MessageRefRepository, MESSAGE_REF_EXCERPT_MAX_CHARS } from './message-ref-repository.js';
+
 export type {
   QueueItemRow,
   QueueStatus,
@@ -60,8 +63,63 @@ export { AuditRepository } from './audit-repository.js';
 export type { ToolResultRow, ToolResultStatus, InsertToolResultInput } from './tool-result-repository.js';
 export { ToolResultRepository } from './tool-result-repository.js';
 
+export type {
+  ImageRow,
+  InsertableImageState,
+  InsertImageInput,
+  ImageAvailabilityMetadata,
+  FindImagesOptions,
+} from './image-repository.js';
+export {
+  ImageRepository,
+  mapImageRow,
+  runLedgerTransaction,
+  DEFAULT_IMAGE_LIMIT,
+  DEFAULT_SWEEP_LIMIT,
+} from './image-repository.js';
+
+export type {
+  ImageIngestionStatus,
+  ImageIngestionRow,
+  ImageSourceMessageRow,
+  ImageAdmissionReason,
+  ImageAdmissionRecordRow,
+  ResolveSourceMessageInput,
+  CreateIngestionResult,
+  CompleteIngestionResult,
+  FindPendingIngestionInput,
+  InsertTerminalAdmissionInput,
+} from './image-ingestion-repository.js';
+export {
+  ImageIngestionRepository,
+  DEFAULT_PENDING_INGESTION_LIMIT,
+} from './image-ingestion-repository.js';
+
+export type {
+  FindingRow,
+  FindingUsageInput,
+  CreateFindingInput,
+  FindingRecord,
+  FindingPageAnchor,
+  FindFindingsOptions,
+  FindingPage,
+} from './finding-repository.js';
+export {
+  FindingRepository,
+  mapFindingRow,
+  DEFAULT_FINDING_LIMIT,
+} from './finding-repository.js';
+
 export { BackgroundTaskRepository } from './background-task-repository.js';
 export type { InsertA2ATaskInput } from './a2a-task-repository.js';
 export { A2ATaskRepository } from './a2a-task-repository.js';
 export { ExecutionEnvRepository } from './execution-env-repository.js';
 export { ExecutionEnvCheckpointRepository } from './execution-env-checkpoint-repository.js';
+
+export type {
+  VoiceSessionRow,
+  VoiceDelegationRow,
+  VoiceOutputRow,
+  VoiceSessionLookup,
+} from './voice-repository.js';
+export { VoiceRepository } from './voice-repository.js';

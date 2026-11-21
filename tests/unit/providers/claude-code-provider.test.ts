@@ -68,11 +68,11 @@ describe('ClaudeCodeProvider', () => {
     const invocation = result._unsafeUnwrap();
     cleanupPaths.push(...invocation.cleanupPaths);
 
-    // Background runs spawn the Claude Code CLI bundled inside the Agent
-    // SDK via node, so a `claude` binary need not be on PATH (this is
-    // what makes background runs work inside the docker image).
-    expect(invocation.command).toBe(process.execPath);
-    expect(invocation.args[0]).toMatch(/cli\.js$/);
+    // Background runs spawn the native Claude Code binary shipped with the
+    // Agent SDK's platform package, so a `claude` binary need not be on PATH
+    // (this is what makes background runs work inside the docker image).
+    expect(invocation.command).toMatch(/claude-agent-sdk-[a-z0-9-]+[\\/]claude(\.exe)?$/);
+    expect(existsSync(invocation.command)).toBe(true);
     expect(invocation.stdin).toBe('Refactor the auth module.');
     expect(invocation.cwd).toBe('/tmp');
     expect(invocation.args).toContain('--append-system-prompt');

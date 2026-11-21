@@ -14,7 +14,7 @@ import { ok } from 'neverthrow';
 import { PersonaListHandler } from '../../../../src/tools/host-tools/persona-list.js';
 import type { ToolExecutionContext } from '../../../../src/tools/host-tools/channel-send.js';
 import type { PersonaLoader } from '../../../../src/personas/persona-loader.js';
-import type { LoadedPersona } from '../../../../src/personas/persona-types.js';
+import type { LoadedPersona, ResolvedCapabilities } from '../../../../src/personas/persona-types.js';
 import type { PersonaConfig } from '../../../../src/core/config/config-schema.js';
 
 function makeLogger() {
@@ -61,14 +61,16 @@ function makeLoadedPersona(overrides: Partial<LoadedPersona> = {}): LoadedPerson
   };
 }
 
-function makePersonaLoader(personas: Array<{ id?: string; name: string; skills: string[] }>): PersonaLoader {
+function makePersonaLoader(
+  personas: Array<{ id?: string; name: string; skills: string[]; extra?: Partial<LoadedPersona> }>,
+): PersonaLoader {
   const names = personas.map((p) => p.name);
   return {
     listNames: vi.fn().mockReturnValue(names),
     getByName: vi.fn().mockImplementation((name: string) => {
       const found = personas.find((p) => p.name === name);
       if (!found) return ok(undefined);
-      return ok(makeLoadedPersona({ config: makePersonaConfig({ name, skills: found.skills }) }));
+      return ok(makeLoadedPersona({ config: makePersonaConfig({ name, skills: found.skills }), ...found.extra }));
     }),
     getById: vi.fn().mockImplementation((id: string) => {
       const found = personas.find((p) => p.id === id);
@@ -77,6 +79,8 @@ function makePersonaLoader(personas: Array<{ id?: string; name: string; skills: 
     }),
   } as unknown as PersonaLoader;
 }
+
+const allCaps = (): ResolvedCapabilities => ({ allow: ['persona.send:*'], requireApproval: [] });
 
 // ---------------------------------------------------------------------------
 // Manifest
@@ -107,7 +111,7 @@ describe('PersonaListHandler — success', () => {
       { id: 'persona-002', name: 'researcher', skills: ['web-research', 'summarize'] },
       { id: 'persona-003', name: 'coder', skills: ['typescript', 'testing'] },
     ]);
-    const handler = new PersonaListHandler({ personaLoader: loader, logger: makeLogger() });
+    const handler = new PersonaListHandler({ personaLoader: loader, logger: makeLogger(), resolveCapabilities: allCaps });
 
     const result = await handler.execute({}, makeContext({ personaId: 'persona-001' }));
 
@@ -122,7 +126,7 @@ describe('PersonaListHandler — success', () => {
 
   it('returns empty array when no personas are loaded', async () => {
     const loader = makePersonaLoader([]);
-    const handler = new PersonaListHandler({ personaLoader: loader, logger: makeLogger() });
+    const handler = new PersonaListHandler({ personaLoader: loader, logger: makeLogger(), resolveCapabilities: allCaps });
 
     const result = await handler.execute({}, makeContext());
 
@@ -134,7 +138,7 @@ describe('PersonaListHandler — success', () => {
     const loader = makePersonaLoader([
       { id: 'persona-002', name: 'other', skills: [] },
     ]);
-    const handler = new PersonaListHandler({ personaLoader: loader, logger: makeLogger() });
+    const handler = new PersonaListHandler({ personaLoader: loader, logger: makeLogger(), resolveCapabilities: allCaps });
 
     const result = await handler.execute({}, makeContext({ personaId: 'persona-001' }));
 
@@ -146,7 +150,7 @@ describe('PersonaListHandler — success', () => {
     const loader = makePersonaLoader([
       { id: 'persona-002', name: 'researcher', skills: [] },
     ]);
-    const handler = new PersonaListHandler({ personaLoader: loader, logger: makeLogger() });
+    const handler = new PersonaListHandler({ personaLoader: loader, logger: makeLogger(), resolveCapabilities: allCaps });
 
     // personaId that has no match in the loader — callerName will be null
     const result = await handler.execute({}, makeContext({ personaId: 'unknown-id' }));
@@ -167,7 +171,7 @@ describe('PersonaListHandler — only live personas shown', () => {
     const loader = makePersonaLoader([
       { id: 'persona-002', name: 'researcher', skills: [] },
     ]);
-    const handler = new PersonaListHandler({ personaLoader: loader, logger: makeLogger() });
+    const handler = new PersonaListHandler({ personaLoader: loader, logger: makeLogger(), resolveCapabilities: allCaps });
 
     const result = await handler.execute({}, makeContext({ personaId: 'persona-001' }));
 
@@ -175,5 +179,72 @@ describe('PersonaListHandler — only live personas shown', () => {
     const names = (result.result as Array<{ name: string }>).map((c) => c.name);
     expect(names).not.toContain('stale-persona');
     expect(names).toContain('researcher');
+  });
+});
+
+describe('PersonaListHandler — description', () => {
+  async function describeOf(extra: Partial<LoadedPersona>): Promise<string | null> {
+    const loader = makePersonaLoader([{ id: 'p2', name: 'other', skills: [], extra }]);
+    const handler = new PersonaListHandler({ personaLoader: loader, logger: makeLogger(), resolveCapabilities: allCaps });
+    const result = await handler.execute({}, makeContext({ personaId: 'p1' }));
+    return (result.result as Array<{ description: string | null }>)[0]!.description;
+  }
+
+  it('prefers the frontmatter description', async () => {
+    expect(
+      await describeOf({ description: 'Reviews code', systemPromptContent: '# Other heading' }),
+    ).toBe('Reviews code');
+  });
+
+  it('falls back to the first content line, skipping frontmatter', async () => {
+    expect(
+      await describeOf({ systemPromptContent: '---\nname: x\n---\n\n## You review code\nMore' }),
+    ).toBe('You review code');
+  });
+
+  it('falls back to the first content line when there is no frontmatter', async () => {
+    expect(await describeOf({ systemPromptContent: '\n# Helper\nbody' })).toBe('Helper');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scoped delegation targets
+// ---------------------------------------------------------------------------
+
+describe('PersonaListHandler — persona.send scopes', () => {
+  const loader = () =>
+    makePersonaLoader([
+      { id: 'persona-001', name: 'coordinator', skills: [] },
+      { id: 'persona-002', name: 'researcher', skills: ['web-research'] },
+      { id: 'persona-003', name: 'coder', skills: ['typescript'] },
+      { id: 'persona-004', name: 'admin', skills: [] },
+    ]);
+
+  async function listNames(caps: ResolvedCapabilities): Promise<string[]> {
+    const resolveCapabilities = vi.fn().mockReturnValue(caps);
+    const handler = new PersonaListHandler({ personaLoader: loader(), logger: makeLogger(), resolveCapabilities });
+    const result = await handler.execute({}, makeContext({ personaId: 'persona-001' }));
+    expect(resolveCapabilities).toHaveBeenCalledWith('persona-001');
+    return (result.result as Array<{ name: string }>).map((c) => c.name);
+  }
+
+  it('lists only personas named by scoped labels', async () => {
+    expect(await listNames({ allow: ['persona.send:researcher', 'persona.send:coder'], requireApproval: [] }))
+      .toEqual(['researcher', 'coder']);
+  });
+
+  it('still excludes the caller even when it is scoped in', async () => {
+    expect(await listNames({ allow: ['persona.send:coordinator', 'persona.send:coder'], requireApproval: [] }))
+      .toEqual(['coder']);
+  });
+
+  it('lists everyone (except the caller) for persona.send:*', async () => {
+    expect(await listNames({ allow: ['persona.send:*'], requireApproval: [] }))
+      .toEqual(['researcher', 'coder', 'admin']);
+  });
+
+  it('ignores scoped names that are not loaded', async () => {
+    expect(await listNames({ allow: ['persona.send:ghost', 'persona.send:coder'], requireApproval: [] }))
+      .toEqual(['coder']);
   });
 });

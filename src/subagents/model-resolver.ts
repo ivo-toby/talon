@@ -19,21 +19,33 @@ interface ModelConfig {
   maxTokens: number;
 }
 
-const INFERENCE_PROVIDERS = ['anthropic', 'openai', 'google', 'ollama'] as const;
-const SUBSCRIPTION_CLI_PROVIDERS = ['claude-code'] as const;
-const SANDBOXED_SUBSCRIPTION_PROVIDERS = ['codex-sandbox'] as const;
+/*
+ * Provider classification is defined exactly once here. Consumers that need
+ * to know which adapters may receive image parts (vision chain validation,
+ * config load checks) must reuse these exports instead of maintaining a
+ * second allowlist.
+ */
 
-function isInferenceProvider(provider: string): provider is (typeof INFERENCE_PROVIDERS)[number] {
+/** API-credential inference adapters. The only adapters vision may use. */
+export const INFERENCE_PROVIDERS = ['anthropic', 'openai', 'google', 'ollama'] as const;
+/** Subscription-authenticated CLI adapters; text-only, run in the daemon. */
+export const SUBSCRIPTION_CLI_PROVIDERS = ['claude-code'] as const;
+/** Externally contained subscription adapters; text-only, unchanged containment. */
+export const SANDBOXED_SUBSCRIPTION_PROVIDERS = ['codex-sandbox'] as const;
+
+export function isInferenceProvider(
+  provider: string,
+): provider is (typeof INFERENCE_PROVIDERS)[number] {
   return (INFERENCE_PROVIDERS as readonly string[]).includes(provider);
 }
 
-function isSubscriptionCliProvider(
+export function isSubscriptionCliProvider(
   provider: string,
 ): provider is (typeof SUBSCRIPTION_CLI_PROVIDERS)[number] {
   return (SUBSCRIPTION_CLI_PROVIDERS as readonly string[]).includes(provider);
 }
 
-function isSandboxedSubscriptionProvider(
+export function isSandboxedSubscriptionProvider(
   provider: string,
 ): provider is (typeof SANDBOXED_SUBSCRIPTION_PROVIDERS)[number] {
   return (SANDBOXED_SUBSCRIPTION_PROVIDERS as readonly string[]).includes(provider);

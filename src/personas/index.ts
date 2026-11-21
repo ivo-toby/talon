@@ -9,3 +9,11 @@
 export type { LoadedPersona, ResolvedCapabilities, PersonaConfig, CapabilitiesConfig } from './persona-types.js';
 export { PersonaLoader } from './persona-loader.js';
 export { mergeCapabilities, validateCapabilityLabels } from './capability-merger.js';
+export {
+  allowedDelegationTargets,
+  canDelegateTo,
+  filterDelegationTargets,
+  describeDelegationTargets,
+  unknownDelegationTargets,
+} from './persona-delegation.js';
+export type { DelegationTargets } from './persona-delegation.js';

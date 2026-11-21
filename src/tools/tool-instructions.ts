@@ -58,10 +58,12 @@ export function loadToolInstructions(dir: string): Map<string, string> {
  * Each matched instruction file is included as-is (it should start with
  * its own `##` heading). Duplicate capability prefixes are deduplicated
  * (e.g. `persona_send` and `persona_list` both map to `persona.send`).
+ * `appendices` (keyed by capability prefix) are appended to the matching block.
  */
 export function resolveToolInstructions(
   cache: Map<string, string>,
   allowedMcpTools: string[],
+  appendices?: Record<string, string>,
 ): string {
   if (cache.size === 0) return '';
 
@@ -75,7 +77,8 @@ export function resolveToolInstructions(
 
     const content = cache.get(prefix);
     if (content) {
-      blocks.push(content);
+      const appendix = appendices?.[prefix];
+      blocks.push(appendix ? `${content}\n\n${appendix}` : content);
     }
   }
 

@@ -59,6 +59,65 @@ describe('CodexCliProvider', () => {
     return events;
   }
 
+  it('reads persistent CODEX_HOME for provider authentication when operatorHome is unset', () => {
+    const persistentCodexHome = join(runtimeDir, 'persistent-codex-home');
+    mkdirSync(persistentCodexHome, { recursive: true });
+    writeFileSync(join(persistentCodexHome, 'auth.json'), '{"access_token":"persistent"}');
+
+    const originalCodexHome = process.env.CODEX_HOME;
+    process.env.CODEX_HOME = persistentCodexHome;
+    // No operatorHome is supplied; a valid credential exists only in CODEX_HOME.
+    try {
+      const provider = new CodexCliProvider(
+        { enabled: true, command: 'codex', contextWindowTokens: 400_000, options: {} },
+        { dataDir: runtimeDir },
+      );
+      const result = provider.prepareBackgroundInvocation({
+        prompt: 'Hello',
+        systemPrompt: 'Be helpful',
+        mcpServers: {},
+        cwd: runtimeDir,
+        timeoutMs: 60_000,
+      });
+      expect(result.isOk()).toBe(true);
+      const prepared = result._unsafeUnwrap();
+      expect(readFileSync(join(prepared.env.HOME!, '.codex', 'auth.json'), 'utf8')).toBe(
+        '{"access_token":"persistent"}',
+      );
+    } finally {
+      if (originalCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = originalCodexHome;
+    }
+  });
+
+  it('prefers explicit operatorHome over CODEX_HOME and keeps sessions isolated', () => {
+    const persistentCodexHome = join(runtimeDir, 'persistent-codex-home');
+    mkdirSync(persistentCodexHome, { recursive: true });
+    writeFileSync(join(persistentCodexHome, 'auth.json'), '{"access_token":"persistent"}');
+
+    const originalCodexHome = process.env.CODEX_HOME;
+    process.env.CODEX_HOME = persistentCodexHome;
+    try {
+      const result = makeProvider().prepareBackgroundInvocation({
+        prompt: 'Hello',
+        systemPrompt: 'Be helpful',
+        mcpServers: {},
+        cwd: runtimeDir,
+        timeoutMs: 60_000,
+      });
+      expect(result.isOk()).toBe(true);
+      const prepared = result._unsafeUnwrap();
+      expect(prepared.env.CODEX_HOME).not.toBe(persistentCodexHome);
+      expect(prepared.env.CODEX_HOME).toBe(join(prepared.env.HOME!, '.codex'));
+      expect(readFileSync(join(prepared.env.CODEX_HOME!, 'auth.json'), 'utf8')).toBe(
+        '{"access_token":"test"}',
+      );
+    } finally {
+      if (originalCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = originalCodexHome;
+    }
+  });
+
   it('creates a resumable streaming execution strategy', () => {
     const provider = makeProvider();
     const strategy = provider.createExecutionStrategy();
@@ -92,7 +151,9 @@ describe('CodexCliProvider', () => {
     });
 
     expect(result.isErr()).toBe(true);
-    expect(result._unsafeUnwrapErr().message).toMatch(/codex-cli provider cannot disable those built-in tools/i);
+    expect(result._unsafeUnwrapErr().message).toMatch(
+      /codex-cli provider cannot disable those built-in tools/i,
+    );
   });
 
   it('does not render unsupported reasoning effort none into Codex config', () => {
@@ -270,17 +331,21 @@ describe('CodexCliProvider', () => {
     const provider = makeProvider();
     const strategy = provider.createExecutionStrategy();
 
-    await expect(collectEvents(strategy.run({
-      threadId: 'thread-001',
-      prompt: 'Search the docs.',
-      systemPrompt: 'You are helpful.',
-      mcpServers: {},
-      cwd: '/workspace/repo',
-      model: 'gpt-5.4',
-      maxTurns: 5,
-      timeoutMs: 60_000,
-      disableNativeShellAndFilesystemTools: true,
-    }))).rejects.toThrow(/codex-cli provider cannot disable those built-in tools/i);
+    await expect(
+      collectEvents(
+        strategy.run({
+          threadId: 'thread-001',
+          prompt: 'Search the docs.',
+          systemPrompt: 'You are helpful.',
+          mcpServers: {},
+          cwd: '/workspace/repo',
+          model: 'gpt-5.4',
+          maxTurns: 5,
+          timeoutMs: 60_000,
+          disableNativeShellAndFilesystemTools: true,
+        }),
+      ),
+    ).rejects.toThrow(/codex-cli provider cannot disable those built-in tools/i);
   });
 
   it('does not reuse stale foreground last-message output when a subsequent run does not write one', async () => {
@@ -1186,6 +1251,99 @@ describe('CodexCliProvider', () => {
         cache_creation_input_tokens: 10_000,
         cache_total_input_tokens: 10_000,
       },
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Image context stdin composition (ADR-0002): the provider passes exactly
+  // what the runner hands it. Live current-message Image descriptors ride the
+  // prompt once on the image turn; resumed text-only turns carry no repeated
+  // inventory or Finding projection — Codex history already contains the
+  // earlier live descriptors, and older material goes through image_lookup.
+  // ---------------------------------------------------------------------------
+
+  describe('image context stdin composition', () => {
+    function mockStream(turnText: string, threadId = 'codex-thread-img') {
+      return vi
+        .spyOn(CodexCliProvider.prototype as any, 'streamInvocation')
+        .mockImplementation(async (prepared) => {
+          writeFileSync(prepared.resultFiles.lastMessagePath, turnText, 'utf8');
+          return {
+            stdout: (async function* () {
+              yield `{"type":"thread.started","thread_id":"${threadId}"}\n`;
+              yield '{"type":"turn.completed","usage":{"input_tokens":120,"output_tokens":8}}\n';
+            })(),
+            completed: Promise.resolve({ stderr: '', exitCode: 0, timedOut: false }),
+          };
+        });
+    }
+
+    it('first image turn stdin carries live descriptors; resumed text-only stdin carries no repeated inventory', async () => {
+      const provider = makeProvider();
+      const executeInvocation = mockStream('ok');
+
+      const liveBlock = [
+        '[Images attached to this message; state shown is current at delivery]',
+        'img img-aaa state=available received=2023-11-14T22:13:20.000Z expires=2023-11-14T23:13:20.000Z msg=msg-001 ord=0 mime=image/png',
+        'img img-bbb state=available received=2023-11-14T22:13:21.000Z expires=2023-11-14T23:13:21.000Z msg=msg-001 ord=1 mime=image/png',
+      ].join('\n');
+
+      try {
+        const strategy = provider.createExecutionStrategy();
+
+        // Turn 1: fresh session, image-bearing message. The runner appends
+        // the live descriptor block to the stored message text.
+        await collectEvents(
+          strategy.run({
+            threadId: 'thread-001',
+            prompt: `What is in these photos?\n\n${liveBlock}`,
+            systemPrompt: 'You are helpful.',
+            mcpServers: {},
+            cwd: '/workspace/repo',
+            model: 'gpt-5.4',
+            maxTurns: 25,
+            timeoutMs: 60_000,
+          }),
+        );
+
+        const firstStdin = executeInvocation.mock.calls[0]![0].stdin as string;
+        expect(firstStdin).toContain('What is in these photos?');
+        expect(firstStdin).toContain('img img-aaa state=available');
+        expect(firstStdin).toContain('img img-bbb state=available');
+        // The provider composes stdin from system prompt + prompt only; it
+        // injects no inventory or Finding sections of its own.
+        expect(firstStdin).not.toContain('Image inventory:');
+        expect(firstStdin).not.toContain('Findings (historical data');
+
+        // Turn 2: resumed session, text-only follow-up.
+        await collectEvents(
+          strategy.run({
+            threadId: 'thread-001',
+            prompt: 'Now describe the second one in more detail.',
+            systemPrompt: 'You are helpful.',
+            mcpServers: {},
+            cwd: '/workspace/repo',
+            model: 'gpt-5.4',
+            maxTurns: 25,
+            timeoutMs: 60_000,
+            sessionId: 'codex-thread-img',
+          }),
+        );
+
+        const resumedInvocation = executeInvocation.mock.calls[1]![0];
+        expect(resumedInvocation.args.slice(0, 2)).toEqual(['exec', 'resume']);
+        const resumedStdin = resumedInvocation.stdin as string;
+        expect(resumedStdin).toContain('Now describe the second one in more detail.');
+        // No repeated live descriptors, inventory, or Findings on resumed
+        // text-only stdin.
+        expect(resumedStdin).not.toContain('img img-aaa');
+        expect(resumedStdin).not.toContain('img img-bbb');
+        expect(resumedStdin).not.toContain('Image inventory:');
+        expect(resumedStdin).not.toContain('Findings (historical data');
+        expect(resumedStdin).not.toContain('[Images attached to this message');
+      } finally {
+        executeInvocation.mockRestore();
+      }
     });
   });
 });

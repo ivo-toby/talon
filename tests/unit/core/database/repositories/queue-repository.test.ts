@@ -333,4 +333,47 @@ describe('QueueRepository', () => {
       expect(counts['completed']).toBeUndefined();
     });
   });
+
+  describe('defer / cancelPending', () => {
+    const enqueue = (): string => {
+      const id = uuid();
+      repo.enqueue({ id, thread_id: threadId, message_id: null, type: 'collaboration', payload: '{}', max_attempts: 1 });
+      return id;
+    };
+
+    it('defer returns a claimed item to pending without incrementing attempts', () => {
+      const id = enqueue();
+      repo.claimNext(threadId);
+      expect(repo.defer(id, 123456)._unsafeUnwrap()).toBe(true);
+      const row = repo.findById(id)._unsafeUnwrap()!;
+      expect(row.status).toBe('pending');
+      expect(row.attempts).toBe(0);
+      expect(row.next_retry_at).toBe(123456);
+      expect(row.claimed_at).toBeNull();
+    });
+
+    it('defer is a no-op for items that are not claimed/processing', () => {
+      const id = enqueue();
+      expect(repo.defer(id, 1)._unsafeUnwrap()).toBe(false);
+    });
+
+    it('cancelPending completes pending and failed items only', () => {
+      const pending = enqueue();
+      expect(repo.cancelPending(pending)._unsafeUnwrap()).toBe(true);
+      const row = repo.findById(pending)._unsafeUnwrap()!;
+      expect(row.status).toBe('completed');
+      expect(row.error).toBe('canceled');
+      expect(repo.findPending()._unsafeUnwrap()).toHaveLength(0);
+
+      const claimed = enqueue();
+      repo.claimNext(threadId);
+      expect(repo.cancelPending(claimed)._unsafeUnwrap()).toBe(false);
+      expect(repo.findById(claimed)._unsafeUnwrap()!.status).toBe('claimed');
+
+      const failing = uuid();
+      repo.enqueue({ id: failing, thread_id: threadId, message_id: null, type: 'message', payload: '{}', max_attempts: 3 });
+      db.prepare("UPDATE queue_items SET status = 'failed' WHERE id = ?").run(failing);
+      expect(repo.cancelPending(failing)._unsafeUnwrap()).toBe(true);
+    });
+  });
 });

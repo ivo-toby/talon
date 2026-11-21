@@ -28,6 +28,8 @@ conversational wizard. Ask one question at a time, act on the answer, move on.
 - **Detect state first.** Skip steps that are already done.
 - **Use talonctl commands.** Never edit talond.yaml directly except system prompts and task prompts.
 - **No secrets.** Never ask for or write actual tokens. Use `${ENV_VAR}` references in config and MCP `headers` / `env` values only.
+- **Inspect locally.** Keep secret-bearing fields environment-backed; do not
+  treat `config-show` as a universal redaction boundary or paste its output.
 - **Show what you do.** When running commands, show the output.
 
 ## Available talonctl commands
@@ -60,7 +62,7 @@ All config mutations go through these commands:
 | `npx talonctl set-capabilities --persona <p> --remove <labels>` | Remove capabilities from persona |
 | `npx talonctl set-capabilities --persona <p> --show` | Show persona's current capabilities |
 | `npx talonctl env-check` | Audit env var placeholders |
-| `npx talonctl config-show` | Show effective config (secrets masked) |
+| `npx talonctl config-show` | Show effective config for local inspection; do not paste output |
 | `npx talonctl remove-channel --name <n>` | Remove a channel |
 | `npx talonctl remove-persona --name <n>` | Remove a persona |
 | `npx talonctl migrate` | Run database migrations |
@@ -105,7 +107,10 @@ What would you like to do?
   h) Show current config summary
   i) Test a provider
   j) Check environment variables
+  k) Optimize personas (move prompt content to skills or other personas)
 ```
+
+For option k, invoke the `/optimize-personas` skill.
 
 ## Skill formats
 
@@ -294,6 +299,99 @@ after user confirmation. Run
 daemon because hot reload does not rebuild the sub-agent resolver. Do not run a
 live sub-agent merely to test it: that would consume the user's subscription quota.
 
+### Optional browser voice
+
+Ask one question: **"Do you want to enable the opt-in browser voice UI?"**
+Leave it disabled unless the user explicitly opts in. Browser voice currently
+supports authenticated WebRTC only and requires the selected persona's provider
+to be enabled. The provider's normal OAuth and native-tool restrictions remain
+in force. Its `voice.model` is the live voice model; the persona's `model`
+remains the backend model.
+
+The delegation offset is a capture boundary, not an utterance cutoff. Only
+event-identified native input/output transcript deltas with valid explicit
+`start_ms` and `end_ms` can carry atomic chunk timing across that boundary;
+missing or legacy timing remains fail-closed at capture.
+
+The browser login form leaves `Keep me signed in for one year` unchecked. The
+default omitted/false `rememberMe` value keeps a fixed 15-minute grant; the
+checked option sends `rememberMe: true` for a fixed 365-day grant. Grants use
+hashed session/CSRF verification data, survive ordinary restart, and are
+revoked by logout, credential/owner rotation, or configuration reload. The
+browser stores no access token or raw session bearer in Web Storage.
+
+If enabled, add environment-backed auth slots and the `voice` block to the
+config. Never ask for or write the token values:
+
+```yaml
+auth:
+  providers:
+    voice:
+      apiKey: ${TALON_VOICE_ACCESS_TOKEN}
+    openai:
+      apiKey: ${OPENAI_API_KEY}
+
+voice:
+  enabled: true
+  host: 127.0.0.1
+  port: 8787
+  accessTokenRef: voice
+  liveApiKeyRef: openai
+  # provider: openai-compatible  # deprecated compatibility field; persona provider is authoritative
+  persona: assistant
+  # usdPerMinute: 0.00  # placeholder only; replace with a current provider rate; omitted means unavailable
+  allowedTransportTypes: [webrtc]
+  allowedOrigins: [https://voice.example.com]
+```
+
+When `voice.enabled` is true, `browser-voice` is reserved for Talon's internal
+voice channel. Do not configure an ordinary channel with that name; a
+conflicting channel is rejected during startup.
+
+`voice.persona` selects an existing normal persona. Its backend model,
+capabilities, skills, and configured MCP servers are reused by voice. The
+separate `voice.model` is the live audio model. Approval-gated capabilities are
+unavailable because voice has no interactive approval channel, and the legacy
+`voice.allowedToolNames` / `voice.allowedMcpServerNames` fields are ignored.
+The selected persona policy is also enforced for voice descendants at child
+registration and again at the shared host-tools bridge. Completed backend
+results remain in durable history after authority expiry or hangup, but are not
+spoken after the session loses authority.
+
+The listener defaults to loopback. For a non-local browser, put HTTPS in front
+of it. If the reverse proxy runs in another VM, container, or network
+namespace, set `voice.host` to a reachable interface address or `0.0.0.0` and
+restrict network access. Preserve `Host` and `Origin`, send
+`X-Forwarded-Proto: https`, set `publicHost` to the public hostname, then run
+`npx talonctl doctor --config talond.yaml` and open
+`https://<publicHost>/voice/`. Physical-phone and live paid-provider
+verification are separate acceptance steps.
+
+Use the deployment's actual config path; the CLI default is `talond.yaml` (or
+`TALOND_CONFIG_PATH`), while `config/talond.example.yaml` is only a repository
+example.
+
+Voice backend failures keep the user-facing error generic. For troubleshooting,
+inspect the failed run’s `error` field: when available it includes only allowlisted
+category, code, HTTP status and stage metadata. Provider messages, response bodies,
+headers and URLs are excluded. An `unknown` category or elapsed duration alone
+does not establish a timeout or root cause.
+
+If the operator supplies a current provider rate, `voice.usdPerMinute` makes
+the UI's voice amount a duration estimate. There is no default rate. Final
+provider usage remains `estimated`; a configured rate with known usage and an
+incomplete close is `incomplete`, and an omitted rate is `unavailable`. Backend
+cost comes only from AgentRunner run accounting.
+
+On page load, the browser checks `GET /voice/auth/session` before an optional
+retained-call lookup. A valid cookie reaches the ready state without a
+retained call; a retained-call 404 clears only the stale pointer. Transient
+failures preserve recoverable pointers and show an English retry message.
+Restore never requests a microphone, creates a peer or paid session, connects a
+provider, enqueues work, or replays old work. Cookie retention is scoped to the
+browser cookie context; Safari home-screen contexts may need a fresh login.
+Background/lock-screen audio and physical iPhone retention are not promised.
+
 ### Step 4: Channel configuration
 
 Ask: **"Which channel do you want to connect first?"**
@@ -342,6 +440,27 @@ Ask: **"Let's create a persona. What should this agent be called?"**
 
 Ask: **"Add another persona?"** Loop until done.
 
+#### Where prompt content belongs
+
+Use this rule when you write a prompt for a persona. Apply it from top to
+bottom and stop at the first row that fits.
+
+| Content | Place |
+|---|---|
+| Identity, tone, user preferences, privacy and safety rules | `system.md` or a personality file |
+| Knowledge or a procedure that only some tasks need | Skill of the same persona |
+| Work that needs a different model, different capabilities or mounts, or that runs in parallel or in the background | Separate persona |
+| One step with fixed input and fixed output | Sub-agent |
+
+`system.md` and the personality files go into the prompt on each run. A skill
+adds only its name and description until the agent loads it. A separate persona
+costs a handoff, and it sees only the `message` of the `persona_send` call.
+
+If the setup has two or more personas, tell the user about the
+`/optimize-personas` skill. It audits a setup that has real usage and proposes
+moves between personality files, skills, and personas. Do not run it during a
+first setup.
+
 ### Step 5b: Capability configuration
 
 After creating a persona, show what capabilities it has and what's available.
@@ -355,11 +474,65 @@ After creating a persona, show what capabilities it has and what's available.
 If yes, help the user decide which to add or remove:
 
 - For agents that should message other channels: `npx talonctl set-capabilities --persona <name> --add "channel.send:*"`
+- For agents that should react with emoji on Telegram or WhatsApp (👍 instead of a written "understood"): `npx talonctl set-capabilities --persona <name> --add "channel.react:*"`
 - For agents that need database access: `npx talonctl set-capabilities --persona <name> --add "db.query:own"`
 - For agents that run background tasks: `npx talonctl set-capabilities --persona <name> --add "subagent.background"`
 - For agents that invoke sub-agents: `npx talonctl set-capabilities --persona <name> --add "subagent.invoke"`
+- For agents that should discuss uploaded images: `npx talonctl set-capabilities --persona <name> --add "subagent.invoke:*"` — plus `vision` in that persona's `subagents` list; see **Image handling** below
 
 Repeat for each persona.
+
+**Image handling** is a two-part Inspection setup plus one independent lookup
+grant. None of it happens automatically on upgrade.
+
+An **Inspection** needs exactly two things — the shipped `vision` manifest declares
+`requiredCapabilities: []`, so no image capability is involved:
+
+1. `vision` listed under the persona's `subagents` key in `talond.yaml`. There is
+   no `talonctl` flag for persona sub-agent assignment, so edit the config.
+2. `subagent.invoke` — the existing capability on the invoke tool:
+
+```bash
+npx talonctl set-capabilities --persona <name> --add "subagent.invoke:*"
+```
+
+`image.read:thread` is a **separate** permission, not part of an Inspection. It
+exposes `image_lookup`, the model-free reader for the thread's Images and saved
+Findings; it needs no vision assignment, never calls a model, and downloads
+nothing, so it is safe to grant where you would not grant vision. Recommended (so
+the persona can re-read an existing Finding instead of paying for a repeat
+Inspection), but optional:
+
+```bash
+npx talonctl set-capabilities --persona <name> --add "image.read:thread"
+```
+
+Uploads are ingested and described regardless of all of the above. When confirming
+setup, mention that:
+
+- Pixels go only to the `vision` sub-agent; the main persona stays text-only.
+- Only `anthropic` / `openai` / `google` / `ollama` may be in the vision chain;
+  a text-only override is rejected at config load, not skipped.
+- Normalized image files are deleted after `images.retentionHours` (default 24h),
+  but Image records, GPS/EXIF and Findings persist until separately deleted and
+  may appear in replies — including in admitted group chats.
+- Inspections work from normal messages and scheduled tasks, not from background
+  agents (those are refused before any model is called).
+- The defaults in the `images:` block suit most setups. If the operator wants to
+  tune it: `maxInputPixels` (default 100 MP, a decompression-bomb guard, max
+  ~268 MP) and `maxNormalizedBytes` (default 3.75 MB; lower it if the vision
+  provider has a smaller per-image limit — oversized images are re-encoded smaller
+  automatically). Any `images` change needs a daemon restart; `talonctl reload`
+  keeps the running values. See `config/talond.example.yaml`.
+- On a sequential connector an image-bearing message delays other traffic on that
+  connector — Telegram polling is the example, waiting up to ~120 seconds (a fixed
+  60-second remote-fetch budget plus a separate 60-second normalization deadline).
+  WhatsApp handles each chat in order but chats in parallel, so a text sent right
+  after a photo waits for that photo while other chats keep flowing; a downloaded
+  WhatsApp image still carries the same per-message 60-second fetch + 60-second
+  normalization budgets. Email does no remote fetch — its bytes
+  already arrived with the message — so only the shared 60-second normalization
+  deadline applies there.
 
 ### Step 6: Scheduled tasks
 

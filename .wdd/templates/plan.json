@@ -1,0 +1,26 @@
+{
+  "kind": "wdd_plan",
+  "schemaVersion": 1,
+  "scope": {
+    "baseRef": "wdd/your-scope-id",
+    "id": "SCOPE-<your-epic-slug>",
+    "maxConcurrent": 3,
+    "reconcileEveryNMerges": 3,
+    "reviewPolicy": "risk_based"
+  },
+  "tasks": [
+    {
+      "conflictDomains": [
+        "src/**"
+      ],
+      "context": [],
+      "dependsOn": [],
+      "id": "TASK-001",
+      "model": null,
+      "reviewModel": null,
+      "risk": "normal",
+      "specPath": "tasks/TASK-001.md",
+      "title": "TASK-001: replace with a short task title"
+    }
+  ]
+}
