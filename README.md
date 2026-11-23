@@ -683,6 +683,8 @@ personas:
         - channel.react:*
 ```
 
+With no `messageId` the tool reacts to the message that started the run. For any other message the agent passes an ID from a header, or asks the tool for the conversation's recent messages with `list: true`. An ID the message ledger does not know is refused with that same listing instead of being sent to the channel, so a number read from the database (on Telegram the stored key is an `update_id`, not a message ID) cannot end in a provider error.
+
 To acknowledge without sending text, the agent reacts and then makes its whole response `NO_REPLY`. A response that is only that word is never delivered to the chat. Telegram accepts only its standard reaction set (👍 👎 ❤ 🔥 🎉 🙏 👌 🤔 👀 and about sixty more); anything else returns an error listing the alternatives, so the agent can pick one.
 
 **Reactions from users.** A reaction a user places on one of Talon's messages starts an agent run on that conversation, with the reaction as the message. The agent can answer, react back, or stay silent with `NO_REPLY`. This is how a 👍 on "Shall I book it?" becomes a yes. Set `inboundReactions: false` in the connector `config` to turn it off. Three limits apply:

@@ -48,18 +48,23 @@ describe('ChannelReactHandler', () => {
   let connector: Record<string, unknown>;
   let threadRow: { id: string; external_id: string; channel_id: string; metadata: string | null };
   let find: ReturnType<typeof vi.fn>;
+  let findByMessageId: ReturnType<typeof vi.fn>;
   let findTriggerForRun: ReturnType<typeof vi.fn>;
+  let listRecent: ReturnType<typeof vi.fn>;
+  let findByExternalId: ReturnType<typeof vi.fn>;
 
   function makeHandler(options: { withRefs?: boolean } = {}): ChannelReactHandler {
     return new ChannelReactHandler({
       channelRegistry: {
         get: vi.fn((name: string) => (name === 'my-telegram' ? connector : undefined)),
       } as unknown as ChannelRegistry,
-      threadRepository: { findById: vi.fn(() => ok(threadRow)) } as any,
+      threadRepository: { findById: vi.fn(() => ok(threadRow)), findByExternalId } as any,
       channelRepository: {
         findById: vi.fn(() => ok({ id: 'chan-001', name: 'my-telegram', type: 'telegram' })),
       } as any,
-      ...(options.withRefs === false ? {} : { messageRefRepository: { find, findTriggerForRun } }),
+      ...(options.withRefs === false
+        ? {}
+        : { messageRefRepository: { find, findByMessageId, findTriggerForRun, listRecent } }),
       logger: makeLogger(),
     });
   }
@@ -78,7 +83,10 @@ describe('ChannelReactHandler', () => {
       metadata: '{}',
     };
     find = vi.fn().mockReturnValue(ok(null));
+    findByMessageId = vi.fn().mockReturnValue(ok(null));
     findTriggerForRun = vi.fn().mockReturnValue(ok(makeRef()));
+    listRecent = vi.fn().mockReturnValue(ok([]));
+    findByExternalId = vi.fn().mockReturnValue(ok(null));
   });
 
   it('declares the channel.react capability', () => {
@@ -126,9 +134,131 @@ describe('ChannelReactHandler', () => {
     );
   });
 
-  it('passes an explicit messageId the ledger does not know through by id alone', async () => {
-    await run({ emoji: '👍', messageId: '77' });
-    expect(react).toHaveBeenCalledWith('chat-42', { externalMessageId: '77' }, '👍');
+  it('resolves an explicit id that is a stored message id (messages.id) to its provider id', async () => {
+    findByMessageId.mockReturnValue(
+      ok(makeRef({ external_id: '4522', message_id: 'uuid-of-message' })),
+    );
+
+    const result = await run({ emoji: '👍', messageId: 'uuid-of-message' });
+
+    expect(result).toMatchObject({ status: 'success', result: { messageId: '4522' } });
+    expect(findByMessageId).toHaveBeenCalledWith('thread-001', 'uuid-of-message');
+    expect(react.mock.calls[0][1]).toMatchObject({ externalMessageId: '4522' });
+  });
+
+  it('refuses an id the ledger does not know, without calling the provider', async () => {
+    // What an agent gets from the messages table on Telegram: an update_id.
+    listRecent.mockReturnValue(
+      ok([
+        makeRef({
+          external_id: '4523',
+          direction: 'inbound',
+          sender_id: 'alice',
+          excerpt: 'zet er een duimpje op',
+        }),
+        makeRef({
+          external_id: '4521',
+          direction: 'outbound',
+          sender_id: null,
+          excerpt: 'Shall I book it?',
+        }),
+      ]),
+    );
+
+    const result = await run({ emoji: '👍', messageId: '902764311' });
+
+    expect(result.status).toBe('error');
+    expect(react).not.toHaveBeenCalled();
+    expect(result.error).toContain('"902764311" is not the id of a message in this conversation');
+    expect(result.error).toContain('id 4523 — alice: "zet er een duimpje op"');
+    expect(result.error).toContain('id 4521 — you: "Shall I book it?"');
+    expect(listRecent).toHaveBeenCalledWith('thread-001', expect.any(Number));
+  });
+
+  it('says so when the conversation has no known message ids yet', async () => {
+    const result = await run({ emoji: '👍', messageId: '77' });
+    expect(result.status).toBe('error');
+    expect(result.error).toContain('No messages of this conversation have a known id yet.');
+  });
+
+  it('keeps message text out of the log line for a refused id', async () => {
+    listRecent.mockReturnValue(ok([makeRef({ excerpt: 'private text' })]));
+    const logger = makeLogger();
+    const handler = new ChannelReactHandler({
+      channelRegistry: { get: vi.fn(() => connector) } as unknown as ChannelRegistry,
+      threadRepository: { findById: vi.fn(() => ok(threadRow)), findByExternalId } as any,
+      channelRepository: {
+        findById: vi.fn(() => ok({ id: 'chan-001', name: 'my-telegram', type: 'telegram' })),
+      } as any,
+      messageRefRepository: { find, findByMessageId, findTriggerForRun, listRecent },
+      logger,
+    });
+
+    await handler.execute({ emoji: '👍', messageId: 'nope' }, makeContext());
+
+    const logged = JSON.stringify(vi.mocked(logger.warn).mock.calls);
+    expect(logged).not.toContain('private text');
+  });
+
+  describe('list: true', () => {
+    it('returns the recent messages with their ids, newest first, without reacting', async () => {
+      listRecent.mockReturnValue(
+        ok([
+          makeRef({
+            external_id: '4523',
+            direction: 'inbound',
+            sender_id: 'alice',
+            excerpt: 'tweede   bericht\nmet regels',
+          }),
+          makeRef({
+            external_id: '4522',
+            direction: 'outbound',
+            sender_id: null,
+            excerpt: 'antwoord',
+          }),
+          makeRef({ external_id: '4521', direction: 'inbound', sender_id: null, excerpt: '' }),
+        ]),
+      );
+
+      const result = await run({ list: true });
+
+      expect(result).toMatchObject({
+        status: 'success',
+        result: {
+          messages: [
+            { messageId: '4523', from: 'alice', text: 'tweede bericht met regels' },
+            { messageId: '4522', from: 'you', text: 'antwoord' },
+            { messageId: '4521', from: 'user', text: '' },
+          ],
+        },
+      });
+      expect(react).not.toHaveBeenCalled();
+      expect(findTriggerForRun).not.toHaveBeenCalled();
+    });
+
+    it('bounds each excerpt', async () => {
+      listRecent.mockReturnValue(ok([makeRef({ excerpt: 'x'.repeat(500) })]));
+      const result = await run({ list: true });
+      const text = (result.result as { messages: Array<{ text: string }> }).messages[0].text;
+      expect(text).toHaveLength(80);
+      expect(text.endsWith('…')).toBe(true);
+    });
+
+    it('needs no emoji and works on a channel without reactions', async () => {
+      connector = { type: 'email', name: 'my-telegram' };
+      const result = await run({ list: true });
+      expect(result).toMatchObject({ status: 'success', result: { messages: [] } });
+    });
+
+    it('returns an empty list without a ledger', async () => {
+      const result = await makeHandler({ withRefs: false }).execute({ list: true }, makeContext());
+      expect(result).toMatchObject({ status: 'success', result: { messages: [] } });
+    });
+
+    it('is refused for delegated (A2A) runs', async () => {
+      const result = await run({ list: true }, { a2aTaskId: 'task-1' });
+      expect(result.status).toBe('error');
+    });
   });
 
   it('clears the reaction with remove: true, ignoring any emoji', async () => {
@@ -174,9 +304,13 @@ describe('ChannelReactHandler', () => {
 
   it('errors when the run has no trigger message and no messageId was given', async () => {
     findTriggerForRun.mockReturnValue(ok(null));
+    listRecent.mockReturnValue(
+      ok([makeRef({ external_id: '4521', direction: 'outbound', excerpt: 'Done.' })]),
+    );
     const result = await run({ emoji: '👍' });
     expect(result.status).toBe('error');
     expect(result.error).toContain('messageId');
+    expect(result.error).toContain('id 4521 — you: "Done."');
     expect(react).not.toHaveBeenCalled();
   });
 
@@ -212,15 +346,33 @@ describe('ChannelReactHandler', () => {
     expect(result.error).toContain('Use one of: 👍 ❤');
   });
 
-  it('reacts in the origin chat of a schedule thread', async () => {
+  it("reacts in the origin chat of a schedule thread, using that chat's ledger", async () => {
     threadRow = {
       id: 'thread-001',
       external_id: 'schedule:persona:my-telegram',
       channel_id: 'chan-001',
       metadata: JSON.stringify({ kind: 'schedule', originExternalId: 'chat-42' }),
     };
-    await run({ emoji: '👍', messageId: '5' });
-    expect(react).toHaveBeenCalledWith('chat-42', { externalMessageId: '5' }, '👍');
+    findByExternalId.mockReturnValue(
+      ok({ id: 'thread-chat-42', external_id: 'chat-42', channel_id: 'chan-001' }),
+    );
+    find.mockImplementation((threadId: string, externalId: string) =>
+      ok(
+        threadId === 'thread-chat-42' && externalId === '5'
+          ? makeRef({ thread_id: 'thread-chat-42', external_id: '5' })
+          : null,
+      ),
+    );
+
+    const result = await run({ emoji: '👍', messageId: '5' });
+
+    expect(result.status).toBe('success');
+    expect(findByExternalId).toHaveBeenCalledWith('chan-001', 'chat-42');
+    expect(react).toHaveBeenCalledWith(
+      'chat-42',
+      expect.objectContaining({ externalMessageId: '5' }),
+      '👍',
+    );
   });
 
   it('errors on a schedule thread that has no origin chat', async () => {

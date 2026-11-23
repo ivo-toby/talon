@@ -271,6 +271,55 @@ describe('MessagePipeline — replies and reactions', () => {
       );
     });
 
+    it('adds a target the ledger did not know, so the id shown in the header is usable', async () => {
+      await pipeline.handleInboundEvent(
+        makeEvent({
+          content: 'what about this?',
+          replyTo: {
+            externalMessageId: '1',
+            senderId: 'bot-9',
+            fromSelf: true,
+            text: 'old message',
+          },
+        }),
+      );
+      expect(refs.find(threadIdFor(CHAT), '1')._unsafeUnwrap()).toMatchObject({
+        direction: 'outbound',
+        message_id: null,
+        sender_id: null,
+        excerpt: 'old message',
+      });
+    });
+
+    it("records an unknown target as inbound unless the provider says it is Talon's", async () => {
+      await pipeline.handleInboundEvent(
+        makeEvent({
+          content: 'and this?',
+          replyTo: { externalMessageId: 'wamid.X', senderId: 'bob' },
+        }),
+      );
+      expect(refs.find(threadIdFor(CHAT), 'wamid.X')._unsafeUnwrap()).toMatchObject({
+        direction: 'inbound',
+        sender_id: 'bob',
+        excerpt: '',
+      });
+    });
+
+    it('never overwrites a target the ledger already knows', async () => {
+      seedOutbound(CHAT, '4521', 'the original text');
+      await pipeline.handleInboundEvent(
+        makeEvent({
+          content: 'ok',
+          replyTo: { externalMessageId: '4521', senderId: 'someone', text: 'a partial quote' },
+        }),
+      );
+      expect(refs.find(threadIdFor(CHAT), '4521')._unsafeUnwrap()).toMatchObject({
+        direction: 'outbound',
+        sender_id: null,
+        excerpt: 'the original text',
+      });
+    });
+
     it('leaves a message without a reply untouched', async () => {
       await pipeline.handleInboundEvent(makeEvent({ content: 'no reply here' }));
       expect(lastEnqueued().content).toBe('no reply here');

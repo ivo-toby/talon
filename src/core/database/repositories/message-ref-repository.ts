@@ -48,6 +48,8 @@ export class MessageRefRepository extends BaseRepository {
   private readonly findInChatStmt: Database.Statement;
   private readonly findInboundByMessageIdStmt: Database.Statement;
   private readonly findTriggerForRunStmt: Database.Statement;
+  private readonly findByMessageIdStmt: Database.Statement;
+  private readonly listRecentStmt: Database.Statement;
 
   constructor(db: Database.Database) {
     super(db);
@@ -86,6 +88,23 @@ export class MessageRefRepository extends BaseRepository {
       WHERE message_id = ? AND direction = 'inbound'
       ORDER BY created_at ASC
       LIMIT 1
+    `);
+
+    // Latest ref of a stored message inside one thread. An outbound message
+    // delivered as several blocks has several refs; the newest is its final
+    // block.
+    this.findByMessageIdStmt = db.prepare(`
+      SELECT * FROM message_refs
+      WHERE thread_id = ? AND message_id = ?
+      ORDER BY created_at DESC
+      LIMIT 1
+    `);
+
+    this.listRecentStmt = db.prepare(`
+      SELECT * FROM message_refs
+      WHERE thread_id = ?
+      ORDER BY created_at DESC
+      LIMIT ?
     `);
 
     // The message a run answers: run -> its queue item -> the item's message
@@ -178,6 +197,38 @@ export class MessageRefRepository extends BaseRepository {
       return err(
         new DbError(
           `Failed to find message ref by message id: ${String(cause)}`,
+          cause instanceof Error ? cause : undefined,
+        ),
+      );
+    }
+  }
+
+  /**
+   * Finds the latest ref of a stored message (`messages.id`) inside a thread,
+   * whatever its direction.
+   */
+  findByMessageId(threadId: string, messageId: string): Result<MessageRefRow | null, DbError> {
+    try {
+      const row = this.findByMessageIdStmt.get(threadId, messageId) as MessageRefRow | undefined;
+      return ok(row ?? null);
+    } catch (cause) {
+      return err(
+        new DbError(
+          `Failed to find message ref by stored message: ${String(cause)}`,
+          cause instanceof Error ? cause : undefined,
+        ),
+      );
+    }
+  }
+
+  /** Lists the most recent refs of a thread, newest first. */
+  listRecent(threadId: string, limit: number): Result<MessageRefRow[], DbError> {
+    try {
+      return ok(this.listRecentStmt.all(threadId, limit) as MessageRefRow[]);
+    } catch (cause) {
+      return err(
+        new DbError(
+          `Failed to list recent message refs: ${String(cause)}`,
           cause instanceof Error ? cause : undefined,
         ),
       );

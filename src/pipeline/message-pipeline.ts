@@ -370,7 +370,8 @@ export class MessagePipeline {
    * sent it, and the stored excerpt covers providers that deliver only an ID
    * (WhatsApp Cloud API). What the connector delivered wins over the ledger,
    * since a provider quote can be a hand-picked part of the message. A target
-   * the ledger does not know is still rendered, as "an earlier message".
+   * the ledger does not know is still rendered, as "an earlier message", and
+   * is then added to the ledger so the id shown in the header stays usable.
    */
   private withReplyContext(event: InboundEvent, threadId: string): InboundEvent {
     const reply = event.replyTo;
@@ -401,6 +402,26 @@ export class MessagePipeline {
         { threadId, err: ledger.error.message },
         'pipeline: reply target lookup failed; rendering from connector data only',
       );
+    } else if (ledger !== undefined) {
+      // A target from before the ledger existed. Its id is about to be shown
+      // to the agent in the header, so it must be addressable afterwards:
+      // record it from what the connector delivered. Only a provider that
+      // positively identifies the message as Talon's makes it outbound.
+      const recorded = this.messageRefs?.record({
+        thread_id: threadId,
+        external_id: reply.externalMessageId,
+        direction: reply.fromSelf === true ? 'outbound' : 'inbound',
+        ...(reply.fromSelf !== true && reply.senderId !== undefined
+          ? { sender_id: reply.senderId }
+          : {}),
+        ...(reply.text !== undefined ? { text: reply.text } : {}),
+      });
+      if (recorded !== undefined && recorded.isErr()) {
+        this.logger.warn(
+          { threadId, err: recorded.error.message },
+          'pipeline: failed to record reply target ref',
+        );
+      }
     }
     return {
       ...event,
