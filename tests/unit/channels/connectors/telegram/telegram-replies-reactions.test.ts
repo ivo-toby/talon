@@ -1476,3 +1476,180 @@ describe('TelegramConnector diagnostics', () => {
     expect(kinds).toEqual(['message_reaction', 'other']);
   });
 });
+
+// ---------------------------------------------------------------------------
+// requireMention: false — answer every message in allowed groups
+// ---------------------------------------------------------------------------
+
+describe('TelegramConnector requireMention', () => {
+  const OPEN_GROUP = { allowGroupChats: true, requireMention: false } as const;
+
+  it('by default drops a group message that does not address the bot', async () => {
+    const connector = makeConnector({ allowGroupChats: true });
+    const received = collectEvents(connector);
+    await connector.handleUpdatePublic(messageUpdate(1, groupMessage({ text: 'just chatting' })));
+    expect(received).toHaveLength(0);
+  });
+
+  it('treats requireMention: true like the default', async () => {
+    const connector = makeConnector({ allowGroupChats: true, requireMention: true });
+    const received = collectEvents(connector);
+    await connector.handleUpdatePublic(messageUpdate(1, groupMessage({ text: 'just chatting' })));
+    expect(received).toHaveLength(0);
+  });
+
+  it('delivers a plain group message with its full text when requireMention is false', async () => {
+    const connector = makeConnector(OPEN_GROUP);
+    const received = collectEvents(connector);
+
+    await connector.handleUpdatePublic(
+      messageUpdate(1, groupMessage({ text: 'wat is de status?' })),
+    );
+
+    expect(received).toHaveLength(1);
+    expect(received[0]).toMatchObject({
+      content: 'wat is de status?',
+      externalThreadId: String(GROUP_CHAT_ID),
+      externalMessageId: '2020',
+      senderId: String(USER_ID),
+    });
+  });
+
+  it('delivers a plain message inside a topic to that topic thread', async () => {
+    const connector = makeConnector(OPEN_GROUP);
+    const received = collectEvents(connector);
+
+    await connector.handleUpdatePublic(
+      messageUpdate(
+        1,
+        groupMessage({ text: 'homelab vraag', is_topic_message: true, message_thread_id: 42 }),
+      ),
+    );
+
+    expect(received).toHaveLength(1);
+    expect(received[0].externalThreadId).toBe(`${GROUP_CHAT_ID}:42`);
+    expect(received[0].content).toBe('homelab vraag');
+  });
+
+  it('still strips an @mention that is present', async () => {
+    const connector = makeConnector(OPEN_GROUP);
+    await startWithIdentity(connector);
+    const received = collectEvents(connector);
+    const text = `@${BOT_USERNAME} wat is de status?`;
+
+    await connector.handleUpdatePublic(
+      messageUpdate(
+        1,
+        groupMessage({
+          text,
+          entities: [{ type: 'mention', offset: 0, length: BOT_USERNAME.length + 1 }],
+        }),
+      ),
+    );
+
+    expect(received).toHaveLength(1);
+    expect(received[0].content).toBe('wat is de status?');
+  });
+
+  it('still strips a trigger word that is present', async () => {
+    const connector = makeConnector({ ...OPEN_GROUP, triggerWords: ['!talon'] });
+    const received = collectEvents(connector);
+
+    await connector.handleUpdatePublic(messageUpdate(1, groupMessage({ text: '!talon ping' })));
+    await connector.handleUpdatePublic(
+      messageUpdate(2, groupMessage({ message_id: 2021, text: 'zonder trigger' })),
+    );
+
+    expect(received.map((event) => event.content)).toEqual(['ping', 'zonder trigger']);
+  });
+
+  it('does not open groups on its own: allowGroupChats must still be on', async () => {
+    const connector = makeConnector({ requireMention: false });
+    const received = collectEvents(connector);
+    await connector.handleUpdatePublic(messageUpdate(1, groupMessage()));
+    expect(received).toHaveLength(0);
+  });
+
+  it('still enforces allowedChatIds', async () => {
+    const connector = makeConnector({ ...OPEN_GROUP, allowedChatIds: ['-100999'] });
+    const received = collectEvents(connector);
+    await connector.handleUpdatePublic(messageUpdate(1, groupMessage()));
+    expect(received).toHaveLength(0);
+
+    const allowed = makeConnector({ ...OPEN_GROUP, allowedChatIds: [String(GROUP_CHAT_ID)] });
+    const allowedReceived = collectEvents(allowed);
+    await allowed.handleUpdatePublic(messageUpdate(2, groupMessage()));
+    expect(allowedReceived).toHaveLength(1);
+  });
+
+  it('still drops messages from bots', async () => {
+    const connector = makeConnector(OPEN_GROUP);
+    const received = collectEvents(connector);
+    await connector.handleUpdatePublic(
+      messageUpdate(
+        1,
+        groupMessage({
+          from: { id: 4321, is_bot: true, first_name: 'Other', username: 'other_bot' },
+        }),
+      ),
+    );
+    expect(received).toHaveLength(0);
+  });
+
+  it('still drops a group message with no text and no image', async () => {
+    const connector = makeConnector(OPEN_GROUP);
+    const received = collectEvents(connector);
+    await connector.handleUpdatePublic(
+      messageUpdate(
+        1,
+        groupMessage({
+          text: undefined,
+          sticker: { file_id: 'f', file_unique_id: 'u', width: 1, height: 1 },
+        }),
+      ),
+    );
+    expect(received).toHaveLength(0);
+  });
+
+  it('does not bypass trigger words in a direct chat', async () => {
+    const connector = makeConnector({ ...OPEN_GROUP, triggerWords: ['!talon'] });
+    const received = collectEvents(connector);
+    await connector.handleUpdatePublic(messageUpdate(1, dmMessage({ text: 'no trigger here' })));
+    expect(received).toHaveLength(0);
+  });
+
+  describe('startup warning', () => {
+    const OPEN_TO_ALL = 'telegram requireMention is false without allowedChatIds';
+
+    async function warningsOnStart(overrides: Partial<TelegramConfig>): Promise<string[]> {
+      const warn = vi.fn();
+      const logger = {
+        info: vi.fn(),
+        warn,
+        debug: vi.fn(),
+        error: vi.fn(),
+      } as unknown as pino.Logger;
+      const connector = new TelegramConnector(defaultConfig(overrides), 'test-bot', logger);
+      connectors.push(connector);
+      vi.stubGlobal('fetch', makeMockFetch([]));
+      await connector.start();
+      return warn.mock.calls.map((call) => String(call[1]));
+    }
+
+    it('warns when every group is answered without an allow-list', async () => {
+      const warnings = await warningsOnStart(OPEN_GROUP);
+      expect(warnings.some((message) => message.startsWith(OPEN_TO_ALL))).toBe(true);
+    });
+
+    it('stays quiet with an allow-list, with requireMention on, or with groups off', async () => {
+      for (const overrides of [
+        { ...OPEN_GROUP, allowedChatIds: [String(GROUP_CHAT_ID)] },
+        { allowGroupChats: true },
+        { requireMention: false },
+      ]) {
+        const warnings = await warningsOnStart(overrides);
+        expect(warnings.some((message) => message.startsWith(OPEN_TO_ALL))).toBe(false);
+      }
+    });
+  });
+});

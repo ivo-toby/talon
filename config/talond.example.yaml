@@ -34,6 +34,9 @@ channels:
       pollingTimeoutSec: 30
       # Native replies and reactions (also available on whatsappBaileys and
       # whatsappBusiness). Both are optional; these are the defaults.
+      # allowGroupChats: true    # answer in group chats (default: false)
+      # requireMention: false    # answer every group message, not only @mentions (default: true);
+      #                          # needs the bot to be group admin, and list the group in allowedChatIds
       # replyToTrigger: groups   # never | groups | always — quote the message being answered
       # inboundReactions: true   # run the agent when a user reacts to one of its messages
 

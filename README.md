@@ -711,6 +711,8 @@ channels:
       pollingTimeoutSec: 30
       allowedChatIds:
         - 123456789
+      allowGroupChats: false # default: false — answer in group chats
+      requireMention: true # default: true — see "Group chats" below
       replyToTrigger: groups # never | groups (default) | always
       inboundReactions: true # default: true
 ```
@@ -719,7 +721,10 @@ channels:
 - **Outbound**: `sendMessage` with MarkdownV2 parse mode; native replies via `reply_parameters`; reactions via `setMessageReaction`
 - **Idempotency key**: `update_id`
 - **Thread mapping**: `chat_id`, or `chat_id:message_thread_id` for a message inside a topic
-- **Group chats**: with `allowGroupChats: true` the bot answers an @mention, a trigger word, or a native reply to one of its own messages
+- **Group chats**: off by default. With `allowGroupChats: true` the bot answers an @mention, a trigger word, or a native reply to one of its own messages. Add `requireMention: false` to answer every message in the group, which suits a forum group where each topic is a conversation with the bot. Three things to know:
+  - Telegram only delivers every group message when the bot is a group administrator or has Group Privacy turned off in BotFather.
+  - Set `allowedChatIds` alongside it. Without an allow-list the bot answers everything in any group it is added to, and logs a warning at startup.
+  - Every member of an allowed group can talk to the bot, and each message is one agent run.
 - **Reactions**: Telegram delivers user reactions in private chats and in groups where the bot is an administrator. See [Replies, Threads and Reactions](#replies-threads-and-reactions)
 
 ### Slack

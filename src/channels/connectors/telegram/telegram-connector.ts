@@ -165,6 +165,17 @@ export class TelegramConnector implements ChannelConnector {
     this.abortController = new AbortController();
     this.logger.info({ channelName: this.name }, 'telegram connector starting');
 
+    if (
+      this.config.allowGroupChats === true &&
+      this.config.requireMention === false &&
+      (this.config.allowedChatIds === undefined || this.config.allowedChatIds.length === 0)
+    ) {
+      this.logger.warn(
+        { channelName: this.name },
+        'telegram requireMention is false without allowedChatIds: the bot answers every message in every group it is added to',
+      );
+    }
+
     // Resolve bot identity so we can filter our own messages.
     try {
       const response = await fetch(this.apiUrl('getMe'), {
@@ -642,6 +653,12 @@ export class TelegramConnector implements ChannelConnector {
       // Strip the matched prefix before forwarding.
       let result = this.extractGroupContent(sourceText ?? '', entities ?? []);
       if (result === null && replyTo?.fromSelf === true) {
+        result = sourceText ?? '';
+      }
+      // requireMention: false — every message in an allowed group addresses
+      // the bot. A mention or trigger word that IS present was still
+      // stripped above.
+      if (result === null && this.config.requireMention === false) {
         result = sourceText ?? '';
       }
       if (result === null) {

@@ -28,11 +28,24 @@ export interface TelegramConfig {
   allowedChatIds?: string[];
   /**
    * Allow messages from group and supergroup chats.
-   * In group chats the bot only responds when @mentioned by username or when
-   * a message starts with one of the configured triggerWords.
+   * In group chats the bot only responds when @mentioned by username, when
+   * a message starts with one of the configured triggerWords, or when a
+   * message replies to one of the bot's own messages — unless
+   * `requireMention` is false.
    * Defaults to false.
    */
   allowGroupChats?: boolean;
+  /**
+   * Whether a group message must address the bot (an @mention, a trigger
+   * word, or a reply to the bot) to be answered. Defaults to true. Set to
+   * false to answer every message in the allowed group chats, e.g. a forum
+   * group where each topic is a conversation with the bot. Telegram only
+   * delivers every group message when the bot is a group administrator or
+   * has Group Privacy turned off. Combine with `allowedChatIds`: without it
+   * the bot answers everything in any group it is added to. Direct chats are
+   * not affected.
+   */
+  requireMention?: boolean;
   /**
    * Optional trigger words. A message must start with one of these (case-
    * insensitive) for the bot to respond. The matched prefix is stripped before

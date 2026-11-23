@@ -85,6 +85,9 @@ channels:
 | `botToken` | Required bot token from BotFather |
 | `pollingTimeoutSec` | Optional long-poll timeout in seconds. Default: `30` |
 | `allowedChatIds` | Optional allow-list of Telegram chat IDs. Use strings, for example `"123456789"` |
+| `allowGroupChats` | Answer in group and supergroup chats. Default: `false` |
+| `requireMention` | Whether a group message must address the bot (an @mention, a trigger word, or a reply to the bot). Default: `true`. Set `false` to answer every message in the allowed groups |
+| `triggerWords` | Optional case-insensitive prefixes that address the bot; the prefix is stripped |
 | `replyToTrigger` | When an answer is sent as a native reply to the message that triggered it: `groups` (default), `always`, or `never` |
 | `inboundReactions` | Forward user reactions on Talon's messages to the agent. Default: `true` |
 
@@ -92,7 +95,9 @@ Notes:
 
 - each Telegram `chat_id` becomes its own Talon thread; a message inside a topic uses `<chat_id>:<topic_id>`, so every topic is its own conversation
 - Telegram supports `sendTyping()`, so the daemon shows activity while the agent works
-- in group chats (`allowGroupChats: true`) the bot answers an @mention, a trigger word, or a native reply to one of its own messages
+- in group chats (`allowGroupChats: true`) the bot answers an @mention, a trigger word, or a native reply to one of its own messages; with `requireMention: false` it answers every message
+- `requireMention: false` needs the bot to be a group administrator (or Group Privacy turned off in BotFather), otherwise Telegram does not deliver ordinary group messages. Set `allowedChatIds` with it, or the bot answers in any group it is added to
+- a group that sends messages while `allowGroupChats` is off is reported once in the log, with its chat ID
 - Telegram delivers user reactions in private chats, and in groups only where the bot is an administrator
 - see [Replies, threads and reactions](#replies-threads-and-reactions)
 
