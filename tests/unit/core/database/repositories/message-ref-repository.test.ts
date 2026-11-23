@@ -205,6 +205,79 @@ describe('MessageRefRepository', () => {
     });
   });
 
+  describe('findByMessageId', () => {
+    it('finds the ref of a stored message in the thread, whatever its direction', () => {
+      const threadId = makeThread('chat-1');
+      repo.record({
+        thread_id: threadId,
+        external_id: 'in-1',
+        direction: 'inbound',
+        message_id: 'm-in',
+      });
+      repo.record({
+        thread_id: threadId,
+        external_id: 'out-1',
+        direction: 'outbound',
+        message_id: 'm-out',
+      });
+
+      expect(repo.findByMessageId(threadId, 'm-in')._unsafeUnwrap()?.external_id).toBe('in-1');
+      expect(repo.findByMessageId(threadId, 'm-out')._unsafeUnwrap()?.external_id).toBe('out-1');
+    });
+
+    it('returns the newest ref when one stored message was delivered as several blocks', () => {
+      const threadId = makeThread('chat-1');
+      repo.record({
+        thread_id: threadId,
+        external_id: 'block-1',
+        direction: 'outbound',
+        message_id: 'm-out',
+      });
+      repo.record({
+        thread_id: threadId,
+        external_id: 'block-2',
+        direction: 'outbound',
+        message_id: 'm-out',
+      });
+      expect(repo.findByMessageId(threadId, 'm-out')._unsafeUnwrap()?.external_id).toBe('block-2');
+    });
+
+    it('is scoped to the thread and returns null when unknown', () => {
+      const threadId = makeThread('chat-1');
+      const other = makeThread('chat-2');
+      repo.record({
+        thread_id: threadId,
+        external_id: 'in-1',
+        direction: 'inbound',
+        message_id: 'm-in',
+      });
+      expect(repo.findByMessageId(other, 'm-in')._unsafeUnwrap()).toBeNull();
+      expect(repo.findByMessageId(threadId, 'nope')._unsafeUnwrap()).toBeNull();
+    });
+  });
+
+  describe('listRecent', () => {
+    it('lists the refs of one thread newest first, up to the limit', () => {
+      const threadId = makeThread('chat-1');
+      const other = makeThread('chat-2');
+      for (const id of ['1', '2', '3', '4']) {
+        repo.record({ thread_id: threadId, external_id: id, direction: 'inbound' });
+      }
+      repo.record({ thread_id: other, external_id: '99', direction: 'inbound' });
+
+      expect(
+        repo
+          .listRecent(threadId, 3)
+          ._unsafeUnwrap()
+          .map((row) => row.external_id),
+      ).toEqual(['4', '3', '2']);
+    });
+
+    it('returns an empty list for a thread without refs', () => {
+      expect(repo.listRecent(makeThread('chat-1'), 5)._unsafeUnwrap()).toEqual([]);
+    });
+  });
+
   describe('findTriggerForRun', () => {
     function seedRun(options: { withMessage: boolean }): { runId: string; threadId: string } {
       const threadId = makeThread('chat-1');

@@ -84,8 +84,9 @@ Places an emoji reaction on a message in the current conversation, or removes Ta
 | Parameter | Type | Notes |
 |---|---|---|
 | `emoji` | string | A single emoji. Required unless `remove` is `true` |
-| `messageId` | string | Optional message ID to react to: the `(id …)` value from a `[Replying to …]` or `[Reaction: …]` header. Defaults to the message that started the run |
+| `messageId` | string | Optional. Leave out to react to the message that started the run. Otherwise the ID of another message in this conversation: an `(id …)` value from a `[Replying to …]` or `[Reaction: …]` header, or an ID from `list` |
 | `remove` | boolean | Optional; removes Talon's reaction instead of adding one |
+| `list` | boolean | Optional; does not react, and returns the conversation's recent messages (`messageId`, `from`, `text`), newest first |
 
 Notes:
 
@@ -94,6 +95,7 @@ Notes:
 - To acknowledge without sending text, react and then make the final response exactly `NO_REPLY`. A response that is only that word is not delivered to the chat.
 - Telegram accepts only its standard reaction set. An emoji outside it returns an error that lists the allowed emoji.
 - A run that was not started by a channel message (a schedule, a user reaction, a background agent) has no default target and must pass `messageId`.
+- An explicit `messageId` must be known to the message ledger for this conversation. An unknown ID is not sent to the channel: the tool returns an error listing the recent messages and their real IDs. The numbers stored in the `messages` table are delivery keys (on Telegram an `update_id`), not message IDs; the tool does accept a stored message's own `messages.id`.
 - Delegated (A2A) runs cannot react.
 
 ---

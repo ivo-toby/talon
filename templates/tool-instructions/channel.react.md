@@ -20,3 +20,9 @@ A user's message may start with a header line:
 
 The `(id N)` value identifies that message: pass it as `messageId` to
 `channel_react`, or as `replyTo` to `channel_send`, to address it directly.
+
+To react to the message you are answering, never pass a `messageId`. To react
+to an earlier message whose id you have not seen, call `channel_react` with
+`list: true` first: it returns the recent messages of this conversation with
+their ids. Do not look message ids up in the database. The numbers stored
+there are delivery keys, not message ids, and the channel rejects them.
