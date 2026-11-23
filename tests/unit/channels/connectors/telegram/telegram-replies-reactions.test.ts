@@ -1366,3 +1366,113 @@ describe('TelegramConnector sendTyping()', () => {
     expect(requestBody(mockFetch)).toStrictEqual({ chat_id: '1234', action: 'typing' });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Diagnostics: an ignored group must be visible in the log
+// ---------------------------------------------------------------------------
+
+describe('TelegramConnector diagnostics', () => {
+  function recordingLogger(): {
+    logger: pino.Logger;
+    warn: ReturnType<typeof vi.fn>;
+    debug: ReturnType<typeof vi.fn>;
+  } {
+    const warn = vi.fn();
+    const debug = vi.fn();
+    const logger = { info: vi.fn(), warn, debug, error: vi.fn() } as unknown as pino.Logger;
+    return { logger, warn, debug };
+  }
+
+  function connectorWith(
+    logger: pino.Logger,
+    overrides?: Partial<TelegramConfig>,
+  ): TelegramConnector {
+    const connector = new TelegramConnector(defaultConfig(overrides), 'test-bot', logger);
+    connectors.push(connector);
+    return connector;
+  }
+
+  const IGNORED_GROUP = 'telegram group chat is ignored because allowGroupChats is not enabled';
+
+  it('warns once per group chat when allowGroupChats is off, naming the chat id', async () => {
+    const { logger, warn } = recordingLogger();
+    const connector = connectorWith(logger);
+    const received = collectEvents(connector);
+
+    await connector.handleUpdatePublic(messageUpdate(1, groupMessage()));
+    await connector.handleUpdatePublic(messageUpdate(2, groupMessage({ message_id: 2021 })));
+
+    expect(received).toHaveLength(0);
+    const warnings = warn.mock.calls.filter((call) => String(call[1]).startsWith(IGNORED_GROUP));
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0][0]).toMatchObject({
+      chatId: String(GROUP_CHAT_ID),
+      chatType: 'supergroup',
+    });
+  });
+
+  it('warns separately for each ignored group chat', async () => {
+    const { logger, warn } = recordingLogger();
+    const connector = connectorWith(logger);
+
+    await connector.handleUpdatePublic(messageUpdate(1, groupMessage()));
+    await connector.handleUpdatePublic(
+      messageUpdate(
+        2,
+        groupMessage({ chat: { id: -1009999, type: 'supergroup', title: 'Other' } }),
+      ),
+    );
+
+    const chatIds = warn.mock.calls
+      .filter((call) => String(call[1]).startsWith(IGNORED_GROUP))
+      .map((call) => (call[0] as { chatId: string }).chatId);
+    expect(chatIds).toEqual([String(GROUP_CHAT_ID), '-1009999']);
+  });
+
+  it('does not warn when allowGroupChats is on, or for a private chat', async () => {
+    const { logger, warn } = recordingLogger();
+    const groupEnabled = connectorWith(logger, { allowGroupChats: true });
+    await groupEnabled.handleUpdatePublic(messageUpdate(1, groupMessage()));
+    const privateOnly = connectorWith(logger);
+    collectEvents(privateOnly);
+    await privateOnly.handleUpdatePublic(messageUpdate(2, dmMessage()));
+
+    expect(warn.mock.calls.some((call) => String(call[1]).startsWith(IGNORED_GROUP))).toBe(false);
+  });
+
+  it('logs every delivered update at debug with identifiers only, before any filter', async () => {
+    const { logger, debug } = recordingLogger();
+    const connector = connectorWith(logger);
+
+    await connector.handleUpdatePublic(
+      messageUpdate(
+        7,
+        groupMessage({ text: 'secret text', is_topic_message: true, message_thread_id: 42 }),
+      ),
+    );
+
+    const received = debug.mock.calls.find((call) => call[1] === 'telegram update received');
+    expect(received?.[0]).toEqual({
+      channelName: 'test-bot',
+      updateId: 7,
+      kind: 'message',
+      chatId: String(GROUP_CHAT_ID),
+      chatType: 'supergroup',
+      topicId: 42,
+    });
+    expect(JSON.stringify(debug.mock.calls)).not.toContain('secret text');
+  });
+
+  it('labels reaction updates and updates of other kinds', async () => {
+    const { logger, debug } = recordingLogger();
+    const connector = connectorWith(logger);
+
+    await connector.handleUpdatePublic(reactionUpdate(8));
+    await connector.handleUpdatePublic({ update_id: 9, edited_message: {} });
+
+    const kinds = debug.mock.calls
+      .filter((call) => call[1] === 'telegram update received')
+      .map((call) => (call[0] as { kind: string }).kind);
+    expect(kinds).toEqual(['message_reaction', 'other']);
+  });
+});

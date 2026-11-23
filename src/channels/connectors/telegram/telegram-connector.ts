@@ -61,6 +61,8 @@ const DEFAULT_POLLING_TIMEOUT_SEC = 30;
 const INITIAL_BACKOFF_MS = 1_000;
 /** Maximum backoff after repeated poll errors, in milliseconds. */
 const MAX_BACKOFF_MS = 60_000;
+/** Upper bound on the group chats remembered for the once-per-chat warning. */
+const MAX_WARNED_GROUP_CHATS = 1_000;
 /** Timeout for the getMe identity resolution call, in milliseconds. */
 const GET_ME_TIMEOUT_MS = 10_000;
 
@@ -112,6 +114,12 @@ export class TelegramConnector implements ChannelConnector {
   private pollLoopPromise?: Promise<void>;
 
   private readonly imageSettings: ImageSelectionSettings;
+  /**
+   * Group chats already warned about while `allowGroupChats` is off. The drop
+   * itself is routine, but a group that is silently ignored looks exactly
+   * like Telegram not delivering, so each chat is reported once per process.
+   */
+  private readonly warnedGroupChats = new Set<string>();
 
   constructor(
     private readonly config: TelegramConfig,
@@ -503,6 +511,30 @@ export class TelegramConnector implements ChannelConnector {
    * `telegram-media.ts` for the selection/download contract.
    */
   private async handleUpdate(update: TelegramUpdate): Promise<void> {
+    // One line per delivered update, before any filter, so "Telegram never
+    // sent it" and "the connector dropped it" can be told apart. Identifiers
+    // only — never message text.
+    const updateChat = update.message?.chat ?? update.message_reaction?.chat;
+    this.logger.debug(
+      {
+        channelName: this.name,
+        updateId: update.update_id,
+        kind:
+          update.message_reaction !== undefined
+            ? 'message_reaction'
+            : update.message !== undefined
+              ? 'message'
+              : 'other',
+        ...(updateChat !== undefined
+          ? { chatId: String(updateChat.id), chatType: updateChat.type }
+          : {}),
+        ...(update.message?.is_topic_message === true
+          ? { topicId: update.message.message_thread_id }
+          : {}),
+      },
+      'telegram update received',
+    );
+
     if (update.message_reaction !== undefined) {
       await this.handleReactionUpdate(update, update.message_reaction);
       return;
@@ -545,10 +577,21 @@ export class TelegramConnector implements ChannelConnector {
 
     // Drop group messages unless explicitly enabled.
     if (isGroup && !this.config.allowGroupChats) {
-      this.logger.debug(
-        { channelName: this.name, chatId, chatType: message.chat.type },
-        'telegram group message received but allowGroupChats is not enabled, dropping',
-      );
+      if (
+        !this.warnedGroupChats.has(chatId) &&
+        this.warnedGroupChats.size < MAX_WARNED_GROUP_CHATS
+      ) {
+        this.warnedGroupChats.add(chatId);
+        this.logger.warn(
+          { channelName: this.name, chatId, chatType: message.chat.type },
+          'telegram group chat is ignored because allowGroupChats is not enabled; set allowGroupChats: true on this channel to answer in groups (reported once per chat)',
+        );
+      } else {
+        this.logger.debug(
+          { channelName: this.name, chatId, chatType: message.chat.type },
+          'telegram group message received but allowGroupChats is not enabled, dropping',
+        );
+      }
       return;
     }
 
