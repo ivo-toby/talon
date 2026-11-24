@@ -11,6 +11,17 @@
 // ---------------------------------------------------------------------------
 
 /**
+ * Settings that can be overridden for one chat (`TelegramConfig.chats`).
+ * An absent field falls back to the connector-wide setting.
+ */
+export interface TelegramChatSettings {
+  /** Per-chat override of {@link TelegramConfig.requireMention}. */
+  requireMention?: boolean;
+  /** Per-chat override of {@link TelegramConfig.replyToTrigger}. */
+  replyToTrigger?: 'never' | 'groups' | 'always';
+}
+
+/**
  * Configuration for a TelegramConnector instance.
  */
 export interface TelegramConfig {
@@ -64,6 +75,15 @@ export interface TelegramConfig {
    * chats and in groups where the bot is an administrator.
    */
   inboundReactions?: boolean;
+  /**
+   * Per-chat overrides, keyed by chat ID (as a string). Lets one bot treat
+   * chats differently: a forum group used as a topic workspace can answer
+   * every message without quoting (`requireMention: false`,
+   * `replyToTrigger: never`) while an ordinary multi-person group keeps the
+   * defaults. A chat listed here is still subject to `allowGroupChats` and
+   * `allowedChatIds`; listing it does not admit it.
+   */
+  chats?: Record<string, TelegramChatSettings>;
 }
 
 // ---------------------------------------------------------------------------

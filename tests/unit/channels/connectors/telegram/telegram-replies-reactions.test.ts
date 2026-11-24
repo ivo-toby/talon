@@ -1653,3 +1653,280 @@ describe('TelegramConnector requireMention', () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Per-chat settings (config.chats)
+// ---------------------------------------------------------------------------
+
+describe('TelegramConnector per-chat settings', () => {
+  const WORKSPACE = String(GROUP_CHAT_ID);
+  const OTHER_GROUP_ID = -1009999;
+
+  it('answers every message in a chat whose own requireMention is false', async () => {
+    const connector = makeConnector({
+      allowGroupChats: true,
+      chats: { [WORKSPACE]: { requireMention: false } },
+    });
+    const received = collectEvents(connector);
+
+    await connector.handleUpdatePublic(
+      messageUpdate(1, groupMessage({ text: 'in the workspace' })),
+    );
+    await connector.handleUpdatePublic(
+      messageUpdate(
+        2,
+        groupMessage({
+          message_id: 2021,
+          text: 'in another group',
+          chat: { id: OTHER_GROUP_ID, type: 'supergroup', title: 'Other' },
+        }),
+      ),
+    );
+
+    expect(received.map((event) => event.content)).toEqual(['in the workspace']);
+  });
+
+  it('lets one chat require a mention while the connector default does not', async () => {
+    const connector = makeConnector({
+      allowGroupChats: true,
+      requireMention: false,
+      chats: { [WORKSPACE]: { requireMention: true } },
+    });
+    const received = collectEvents(connector);
+
+    await connector.handleUpdatePublic(messageUpdate(1, groupMessage({ text: 'needs a mention' })));
+    await connector.handleUpdatePublic(
+      messageUpdate(
+        2,
+        groupMessage({
+          message_id: 2021,
+          text: 'open group',
+          chat: { id: OTHER_GROUP_ID, type: 'supergroup', title: 'Other' },
+        }),
+      ),
+    );
+
+    expect(received.map((event) => event.content)).toEqual(['open group']);
+  });
+
+  it('does not admit a chat just because it is listed', async () => {
+    const connector = makeConnector({ chats: { [WORKSPACE]: { requireMention: false } } });
+    const received = collectEvents(connector);
+    await connector.handleUpdatePublic(messageUpdate(1, groupMessage()));
+    expect(received).toHaveLength(0);
+  });
+
+  describe('replyToTrigger', () => {
+    const implicit = { externalMessageId: '77', implicit: true };
+
+    async function sendTo(
+      config: Partial<TelegramConfig>,
+      threadId: string,
+    ): Promise<Record<string, unknown>> {
+      const connector = makeConnector(config);
+      const mockFetch = stubFetchJson(sendOkResponse());
+      await connector.send(threadId, { body: 'hi', replyTo: implicit });
+      return requestBody(mockFetch);
+    }
+
+    it('turns quoting off for one group and leaves other groups on the default', async () => {
+      const config = { chats: { [WORKSPACE]: { replyToTrigger: 'never' as const } } };
+      expect(await sendTo(config, `${WORKSPACE}:42`)).not.toHaveProperty('reply_parameters');
+      expect(await sendTo(config, String(OTHER_GROUP_ID))).toHaveProperty('reply_parameters');
+    });
+
+    it('lets one chat quote while the connector default is never', async () => {
+      const config = {
+        replyToTrigger: 'never' as const,
+        chats: { [WORKSPACE]: { replyToTrigger: 'always' as const } },
+      };
+      expect(await sendTo(config, WORKSPACE)).toHaveProperty('reply_parameters');
+      expect(await sendTo(config, String(OTHER_GROUP_ID))).not.toHaveProperty('reply_parameters');
+    });
+
+    it('still sends an explicit reply in a chat set to never', async () => {
+      const connector = makeConnector({ chats: { [WORKSPACE]: { replyToTrigger: 'never' } } });
+      const mockFetch = stubFetchJson(sendOkResponse());
+      await connector.send(WORKSPACE, { body: 'hi', replyTo: { externalMessageId: '77' } });
+      expect(requestBody(mockFetch)).toHaveProperty('reply_parameters.message_id', 77);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// /chatid setup command
+// ---------------------------------------------------------------------------
+
+describe('TelegramConnector /chatid', () => {
+  function command(text: string, overrides: Partial<TelegramMessage> = {}): object {
+    return messageUpdate(1, groupMessage({ text, ...overrides }));
+  }
+
+  it('answers with the chat id and thread key, even before the group is allowed', async () => {
+    // allowGroupChats is off: this is the setup step that reveals the id.
+    const connector = makeConnector({ allowedChatIds: [String(USER_ID)] });
+    const received = collectEvents(connector);
+    const mockFetch = stubFetchJson(sendOkResponse());
+
+    await connector.handleUpdatePublic(command('/chatid'));
+
+    expect(received).toHaveLength(0);
+    expect(requestUrl(mockFetch)).toContain('/sendMessage');
+    expect(requestBody(mockFetch)).toEqual({
+      chat_id: String(GROUP_CHAT_ID),
+      text: `Chat ID: ${GROUP_CHAT_ID}\nTalon thread: ${GROUP_CHAT_ID}`,
+    });
+  });
+
+  it('adds the topic id and answers inside the topic', async () => {
+    const connector = makeConnector({ allowedChatIds: [String(USER_ID)] });
+    const mockFetch = stubFetchJson(sendOkResponse());
+
+    await connector.handleUpdatePublic(
+      command('/chatid', { is_topic_message: true, message_thread_id: 42 }),
+    );
+
+    expect(requestBody(mockFetch)).toEqual({
+      chat_id: String(GROUP_CHAT_ID),
+      text: `Chat ID: ${GROUP_CHAT_ID}\nTopic ID: 42\nTalon thread: ${GROUP_CHAT_ID}:42`,
+      message_thread_id: 42,
+    });
+  });
+
+  it('works in a private chat', async () => {
+    const connector = makeConnector({ allowedChatIds: [String(DM_CHAT_ID)] });
+    const mockFetch = stubFetchJson(sendOkResponse());
+    await connector.handleUpdatePublic(messageUpdate(1, dmMessage({ text: '/chatid' })));
+    expect(requestBody(mockFetch).text).toBe(`Chat ID: ${DM_CHAT_ID}\nTalon thread: ${DM_CHAT_ID}`);
+  });
+
+  it('accepts the command addressed to this bot and ignores one addressed to another', async () => {
+    const connector = makeConnector({ allowGroupChats: true, allowedChatIds: [String(USER_ID)] });
+    await startWithIdentity(connector);
+    const received = collectEvents(connector);
+    const mockFetch = stubFetchJson(sendOkResponse());
+
+    await connector.handleUpdatePublic(command(`/chatid@${BOT_USERNAME}`));
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+
+    await connector.handleUpdatePublic(command('/chatid@some_other_bot'));
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    // Not ours: it takes the normal path (and is dropped there: the group is
+    // not in allowedChatIds).
+    expect(received).toHaveLength(0);
+  });
+
+  it('answers anyone when the bot has no allowedChatIds', async () => {
+    const connector = makeConnector();
+    const mockFetch = stubFetchJson(sendOkResponse());
+    await connector.handleUpdatePublic(command('/chatid'));
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('answers a member of an already allowed chat', async () => {
+    const connector = makeConnector({ allowedChatIds: [String(GROUP_CHAT_ID)] });
+    const mockFetch = stubFetchJson(sendOkResponse());
+    await connector.handleUpdatePublic(
+      command('/chatid', { from: { id: OTHER_USER_ID, first_name: 'Other' } }),
+    );
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('stays silent for a sender who is not allowed, and never forwards the command', async () => {
+    const connector = makeConnector({ allowGroupChats: true, allowedChatIds: ['424242'] });
+    const received = collectEvents(connector);
+    const mockFetch = stubFetchJson(sendOkResponse());
+
+    await connector.handleUpdatePublic(command('/chatid'));
+
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(received).toHaveLength(0);
+  });
+
+  it('ignores the command from a bot', async () => {
+    const connector = makeConnector();
+    const mockFetch = stubFetchJson(sendOkResponse());
+    await connector.handleUpdatePublic(
+      command('/chatid', { from: { id: 4321, is_bot: true, first_name: 'Bot' } }),
+    );
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('leaves messages that merely contain the word alone', async () => {
+    const connector = makeConnector();
+    const received = collectEvents(connector);
+    const mockFetch = stubFetchJson(sendOkResponse());
+
+    await connector.handleUpdatePublic(messageUpdate(1, dmMessage({ text: '/chatid please' })));
+    await connector.handleUpdatePublic(
+      messageUpdate(2, dmMessage({ message_id: 1011, text: 'what is /chatid' })),
+    );
+
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(received.map((event) => event.content)).toEqual(['/chatid please', 'what is /chatid']);
+  });
+
+  it('survives a failed reply', async () => {
+    const connector = makeConnector();
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('network down')));
+    await expect(connector.handleUpdatePublic(command('/chatid'))).resolves.toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Typing indicator diagnostics
+// ---------------------------------------------------------------------------
+
+describe('TelegramConnector sendTyping() diagnostics', () => {
+  const REFUSED = 'telegram refused the typing indicator';
+
+  function connectorWithLogger(): {
+    connector: TelegramConnector;
+    warn: ReturnType<typeof vi.fn>;
+    debug: ReturnType<typeof vi.fn>;
+  } {
+    const warn = vi.fn();
+    const debug = vi.fn();
+    const logger = { info: vi.fn(), warn, debug, error: vi.fn() } as unknown as pino.Logger;
+    const connector = new TelegramConnector(defaultConfig(), 'test-bot', logger);
+    connectors.push(connector);
+    return { connector, warn, debug };
+  }
+
+  it('reports a refused typing indicator once per thread, with the reason', async () => {
+    const { connector, warn, debug } = connectorWithLogger();
+    stubFetchJson(
+      { ok: false, error_code: 400, description: 'Bad Request: message thread not found' },
+      400,
+    );
+
+    await connector.sendTyping(`${GROUP_CHAT_ID}:42`);
+    await connector.sendTyping(`${GROUP_CHAT_ID}:42`);
+    await connector.sendTyping(`${GROUP_CHAT_ID}:43`);
+
+    const warnings = warn.mock.calls.filter((call) => String(call[1]).startsWith(REFUSED));
+    expect(warnings).toHaveLength(2);
+    expect(warnings[0][0]).toEqual({
+      channelName: 'test-bot',
+      chatId: String(GROUP_CHAT_ID),
+      topicId: 42,
+      errorCode: 400,
+      description: 'Bad Request: message thread not found',
+    });
+    expect(debug.mock.calls.filter((call) => String(call[1]).startsWith(REFUSED))).toHaveLength(1);
+  });
+
+  it('stays quiet when Telegram accepts the indicator', async () => {
+    const { connector, warn } = connectorWithLogger();
+    stubFetchJson({ ok: true, result: true });
+    await connector.sendTyping(String(GROUP_CHAT_ID));
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('swallows a network failure', async () => {
+    const { connector, warn } = connectorWithLogger();
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('offline')));
+    await expect(connector.sendTyping(String(GROUP_CHAT_ID))).resolves.toBeUndefined();
+    expect(warn).not.toHaveBeenCalled();
+  });
+});
