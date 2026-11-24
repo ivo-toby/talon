@@ -375,22 +375,37 @@ program
 
 program
   .command('bind')
-  .description('Bind a persona to a channel')
+  .description('Bind a persona to a channel, or to one conversation on it with --thread')
   .requiredOption('--persona <name>', 'Persona name')
   .requiredOption('--channel <name>', 'Channel name')
+  .option(
+    '--thread <id>',
+    'Bind only this conversation, e.g. a Telegram forum topic "-1001234567890:42" (send /chatid in the topic to get it)',
+  )
   .option('--config <path>', 'Path to talond.yaml', DEFAULT_CONFIG_PATH)
-  .action(async (opts: { persona: string; channel: string; config: string }) => {
-    await bindCommand({ persona: opts.persona, channel: opts.channel, configPath: opts.config });
+  .action(async (opts: { persona: string; channel: string; thread?: string; config: string }) => {
+    await bindCommand({
+      persona: opts.persona,
+      channel: opts.channel,
+      ...(opts.thread !== undefined ? { thread: opts.thread } : {}),
+      configPath: opts.config,
+    });
   });
 
 program
   .command('unbind')
-  .description('Remove a persona-channel binding')
+  .description('Remove a persona-channel binding, or one conversation binding with --thread')
   .requiredOption('--persona <name>', 'Persona name')
   .requiredOption('--channel <name>', 'Channel name')
+  .option('--thread <id>', 'Remove the binding of this one conversation only')
   .option('--config <path>', 'Path to talond.yaml', DEFAULT_CONFIG_PATH)
-  .action(async (opts: { persona: string; channel: string; config: string }) => {
-    await unbindCommand({ persona: opts.persona, channel: opts.channel, configPath: opts.config });
+  .action(async (opts: { persona: string; channel: string; thread?: string; config: string }) => {
+    await unbindCommand({
+      persona: opts.persona,
+      channel: opts.channel,
+      ...(opts.thread !== undefined ? { thread: opts.thread } : {}),
+      configPath: opts.config,
+    });
   });
 
 program
