@@ -663,6 +663,12 @@ export class AgentRunner {
               currentChannelName
                 ? `When sending messages, use channelId: "${currentChannelName}".`
                 : '',
+              // A scheduled run delivers to the conversation the schedule was
+              // created in — a chat, or one topic of a forum group — but only
+              // while the agent does not name another recipient.
+              isScheduleTask
+                ? 'This is a scheduled run. Call channel_send WITHOUT externalChatId: the message then goes to the conversation (chat or topic) where this schedule was created. Pass externalChatId only to deliver somewhere else on purpose.'
+                : '',
             ]
               .filter(Boolean)
               .join('\n');
