@@ -249,6 +249,14 @@ npx talonctl bind --persona assistant --channel my-telegram
 
 The first binding created for a channel becomes its default binding automatically.
 
+Add `--thread <id>` to bind one conversation instead of the whole channel, for example a single Telegram forum topic:
+
+```bash
+npx talonctl bind --persona groceries --channel my-telegram --thread '-1004452318413:42'
+```
+
+A thread-scoped binding wins over the channel's default binding and is never a default itself. A conversation can have one persona; binding a second one is refused until the first is unbound. Send `/chatid` in a Telegram chat or topic to get its thread ID. Restart talond to apply.
+
 ### `unbind`
 
 Removes a persona-to-channel binding from config.
@@ -258,6 +266,12 @@ npx talonctl unbind --persona assistant --channel my-telegram
 ```
 
 If the removed binding was the default binding for that channel, Talon promotes the next remaining binding on that channel to default.
+
+With `--thread <id>` only that conversation's binding is removed; after a restart the conversation is answered by the channel default again.
+
+```bash
+npx talonctl unbind --persona groceries --channel my-telegram --thread '-1004452318413:42'
+```
 
 ---
 

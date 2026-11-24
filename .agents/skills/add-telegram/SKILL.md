@@ -108,6 +108,8 @@ Report any issues and help fix them.
 
 ## Phase 7: Group Chat Setup
 
+If the user wants one group with a separate conversation per topic, or a persona per topic, skip to **Topic Workspace (forum group)** below: it covers everything in this phase and more.
+
 If the user mentions group chats, explain:
 
 > **Group Privacy:** By default, Telegram bots only see messages that @mention them in groups. To let the bot see all messages:
@@ -117,6 +119,126 @@ If the user mentions group chats, explain:
 > 3. Go to **Bot Settings** > **Group Privacy** > **Turn off**
 >
 > After changing this, **remove and re-add the bot to the group** for it to take effect.
+>
+> Making the bot a group **administrator** has the same effect, works immediately, and is also needed to receive emoji reactions in a group.
+
+Group chats are off by default. Set `allowGroupChats: true` on the channel, and add the group's chat ID to `allowedChatIds` if that list is set. To find the ID, send `/chatid@YourBotName` in the group.
+
+## Topic Workspace (forum group)
+
+Use this flow when the user wants to use one Telegram group as several separate conversations, one per topic ("a groceries topic, a calendar topic"), with or without a different persona per topic. Each topic becomes its own Talon thread with its own history.
+
+Do the steps in order. Ask one question at a time and wait for the answer.
+
+### T1: Check the starting point
+
+Read `talond.yaml`. The Telegram channel must already exist and work in a private chat (Phases 1-6). Note the channel `name`, and whether `allowedChatIds` is set.
+
+If `allowedChatIds` is missing, set it to the user's own chat ID first (Phase 4). The `/chatid` command in step T3 only answers senders listed there, and without the list the bot would answer in any group it is added to.
+
+### T2: Create the forum group
+
+Tell the user:
+
+> 1. Create a Telegram group and add your bot to it.
+> 2. Open the group settings and turn on **Topics**.
+> 3. Make the bot an **administrator**. It needs no specific rights.
+
+Explain why admin is required: Telegram only delivers ordinary group messages and emoji reactions to bots that are group administrators. If the member list shows "has no access to messages" next to the bot, this step was skipped.
+
+Wait for the user to confirm.
+
+### T3: Find the group ID
+
+Tell the user to send this in the group (with the bot's real username):
+
+> `/chatid@YourBotName`
+
+The bot answers with `Chat ID: -100…`. Ask the user to paste the answer. The command is answered by Talon itself and works before the group is configured.
+
+If the bot does not answer:
+
+- talond is not running, or runs a build without `/chatid`: restart or update.
+- The user's own chat ID is not in `allowedChatIds`: fix Phase 4.
+- Fallback: send any message in the group and read the log. The first message from a group that is not enabled logs one warning, `telegram group chat is ignored because allowGroupChats is not enabled`, with the `chatId`.
+
+Turning on Topics converts the group into a supergroup with a new ID starting with `-100`. Always use the ID from `/chatid`, never one noted earlier.
+
+### T4: Ask how the group should behave
+
+Ask:
+
+> **Should the bot answer every message in this group, or only when it is @mentioned?**
+>
+> a) Every message (best when the group is just you and the bot, one subject per topic)
+> b) Only on @mention, a trigger word, or a reply to the bot (best with several people)
+
+Then ask:
+
+> **Should answers quote the message they respond to?**
+>
+> a) No, plain answers (best for one-person topics)
+> b) Yes, as replies (helps in a busy group)
+
+### T5: Write the config
+
+Edit the Telegram channel in `talond.yaml`. Keep every existing setting and add:
+
+```yaml
+      allowGroupChats: true
+      allowedChatIds:
+        - '<the user's own chat ID>'   # keep what is there
+        - '<group chat ID>'            # from /chatid, quoted
+      chats:
+        '<group chat ID>':
+          requireMention: false        # T4 answer a); omit for b)
+          replyToTrigger: never        # T4 answer "plain"; omit for "as replies"
+```
+
+Rules:
+
+- Chat IDs are quoted strings.
+- Put `requireMention` and `replyToTrigger` under `chats.<group chat ID>`, not at the top level of `config`, so other chats on the same bot keep their behaviour.
+- A chat listed under `chats` is not admitted by that alone: `allowGroupChats` and `allowedChatIds` are both still needed.
+
+### T6: Persona per topic (optional)
+
+Ask:
+
+> **Should all topics use the same persona, or do you want a specific persona for some topics?**
+
+If all the same: skip to T7. The channel's default persona answers every topic.
+
+For each topic that gets its own persona:
+
+1. The persona must exist. If it does not, create it first (`/create-profile`, or `npx talonctl add-persona`).
+2. Ask the user to create the topic in Telegram and send `/chatid@YourBotName` **inside that topic**. The answer contains a line `Talon thread: -100…:<topic id>`. Ask them to paste it.
+3. Bind it:
+
+```bash
+npx talonctl bind --persona <persona> --channel <channel> --thread '<Talon thread value>'
+```
+
+This writes a `thread:` entry to `bindings` in `talond.yaml`. The channel must also have a default binding (Phase 5) for the topics that are not bound; General always uses the default.
+
+Tell the user that all personas speak through the same bot account: the persona changes the behaviour, not the name shown in Telegram.
+
+### T7: Validate, restart, test
+
+```bash
+npx talonctl doctor
+```
+
+Restart talond; channel settings and bindings are applied at startup. Then tell the user:
+
+> 1. Send a normal message in a topic, without a mention. The bot should answer in that topic.
+> 2. Send a message in a second topic and check that the bot does not remember the first one.
+> 3. If you bound personas: ask each topic "who are you?" and check the answer matches.
+
+If something is off, see `docs/guides/telegram-topics.mdx`, section Troubleshooting. The two log lines that explain most problems:
+
+- `telegram message from disallowed chat, dropping` — the group ID is missing from `allowedChatIds`.
+- `telegram group chat is ignored because allowGroupChats is not enabled` — `allowGroupChats` is off.
 
 ## Phase 8: Verify
 
@@ -189,6 +311,9 @@ Telegram-specific behaviour worth warning the user about:
 | Duplicate responses | Check if multiple instances of talond are running |
 | Bot is silent in a group, nothing in the log | Set `allowGroupChats: true`; add the group's chat ID to `allowedChatIds` if that list is set |
 | Bot only answers @mentions, not ordinary group messages | Set `requireMention: false` and make the bot a group administrator |
+| Need the ID of a group or topic | Send `/chatid@YourBotName` there; the bot answers with the chat ID, topic ID and Talon thread key |
+| Answers quote every message | Set `replyToTrigger: never`, connector-wide or under `chats.<chat ID>` |
+| A reminder made in a topic arrives elsewhere | Check `recipientSource` on the `channel.send: message sent successfully` log line; `externalChatId argument` means the agent named a chat itself |
 | Reactions in a group are not noticed | Make the bot a group administrator — Telegram only sends reaction updates to admins |
 | Bot cannot react | Add `channel.react:*` to the persona's capabilities and restart |
 
@@ -205,6 +330,10 @@ channels:
         - "12345678"
       allowGroupChats: false             # Optional — answer in group chats (default: false)
       requireMention: true               # Optional — false = answer every group message (default: true)
+      chats:                             # Optional — per-chat overrides, keyed by chat ID
+        '-1001234567890':
+          requireMention: false
+          replyToTrigger: never
       replyToTrigger: groups             # Optional — never | groups (default) | always
       inboundReactions: true             # Optional (default: true)
 ```

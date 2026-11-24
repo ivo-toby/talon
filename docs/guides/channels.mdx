@@ -90,9 +90,12 @@ channels:
 | `triggerWords` | Optional case-insensitive prefixes that address the bot; the prefix is stripped |
 | `replyToTrigger` | When an answer is sent as a native reply to the message that triggered it: `groups` (default), `always`, or `never` |
 | `inboundReactions` | Forward user reactions on Talon's messages to the agent. Default: `true` |
+| `chats` | Per-chat overrides, keyed by chat ID: `requireMention` and `replyToTrigger` for that one chat. Does not admit the chat |
 
 Notes:
 
+- to use a forum group as a set of separate conversations, with an optional persona per topic, follow the [Telegram topic workspaces guide](/docs/guides/telegram-topics)
+- `/chatid` (or `/chatid@YourBotName`) makes the bot answer with the chat ID, the topic ID and the Talon thread key. The connector answers it; the agent never sees it
 - each Telegram `chat_id` becomes its own Talon thread; a message inside a topic uses `<chat_id>:<topic_id>`, so every topic is its own conversation
 - Telegram supports `sendTyping()`, so the daemon shows activity while the agent works
 - in group chats (`allowGroupChats: true`) the bot answers an @mention, a trigger word, or a native reply to one of its own messages; with `requireMention: false` it answers every message

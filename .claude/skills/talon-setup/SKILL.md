@@ -244,6 +244,8 @@ Invoke the matching per-channel skill for the full setup walkthrough:
 
 Each skill handles: bot/app creation, credentials, config, env vars, verification, and troubleshooting.
 
+**Telegram topic workspace.** If the user wants one Telegram group with a separate conversation per topic (and optionally a different persona per topic), run the **Topic Workspace (forum group)** flow in `/add-telegram` after the basic Telegram setup works. It finds the group ID with the `/chatid` command, writes `allowGroupChats`, `allowedChatIds` and the per-chat `chats` block, and binds personas to topics with `npx talonctl bind --thread`.
+
 Ask: **"Add another channel?"** Loop until done.
 
 ### Step 5: Persona configuration

@@ -697,6 +697,52 @@ To acknowledge without sending text, the agent reacts and then makes its whole r
 
 > **Upgrading:** topic messages previously shared the chat's single thread and were answered in the General topic. After this change each topic starts a fresh conversation; the old shared thread keeps serving messages outside topics.
 
+#### Telegram Topic Workspaces
+
+One forum group can serve as a workspace of separate conversations: a "Groceries" topic, a "Calendar" topic, each with its own history and optionally its own persona. The full walkthrough is in [docs/guides/telegram-topics.mdx](docs/guides/telegram-topics.mdx); the short version:
+
+1. Create a group, turn on **Topics**, add the bot and make it an **administrator**.
+2. Send `/chatid@YourBotName` in the group. The bot answers with the chat ID (and, inside a topic, the topic ID and the `Talon thread` key). The command is answered by the connector, never reaches the agent, and works before the group is configured. With `allowedChatIds` set, only a listed sender gets an answer.
+3. Configure the group:
+
+```yaml
+channels:
+  - name: my-telegram
+    type: telegram
+    config:
+      botToken: ${TELEGRAM_BOT_TOKEN}
+      allowGroupChats: true
+      allowedChatIds:
+        - '123456789' # your private chat
+        - '-1004452318413' # the forum group
+      chats:
+        '-1004452318413':
+          requireMention: false # answer every message, no @mention
+          replyToTrigger: never # plain answers, no quoting
+```
+
+`chats` holds per-chat overrides of `requireMention` and `replyToTrigger`, so a topic workspace and an ordinary multi-person group can behave differently on the same bot. Listing a chat there does not admit it; `allowGroupChats` and `allowedChatIds` still decide that.
+
+4. Optionally give a topic its own persona with a thread-scoped binding:
+
+```bash
+npx talonctl bind --persona groceries --channel my-telegram --thread '-1004452318413:42'
+```
+
+```yaml
+bindings:
+  - persona: assistant
+    channel: my-telegram
+    isDefault: true
+  - persona: groceries
+    channel: my-telegram
+    thread: '-1004452318413:42'
+```
+
+A thread-scoped binding wins over the channel default. Unbound topics and General use the default persona. All personas speak through the same bot account. Bindings are applied at startup; removing the entry returns the topic to the default.
+
+A reminder or schedule created inside a topic is delivered into that topic, unless the scheduled run passes an explicit `externalChatId`. The `channel.send: message sent successfully` log line names the `recipient` and the `recipientSource` (`schedule origin`, `externalChatId argument` or `current thread`).
+
 ### Telegram
 
 Long-polling connector using the Telegram Bot API.
@@ -713,6 +759,8 @@ channels:
         - 123456789
       allowGroupChats: false # default: false — answer in group chats
       requireMention: true # default: true — see "Group chats" below
+      # chats: per-chat overrides of requireMention / replyToTrigger,
+      #        see "Telegram Topic Workspaces"
       replyToTrigger: groups # never | groups (default) | always
       inboundReactions: true # default: true
 ```
