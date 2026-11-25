@@ -1709,6 +1709,16 @@ describe('HostToolsBridge', () => {
       expect(mockCtx.repos.memory.findByThread).not.toHaveBeenCalled();
     });
 
+    it('refuses a tool the persona holds under both allow and requireApproval', async () => {
+      setCapabilities(['memory.access'], ['memory.access']);
+      bridge = new HostToolsBridge(mockCtx);
+      const result = await bridge.executeInProcess('memory.access', { operation: 'list' }, inProcessContext);
+      expect(result.status).toBe('error');
+      expect(result.denied).toBe(true);
+      expect(result.error).toContain('requires approval');
+      expect(mockCtx.repos.memory.findByThread).not.toHaveBeenCalled();
+    });
+
     it('turns a handler exception into an error result', async () => {
       vi.mocked(mockCtx.repos.memory.findByThread).mockImplementation(() => {
         throw new Error('db exploded');
