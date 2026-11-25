@@ -123,3 +123,15 @@ export type {
   VoiceSessionLookup,
 } from './voice-repository.js';
 export { VoiceRepository } from './voice-repository.js';
+
+export type {
+  ScriptRow,
+  ScriptVersionRow,
+  ScriptApprovalRow,
+  ScriptRunRow,
+  ScriptRunTrigger,
+  InsertScriptVersionInput,
+  InsertScriptApprovalInput,
+  InsertScriptRunInput,
+} from './script-repository.js';
+export { ScriptRepository } from './script-repository.js';
