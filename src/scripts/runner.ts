@@ -21,6 +21,8 @@ export interface ScriptRunRequest {
   input: unknown;
   timeoutMs: number;
   stubs?: Record<string, unknown[]>;
+  /** Passed to the gateway; its default applies when unset. */
+  maxCalls?: number;
   /** Broker names. The operator allowlist must grant them to manifest.personaId. */
   profile: string;
   /**
@@ -90,6 +92,7 @@ async function run(
     mode: request.mode,
     provider: request.provider,
     stubs: request.stubs,
+    maxCalls: request.maxCalls,
   });
   if (created.isErr()) {
     return err(created.error);
