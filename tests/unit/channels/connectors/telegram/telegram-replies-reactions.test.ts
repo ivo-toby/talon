@@ -2050,3 +2050,199 @@ describe('TelegramConnector per-topic settings', () => {
     expect(requestBody(mockFetch)).toHaveProperty('reply_parameters.message_id', 77);
   });
 });
+
+// ---------------------------------------------------------------------------
+// requireMention: false must not answer a message aimed at another bot
+// ---------------------------------------------------------------------------
+
+describe('TelegramConnector messages addressed to another bot', () => {
+  const OPEN = { allowGroupChats: true, requireMention: false } as const;
+  const OTHER_BOT = 'calendar_bot';
+  const OTHER_BOT_ID = 6001;
+
+  /** A group message whose text starts with an @mention of `username`. */
+  function mentioning(username: string, rest: string, overrides: Partial<TelegramMessage> = {}) {
+    return groupMessage({
+      text: `@${username} ${rest}`,
+      entities: [{ type: 'mention', offset: 0, length: username.length + 1 }],
+      ...overrides,
+    });
+  }
+
+  async function openBot(): Promise<{ connector: TelegramConnector; received: InboundEvent[] }> {
+    const connector = makeConnector(OPEN);
+    await startWithIdentity(connector);
+    return { connector, received: collectEvents(connector) };
+  }
+
+  it('stays silent when the message @mentions a different bot', async () => {
+    const { connector, received } = await openBot();
+    await connector.handleUpdatePublic(
+      messageUpdate(1, mentioning(OTHER_BOT, 'what is on today?')),
+    );
+    expect(received).toHaveLength(0);
+  });
+
+  it('answers when it is the one mentioned, with the mention stripped', async () => {
+    const { connector, received } = await openBot();
+    await connector.handleUpdatePublic(messageUpdate(1, mentioning(BOT_USERNAME, 'buy milk')));
+    expect(received.map((event) => event.content)).toEqual(['buy milk']);
+  });
+
+  it('answers when both bots are mentioned', async () => {
+    const { connector, received } = await openBot();
+    const text = `@${OTHER_BOT} @${BOT_USERNAME} both of you`;
+    await connector.handleUpdatePublic(
+      messageUpdate(
+        1,
+        groupMessage({
+          text,
+          entities: [
+            { type: 'mention', offset: 0, length: OTHER_BOT.length + 1 },
+            { type: 'mention', offset: OTHER_BOT.length + 2, length: BOT_USERNAME.length + 1 },
+          ],
+        }),
+      ),
+    );
+    expect(received).toHaveLength(1);
+  });
+
+  it('still answers a message that mentions a person', async () => {
+    const { connector, received } = await openBot();
+    await connector.handleUpdatePublic(
+      messageUpdate(1, mentioning('josje', 'can you check this?')),
+    );
+    expect(received.map((event) => event.content)).toEqual(['@josje can you check this?']);
+  });
+
+  it("stays silent on a reply to a different bot's message", async () => {
+    const { connector, received } = await openBot();
+    await connector.handleUpdatePublic(
+      messageUpdate(
+        1,
+        groupMessage({
+          text: 'move it to Friday',
+          reply_to_message: {
+            message_id: 1900,
+            from: { id: OTHER_BOT_ID, is_bot: true, first_name: 'Calendar', username: OTHER_BOT },
+            chat: { id: GROUP_CHAT_ID, type: 'supergroup' },
+            date: 1_700_000_000,
+            text: 'Dentist is on Thursday',
+          },
+        }),
+      ),
+    );
+    expect(received).toHaveLength(0);
+  });
+
+  it('still answers a reply to its own message', async () => {
+    const { connector, received } = await openBot();
+    await connector.handleUpdatePublic(
+      messageUpdate(
+        1,
+        groupMessage({
+          text: 'and oats',
+          reply_to_message: botMessage(GROUP_CHAT_ID, { message_id: 1900, text: 'Milk added' }),
+        }),
+      ),
+    );
+    expect(received.map((event) => event.content)).toEqual(['and oats']);
+  });
+
+  it("still answers a reply to a person's message", async () => {
+    const { connector, received } = await openBot();
+    await connector.handleUpdatePublic(
+      messageUpdate(
+        1,
+        groupMessage({
+          text: 'agreed',
+          reply_to_message: otherUserMessage(GROUP_CHAT_ID, { message_id: 1900 }),
+        }),
+      ),
+    );
+    expect(received).toHaveLength(1);
+  });
+
+  it('stays silent on a command sent to a different bot', async () => {
+    const { connector, received } = await openBot();
+    const text = `/agenda@${OTHER_BOT}`;
+    await connector.handleUpdatePublic(
+      messageUpdate(
+        1,
+        groupMessage({ text, entities: [{ type: 'bot_command', offset: 0, length: text.length }] }),
+      ),
+    );
+    expect(received).toHaveLength(0);
+  });
+
+  it('stays silent on a text mention of a different bot', async () => {
+    const { connector, received } = await openBot();
+    await connector.handleUpdatePublic(
+      messageUpdate(
+        1,
+        groupMessage({
+          text: 'Calendar what is on today?',
+          entities: [
+            {
+              type: 'text_mention',
+              offset: 0,
+              length: 8,
+              user: { id: OTHER_BOT_ID, is_bot: true, first_name: 'Calendar' },
+            },
+          ],
+        }),
+      ),
+    );
+    expect(received).toHaveLength(0);
+  });
+
+  it('does not treat a topic created by another bot as a reply to that bot', async () => {
+    const { connector, received } = await openBot();
+    await connector.handleUpdatePublic(
+      messageUpdate(
+        1,
+        groupMessage({
+          text: 'buy milk',
+          is_topic_message: true,
+          message_thread_id: 42,
+          reply_to_message: {
+            message_id: 42,
+            from: { id: OTHER_BOT_ID, is_bot: true, first_name: 'Calendar', username: OTHER_BOT },
+            chat: { id: GROUP_CHAT_ID, type: 'supergroup' },
+            date: 1_700_000_000,
+            forum_topic_created: { name: 'Groceries' },
+          },
+        }),
+      ),
+    );
+    expect(received).toHaveLength(1);
+  });
+
+  it('answers everything when it does not know its own username', async () => {
+    // No start(): getMe never ran, so its own mention cannot be told apart.
+    const connector = makeConnector(OPEN);
+    const received = collectEvents(connector);
+    await connector.handleUpdatePublic(messageUpdate(1, mentioning(OTHER_BOT, 'hello')));
+    expect(received).toHaveLength(1);
+  });
+
+  it('leaves the two bots of one topic with one answer each way', async () => {
+    const config = {
+      allowGroupChats: true,
+      chats: { [`${GROUP_CHAT_ID}:42`]: { requireMention: false } },
+    };
+    const first = makeConnector(config);
+    await startWithIdentity(first);
+    const firstReceived = collectEvents(first);
+
+    const inTopic = (message: TelegramMessage, id: number) =>
+      messageUpdate(id, { ...message, is_topic_message: true, message_thread_id: 42 });
+
+    await first.handleUpdatePublic(inTopic(mentioning(OTHER_BOT, 'for the other one'), 1));
+    await first.handleUpdatePublic(
+      inTopic(groupMessage({ text: 'for whoever', message_id: 2021 }), 2),
+    );
+
+    expect(firstReceived.map((event) => event.content)).toEqual(['for whoever']);
+  });
+});

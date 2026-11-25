@@ -721,7 +721,7 @@ channels:
           replyToTrigger: never # plain answers, no quoting
 ```
 
-`chats` holds per-chat overrides of `requireMention` and `replyToTrigger`, so a topic workspace and an ordinary multi-person group can behave differently on the same bot. A key can also be one topic, `'<chat_id>:<topic_id>'`, which wins over the chat's entry. That lets several bots share a group, each answering unprompted in its own topic: give each bot's channel a `chats` entry for its topic only, and do not set `requireMention: false` on the chat ID itself. Listing a chat there does not admit it; `allowGroupChats` and `allowedChatIds` still decide that.
+`chats` holds per-chat overrides of `requireMention` and `replyToTrigger`, so a topic workspace and an ordinary multi-person group can behave differently on the same bot. A key can also be one topic, `'<chat_id>:<topic_id>'`, which wins over the chat's entry. That lets several bots share a group, each answering unprompted in its own topic: give each bot's channel a `chats` entry for its topic only, and do not set `requireMention: false` on the chat ID itself. A bot that answers every message still leaves a message alone when it @mentions, commands or replies to a different bot. Listing a chat there does not admit it; `allowGroupChats` and `allowedChatIds` still decide that.
 
 4. Optionally give a topic its own persona with a thread-scoped binding:
 

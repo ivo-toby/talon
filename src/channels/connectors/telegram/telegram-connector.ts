@@ -700,9 +700,16 @@ export class TelegramConnector implements ChannelConnector {
         result = sourceText ?? '';
       }
       // requireMention: false — every message in an allowed group addresses
-      // the bot. A mention or trigger word that IS present was still
-      // stripped above.
+      // the bot, except one that is explicitly addressed to a different bot.
+      // A mention or trigger word that IS present was still stripped above.
       if (result === null && !this.requiresMention(chatId, telegramThreadIdForMessage(message))) {
+        if (this.isAddressedToAnotherBot(message, sourceText ?? '', entities ?? [])) {
+          this.logger.debug(
+            { channelName: this.name, chatId },
+            'telegram group message is addressed to another bot, dropping',
+          );
+          return;
+        }
         result = sourceText ?? '';
       }
       if (result === null) {
@@ -785,6 +792,52 @@ export class TelegramConnector implements ChannelConnector {
   }
 
   /**
+   * Whether a message this bot was not addressed in is explicitly addressed
+   * to a different bot: it @mentions one, sends it a command
+   * (`/cmd@other_bot`), or natively replies to one of its messages.
+   *
+   * Only consulted where `requireMention` is false, so that a bot answering
+   * every message in a chat still stays out of an exchange aimed at another
+   * bot in the same group. An @mention counts as a bot when the username ends
+   * in "bot", which Telegram requires of every bot username; a mention of a
+   * person does not silence the bot. Without knowing its own username the bot
+   * cannot tell its own mention from another's, so it then never abstains.
+   */
+  private isAddressedToAnotherBot(
+    message: TelegramMessage,
+    text: string,
+    entities: readonly TelegramMessageEntity[],
+  ): boolean {
+    const ownUsername = this._botUsername?.toLowerCase();
+    if (ownUsername === undefined) {
+      return false;
+    }
+
+    const replied = message.reply_to_message;
+    if (
+      replied?.from?.is_bot === true &&
+      String(replied.from.id) !== this._botUserId &&
+      !isTopicRootReply(message)
+    ) {
+      return true;
+    }
+
+    for (const entity of entities) {
+      const value = text.slice(entity.offset, entity.offset + entity.length).toLowerCase();
+      if (entity.type === 'mention') {
+        const username = value.slice(1);
+        if (username !== ownUsername && username.endsWith('bot')) return true;
+      } else if (entity.type === 'text_mention') {
+        if (entity.user?.is_bot === true && String(entity.user.id) !== this._botUserId) return true;
+      } else if (entity.type === 'bot_command') {
+        const at = value.indexOf('@');
+        if (at !== -1 && value.slice(at + 1) !== ownUsername) return true;
+      }
+    }
+    return false;
+  }
+
+  /**
    * The message this one natively replies to, or undefined.
    *
    * Inside a topic, a message that replies to nothing still carries
@@ -798,10 +851,7 @@ export class TelegramConnector implements ChannelConnector {
     if (replied === undefined) {
       return undefined;
     }
-    const isTopicRoot =
-      replied.forum_topic_created !== undefined ||
-      (message.is_topic_message === true && replied.message_id === message.message_thread_id);
-    if (isTopicRoot) {
+    if (isTopicRootReply(message)) {
       return undefined;
     }
     const quoted =
@@ -1116,6 +1166,22 @@ export class TelegramConnector implements ChannelConnector {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * True when `reply_to_message` is only the topic's creation service message.
+ * Inside a topic, a message that replies to nothing still points at it; that
+ * is topic membership, not a reply.
+ */
+function isTopicRootReply(message: TelegramMessage): boolean {
+  const replied = message.reply_to_message;
+  if (replied === undefined) {
+    return false;
+  }
+  return (
+    replied.forum_topic_created !== undefined ||
+    (message.is_topic_message === true && replied.message_id === message.message_thread_id)
+  );
+}
 
 /** Parses a Telegram `message_id` (a positive integer) from its string form. */
 function parseTelegramMessageId(value: string): number | undefined {

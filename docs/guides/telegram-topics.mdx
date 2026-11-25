@@ -171,6 +171,7 @@ How it behaves:
 
 - A key under `chats` is a chat ID or a `<chat_id>:<topic_id>` thread key. The topic entry wins over the chat entry, which wins over the connector-wide setting.
 - Each bot answers every message in its own topic and stays silent in the others, unless it is @mentioned or someone replies to one of its messages. A mention works in any topic.
+- A bot that answers every message still stays out of a message aimed at a different bot: one that @mentions another bot, sends another bot a command (`/cmd@other_bot`), or replies to another bot's message. Mention both bots to get both answers. A mention of a person does not silence the bot.
 - Do **not** set `requireMention: false` on the chat ID itself (`'-1004452318413'`) for more than one bot: every bot would then answer every message in every topic.
 - Make every bot a group administrator. Telegram delivers each group message to all of them, and each decides for itself.
 - Talon ignores every message sent by a bot, so the bots cannot trigger one another.
@@ -238,6 +239,7 @@ Schedules created with `talonctl add-schedule` have no origin conversation: thei
 | A topic answers with the wrong persona | Check the `thread` value against `/chatid` sent inside that topic, and restart talond after changing bindings |
 | Emoji reactions on bot messages are ignored | The bot must be an administrator, and `inboundReactions` must not be `false` |
 | The topic does not know what was discussed elsewhere | Carry the context over with `talonctl move-context`; see [Bring an existing conversation into a topic](#bring-an-existing-conversation-into-a-topic) |
+| Two bots answer the same message | Both answer every message in that topic. Give each bot its own topic under `chats`, or address one with an @mention: a message that mentions another bot is left to that bot |
 | A reminder arrives in the wrong chat | See [Reminders and schedules](#reminders-and-schedules) |
 
 To see every update Telegram delivers, set `logLevel: debug`: each one logs `telegram update received` with its chat ID, chat type and topic ID, before any filter runs.
