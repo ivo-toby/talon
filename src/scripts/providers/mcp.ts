@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { err, ok, type Result } from 'neverthrow';
 import type { Logger } from 'pino';
 import { MCPClient } from '@mastra/mcp';
+import { noopLogger } from '@mastra/core/logger';
 import { createLogger } from '../../core/logging/index.js';
 import {
   isMcpToolAllowed,
@@ -42,16 +43,16 @@ function executeTool(tool: McpToolLike, input: unknown, signal: AbortSignal): Pr
 }
 
 function defaultCreateClient(servers: unknown): McpClientLike {
-  type Servers = ConstructorParameters<typeof MCPClient>[0]['servers'];
-  // Mastra's default log handler writes tool arguments to stderr; a script's
-  // tool input must not be logged, so every server gets a silent handler.
-  const silenced: Servers = {};
-  for (const [name, definition] of Object.entries(servers as Servers)) {
-    silenced[name] = { ...definition, logger: (): void => undefined };
-  }
   // A unique id per client: without it Mastra keys a global instance map on the
   // server configuration and refuses a second client with the same one.
-  return new MCPClient({ id: randomUUID(), servers: silenced }) as unknown as McpClientLike;
+  const client = new MCPClient({
+    id: randomUUID(),
+    servers: servers as ConstructorParameters<typeof MCPClient>[0]['servers'],
+  });
+  // Mastra's default logger writes tool arguments to stderr; a script's tool
+  // input must not be logged.
+  client.__setLogger(noopLogger);
+  return client as unknown as McpClientLike;
 }
 
 /** Resolves with the promise result, or `'timeout'` after `ms`. Never rejects on timeout. */
