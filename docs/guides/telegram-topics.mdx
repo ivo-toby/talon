@@ -95,7 +95,7 @@ What each setting does:
 | `chats.<chat_id>.requireMention: false` | Every message in this group is answered. Without it the bot answers an @mention, a trigger word, or a reply to one of its own messages |
 | `chats.<chat_id>.replyToTrigger: never` | Answers in this group are not sent as replies. The default, `groups`, quotes the message being answered, which helps in a busy multi-person group and is noise in a one-person topic |
 
-Settings under `chats` apply to that one chat and override the connector-wide `requireMention` and `replyToTrigger`. Other groups on the same bot keep the defaults. Listing a chat under `chats` does not admit it: `allowGroupChats` and `allowedChatIds` still decide that.
+Settings under `chats` apply to that one chat and override the connector-wide `requireMention` and `replyToTrigger`. A key can also be a single topic, `'<chat_id>:<topic_id>'`, which overrides the chat's entry; see [Several bots in one group](#several-bots-in-one-group). Other groups on the same bot keep the defaults. Listing a chat under `chats` does not admit it: `allowGroupChats` and `allowedChatIds` still decide that.
 
 Everyone in an allowed group can talk to the bot, and with `requireMention: false` every message is one agent run.
 
@@ -137,6 +137,47 @@ npx talonctl unbind --persona groceries --channel my-telegram --thread '-1004452
 ```
 
 Removing the entry returns the topic to the default persona at the next restart. Bind a topic before you start using it: a topic that already has history keeps that history when its persona changes, so the new persona inherits a conversation it did not have.
+
+## Several bots in one group
+
+You can put more than one bot in the same forum group and have each answer unprompted in its own topic. Each bot is a separate channel in `talond.yaml`, and each lists only its own topic under `chats`:
+
+```yaml
+channels:
+  - name: groceries-bot
+    type: telegram
+    config:
+      botToken: ${GROCERIES_BOT_TOKEN}
+      allowGroupChats: true
+      allowedChatIds: ['123456789', '-1004452318413']
+      chats:
+        '-1004452318413:42':        # the Groceries topic
+          requireMention: false
+          replyToTrigger: never
+
+  - name: calendar-bot
+    type: telegram
+    config:
+      botToken: ${CALENDAR_BOT_TOKEN}
+      allowGroupChats: true
+      allowedChatIds: ['123456789', '-1004452318413']
+      chats:
+        '-1004452318413:43':        # the Calendar topic
+          requireMention: false
+          replyToTrigger: never
+```
+
+How it behaves:
+
+- A key under `chats` is a chat ID or a `<chat_id>:<topic_id>` thread key. The topic entry wins over the chat entry, which wins over the connector-wide setting.
+- Each bot answers every message in its own topic and stays silent in the others, unless it is @mentioned or someone replies to one of its messages. A mention works in any topic.
+- Do **not** set `requireMention: false` on the chat ID itself (`'-1004452318413'`) for more than one bot: every bot would then answer every message in every topic.
+- Make every bot a group administrator. Telegram delivers each group message to all of them, and each decides for itself.
+- Talon ignores every message sent by a bot, so the bots cannot trigger one another.
+- Each bot keeps its own history per topic. Bind each channel to its persona with a normal channel binding; no `thread` binding is needed.
+- Send `/chatid@BotName` to address one bot. A bare `/chatid` is answered by every bot that receives it.
+
+One bot or several? One bot with a [persona per topic](#step-4-optional-a-persona-per-topic) gives the same separation of behaviour with one token and one config block. Use several bots when you want a different name and avatar per topic.
 
 ## Bring an existing conversation into a topic
 

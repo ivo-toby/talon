@@ -1930,3 +1930,123 @@ describe('TelegramConnector sendTyping() diagnostics', () => {
     expect(warn).not.toHaveBeenCalled();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Per-topic settings: several bots sharing one forum group
+// ---------------------------------------------------------------------------
+
+describe('TelegramConnector per-topic settings', () => {
+  const GROUP = String(GROUP_CHAT_ID);
+  const inTopic = (topicId: number, text: string, messageId = 3000 + topicId): object =>
+    messageUpdate(
+      topicId,
+      groupMessage({
+        message_id: messageId,
+        text,
+        is_topic_message: true,
+        message_thread_id: topicId,
+      }),
+    );
+
+  it('answers unprompted only in the topic that is configured for it', async () => {
+    const connector = makeConnector({
+      allowGroupChats: true,
+      chats: { [`${GROUP}:42`]: { requireMention: false } },
+    });
+    const received = collectEvents(connector);
+
+    await connector.handleUpdatePublic(inTopic(42, 'in my topic'));
+    await connector.handleUpdatePublic(inTopic(43, 'in the other topic'));
+    await connector.handleUpdatePublic(messageUpdate(9, groupMessage({ text: 'in General' })));
+
+    expect(received.map((event) => [event.externalThreadId, event.content])).toEqual([
+      [`${GROUP}:42`, 'in my topic'],
+    ]);
+  });
+
+  it('lets two bots share a group, each answering unprompted in its own topic', async () => {
+    const groceriesBot = makeConnector({
+      allowGroupChats: true,
+      chats: { [`${GROUP}:42`]: { requireMention: false } },
+    });
+    const calendarBot = makeConnector({
+      allowGroupChats: true,
+      chats: { [`${GROUP}:43`]: { requireMention: false } },
+    });
+    const groceries = collectEvents(groceriesBot);
+    const calendar = collectEvents(calendarBot);
+
+    // Telegram delivers every group message to both administrator bots.
+    for (const update of [inTopic(42, 'buy milk'), inTopic(43, 'dentist on Friday')]) {
+      await groceriesBot.handleUpdatePublic(update);
+      await calendarBot.handleUpdatePublic(update);
+    }
+
+    expect(groceries.map((event) => event.content)).toEqual(['buy milk']);
+    expect(calendar.map((event) => event.content)).toEqual(['dentist on Friday']);
+  });
+
+  it('still answers a mention in a topic that is not its own', async () => {
+    const connector = makeConnector({
+      allowGroupChats: true,
+      chats: { [`${GROUP}:42`]: { requireMention: false } },
+    });
+    await startWithIdentity(connector);
+    const received = collectEvents(connector);
+    const text = `@${BOT_USERNAME} quick question`;
+
+    await connector.handleUpdatePublic(
+      messageUpdate(
+        1,
+        groupMessage({
+          text,
+          entities: [{ type: 'mention', offset: 0, length: BOT_USERNAME.length + 1 }],
+          is_topic_message: true,
+          message_thread_id: 43,
+        }),
+      ),
+    );
+
+    expect(received).toHaveLength(1);
+    expect(received[0]).toMatchObject({
+      externalThreadId: `${GROUP}:43`,
+      content: 'quick question',
+    });
+  });
+
+  it('lets a topic require a mention inside a group that otherwise does not', async () => {
+    const connector = makeConnector({
+      allowGroupChats: true,
+      chats: {
+        [GROUP]: { requireMention: false },
+        [`${GROUP}:43`]: { requireMention: true },
+      },
+    });
+    const received = collectEvents(connector);
+
+    await connector.handleUpdatePublic(inTopic(42, 'open topic'));
+    await connector.handleUpdatePublic(inTopic(43, 'quiet topic'));
+
+    expect(received.map((event) => event.content)).toEqual(['open topic']);
+  });
+
+  it("applies a topic's own replyToTrigger over the chat's", async () => {
+    const config = {
+      chats: {
+        [GROUP]: { replyToTrigger: 'always' as const },
+        [`${GROUP}:42`]: { replyToTrigger: 'never' as const },
+      },
+    };
+    const implicit = { externalMessageId: '77', implicit: true };
+
+    const quiet = makeConnector(config);
+    let mockFetch = stubFetchJson(sendOkResponse());
+    await quiet.send(`${GROUP}:42`, { body: 'hi', replyTo: implicit });
+    expect(requestBody(mockFetch)).not.toHaveProperty('reply_parameters');
+
+    const quoting = makeConnector(config);
+    mockFetch = stubFetchJson(sendOkResponse());
+    await quoting.send(`${GROUP}:43`, { body: 'hi', replyTo: implicit });
+    expect(requestBody(mockFetch)).toHaveProperty('reply_parameters.message_id', 77);
+  });
+});

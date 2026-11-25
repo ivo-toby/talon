@@ -271,7 +271,7 @@ export class TelegramConnector implements ChannelConnector {
     if (topicId !== undefined) {
       payload.message_thread_id = topicId;
     }
-    const replyMessageId = this.replyMessageId(output, chatId);
+    const replyMessageId = this.replyMessageId(output, chatId, externalThreadId);
     if (replyMessageId !== undefined) {
       // allow_sending_without_reply: the answer must still arrive when the
       // message it replies to was deleted in the meantime.
@@ -327,9 +327,15 @@ export class TelegramConnector implements ChannelConnector {
    * from another channel, a hallucinated value) degrades to a plain send
    * rather than failing the delivery.
    */
-  private replyMessageId(output: AgentOutput, chatId: string): number | undefined {
+  private replyMessageId(
+    output: AgentOutput,
+    chatId: string,
+    externalThreadId: string,
+  ): number | undefined {
     const mode = resolveReplyToTriggerMode(
-      this.config.chats?.[chatId]?.replyToTrigger ?? this.config.replyToTrigger,
+      this.config.chats?.[externalThreadId]?.replyToTrigger ??
+        this.config.chats?.[chatId]?.replyToTrigger ??
+        this.config.replyToTrigger,
     );
     if (!shouldSendAsReply(output.replyTo, mode, isTelegramGroupChatId(chatId))) {
       return undefined;
@@ -696,7 +702,7 @@ export class TelegramConnector implements ChannelConnector {
       // requireMention: false — every message in an allowed group addresses
       // the bot. A mention or trigger word that IS present was still
       // stripped above.
-      if (result === null && !this.requiresMention(chatId)) {
+      if (result === null && !this.requiresMention(chatId, telegramThreadIdForMessage(message))) {
         result = sourceText ?? '';
       }
       if (result === null) {
@@ -812,11 +818,16 @@ export class TelegramConnector implements ChannelConnector {
   }
 
   /**
-   * Whether a group message in this chat must address the bot. The per-chat
-   * setting wins over the connector-wide one; the default is true.
+   * Whether a group message must address the bot. The most specific setting
+   * wins: the topic (`chats['<chat_id>:<topic_id>']`), then the chat
+   * (`chats['<chat_id>']`), then the connector-wide one; the default is true.
    */
-  private requiresMention(chatId: string): boolean {
-    return (this.config.chats?.[chatId]?.requireMention ?? this.config.requireMention) !== false;
+  private requiresMention(chatId: string, externalThreadId: string): boolean {
+    return (
+      (this.config.chats?.[externalThreadId]?.requireMention ??
+        this.config.chats?.[chatId]?.requireMention ??
+        this.config.requireMention) !== false
+    );
   }
 
   /**
