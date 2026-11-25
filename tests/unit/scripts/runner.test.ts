@@ -121,7 +121,7 @@ describe('runScript', () => {
 
     const report = (await runScript(broker, request()))._unsafeUnwrap();
 
-    expect(JSON.parse(received[0])).toEqual({ t: 'start', mode: 'live', input: { a: 1 } });
+    expect(JSON.parse(received[0])).toEqual({ t: 'start', input: { a: 1 } });
     expect(JSON.parse(received[1])).toEqual({
       t: 'result',
       id: 1,
@@ -396,7 +396,23 @@ describe('runScript', () => {
       return new Promise(() => {});
     });
     await runScript(broker, request({ input: undefined }));
-    expect(JSON.parse(received[0])).toEqual({ t: 'start', mode: 'live', input: null });
+    expect(JSON.parse(received[0])).toEqual({ t: 'start', input: null });
+  });
+
+  it('never puts the mode in the start message', async () => {
+    for (const mode of ['unit', 'dry-run', 'live'] as const) {
+      const { backend, broker } = setup();
+      const received: string[] = [];
+      backend.setExecStreamHandler((call) => {
+        call.onStdin((t) => {
+          received.push(t);
+          call.emitStdout(line({ t: 'done', ok: true, result: null }));
+        });
+        return new Promise(() => {});
+      });
+      await runScript(broker, request({ mode, stubs: mode === 'unit' ? {} : undefined }));
+      expect(Object.keys(JSON.parse(received[0]) as object)).toEqual(['t', 'input']);
+    }
   });
 
   it('keeps the report when revoke rejects', async () => {

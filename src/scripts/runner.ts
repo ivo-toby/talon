@@ -218,9 +218,7 @@ async function run(
   try {
     if (!outcome) {
       startSent = true;
-      started.value.writeStdin(
-        encodeMessage({ t: 'start', mode: request.mode, input: request.input ?? null }),
-      );
+      started.value.writeStdin(encodeMessage({ t: 'start', input: request.input ?? null }));
     }
   } catch {
     settle({ kind: 'failed', code: 'SCRIPT_FAILED' });

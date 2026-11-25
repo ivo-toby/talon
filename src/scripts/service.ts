@@ -39,6 +39,7 @@ import {
   type ScriptErrorCode,
   type CallRecord,
   type ScriptRunReport,
+  type ToolClass,
   type VersionState,
 } from './types.js';
 
@@ -108,6 +109,7 @@ export interface ScriptService {
 }
 
 const MAX_REPORT_CHARS = 1_000_000;
+const CODE_CHARS = 8;
 const NAME_MAX = 60;
 const KNOWN_CODES: ReadonlySet<string> = new Set<ScriptErrorCode>([
   'INVALID_ARGUMENT',
@@ -345,6 +347,34 @@ export function createScriptService(deps: ScriptServiceDeps): ScriptService {
     }
   }
 
+  /** The class of each manifest tool, from a provider that is closed again at once. */
+  async function describeTools(
+    personaId: string,
+    version: StoredVersion,
+  ): Promise<Result<Map<string, ToolClass | undefined>, ScriptError>> {
+    const created = await deps.createProvider(
+      {
+        personaId,
+        threadId: version.threadId,
+        scriptRunId: randomUUID(),
+        scriptName: version.manifest.name,
+        channels: version.manifest.channels,
+        versionDir: version.dir,
+      },
+      version.manifest,
+    );
+    if (created.isErr()) return err(created.error);
+    try {
+      return ok(
+        new Map(
+          version.manifest.tools.map((tool) => [tool, created.value.describe(tool)?.toolClass]),
+        ),
+      );
+    } finally {
+      await closeProvider(created.value);
+    }
+  }
+
   async function requestApprovalImpl(input: {
     personaId: string;
     versionId: string;
@@ -373,6 +403,29 @@ export function createScriptService(deps: ScriptServiceDeps): ScriptService {
     const verified = store.verify(version);
     if (verified.isErr()) return err(verified.error);
 
+    const classes = await describeTools(input.personaId, version);
+    if (classes.isErr()) return err(classes.error);
+    const summaryOf = (code: string): Result<string, ScriptError> =>
+      buildApprovalSummary({
+        name: version.manifest.name,
+        version: version.version,
+        description: version.manifest.description,
+        manifest: version.manifest,
+        toolClass: (name) => classes.value.get(name),
+        report,
+        code,
+        ttlMinutes: config.approvalTtlMinutes,
+      });
+    // A code always has 8 characters, so a probe with 8 characters has the final length.
+    if (summaryOf('0'.repeat(CODE_CHARS)).isErr()) {
+      return err(
+        new ScriptError(
+          'RESULT_TOO_LARGE',
+          'the dry-run writes do not fit in the approval message',
+        ),
+      );
+    }
+
     const requested = approval.request({
       versionId: version.versionId,
       channelName: input.channelName,
@@ -380,17 +433,12 @@ export function createScriptService(deps: ScriptServiceDeps): ScriptService {
     });
     if (requested.isErr()) return err(requested.error);
 
-    const body = buildApprovalSummary({
-      name: version.manifest.name,
-      version: version.version,
-      description: version.manifest.description,
-      report,
-      code: requested.value.code,
-      ttlMinutes: config.approvalTtlMinutes,
-    });
+    const summary = summaryOf(requested.value.code);
     let sent: Result<void, ScriptError>;
     try {
-      sent = await deps.send(input.channelName, input.externalThreadId, body);
+      sent = summary.isErr()
+        ? err(summary.error)
+        : await deps.send(input.channelName, input.externalThreadId, summary.value);
     } catch {
       sent = err(new ScriptError('TOOL_FAILED', 'send threw'));
     }

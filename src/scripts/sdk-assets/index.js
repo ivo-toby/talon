@@ -24,9 +24,9 @@ const pending = new Map();
 let nextId = 1;
 let finished = false;
 let reading = false;
-/** @type {((message: { mode: string, input: unknown }) => void) | undefined} */
+/** @type {((message: { input: unknown }) => void) | undefined} */
 let resolveStart;
-/** @type {Promise<{ mode: string, input: unknown }> | undefined} */
+/** @type {Promise<{ input: unknown }> | undefined} */
 let startPromise;
 
 /**
@@ -48,7 +48,7 @@ function handleLine(line) {
   }
   if (typeof message !== 'object' || message === null) return;
   if (message.t === 'start') {
-    resolveStart?.({ mode: message.mode, input: message.input });
+    resolveStart?.({ input: message.input });
     resolveStart = undefined;
     return;
   }
@@ -194,7 +194,7 @@ export const model = Object.freeze({
 
 /**
  * Internal, used by run.js only. Not part of the public API.
- * @returns {Promise<{ mode: string, input: unknown }>}
+ * @returns {Promise<{ input: unknown }>}
  */
 export function _waitForStart() {
   startPromise ??= new Promise((resolve) => {

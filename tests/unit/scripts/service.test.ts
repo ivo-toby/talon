@@ -465,6 +465,52 @@ describe('approval', () => {
     expect(s.stateOf(v.versionId)).toBe('tested');
   });
 
+  it('shows the manifest in the approval message', async () => {
+    const s = setup();
+    await s.toAwaiting();
+    const body = s.sent[0].body;
+    expect(body).toContain('May write with: mail.send\n');
+    expect(body).toContain('The scheduled input differs from the dry-run input.');
+    expect(body).not.toContain('May use the model');
+    // the provider that described the tools is closed again
+    expect(s.providers.at(-1)!.close).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses a dry run whose writes do not fit, keeps tested and sends nothing', async () => {
+    const s = setup();
+    const big = { body: 'x'.repeat(900) };
+    let phase = 0;
+    s.backend.setExecStreamHandler((c) => {
+      const unit = phase++ === 0;
+      let next = 0;
+      c.onStdin(() => {
+        if (unit && next < SCRIPT_CALLS.length) {
+          c.emitStdout(line({ t: 'call', id: ++next, ...SCRIPT_CALLS[next - 1] }));
+        } else if (!unit && next < 10) {
+          c.emitStdout(line({ t: 'call', id: ++next, name: 'mail.send', input: big }));
+        } else {
+          c.emitStdout(line({ t: 'done', ok: true, result: { sent: 1 } }));
+        }
+      });
+      return new Promise(() => {});
+    });
+    const v = s.service.save({ personaId: 'p1', threadId: 'th1', files: files() })._unsafeUnwrap();
+    expect(
+      (await s.service.test({ personaId: 'p1', versionId: v.versionId }))._unsafeUnwrap().state,
+    ).toBe('tested');
+    const r = await s.service.requestApproval({
+      personaId: 'p1',
+      versionId: v.versionId,
+      channelName: 'tg',
+      externalThreadId: 'chat-1',
+    });
+    expect(r._unsafeUnwrapErr().scriptCode).toBe('RESULT_TOO_LARGE');
+    expect(r._unsafeUnwrapErr().message).toContain('do not fit in the approval message');
+    expect(s.stateOf(v.versionId)).toBe('tested');
+    expect(s.sent).toHaveLength(0);
+    expect(s.db.prepare(`SELECT COUNT(*) AS n FROM script_approvals`).get()).toEqual({ n: 0 });
+  });
+
   it('refuses /approve from a different thread and keeps the state', async () => {
     const s = setup();
     const v = await s.toAwaiting();

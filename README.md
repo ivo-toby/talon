@@ -3193,13 +3193,25 @@ This release contains the runtime, the approval flow and the schedule link. The 
 1. Talon stores the script as a version with a SHA-256 hash of its files. A version has three files: `script.ts`, `manifest.json` and `tests.json`.
 2. Talon runs the unit cases of `tests.json`. No tool runs in this step. Each tool call gets a fixed answer from the test case, and Talon compares the result on the host.
 3. Talon runs the script one time as a dry run on real data. Read tools run. Write tools do not run: Talon records each write and skips it.
-4. Talon sends a message to the chat. The message lists the tools that the script read, each write that the script wanted to do, and a one-time code.
+4. Talon sends a message to the chat. The message lists the write tools of the manifest, the use of the model, the channels, the tools that the script read, each write that the script wanted to do, and a one-time code. If the scheduled input is not the same as the dry-run input, the message says so. If not every write fits in the message, Talon sends no message and the version stays `tested`.
 5. You answer `/approve <code>` or `/reject <code>` in the same chat. The message pipeline handles this answer before a thread or an agent sees it, so a model cannot approve a script.
 6. A schedule that names the script runs the approved version.
 
 The code is valid for `approvalTtlMinutes` and works one time, only in the chat that got the message. In a group chat, each member can approve. After five wrong codes in ten minutes, Talon refuses each code from that chat for ten minutes.
 
 Before each scheduled run, Talon makes sure that the files on disk still match the approved hash. If a file changed, the run does not start.
+
+### What an approval covers
+
+An approval covers the exact files of the version (the hash) and the manifest (the tools and the channels). The dry run is evidence. It is not a guarantee. A script can act differently in a later run, because the time and the data change. In a dry run, a skipped write returns `{ dryRun: true }` to the script, so a script can see that its write did not run.
+
+Know these limits:
+
+- Each member of the chat that got the message can approve.
+- With `externalChatId`, a script can send to each chat of a channel that the manifest allows.
+- A persona whose agent has shell or file access to the host can change `data/scripts` or the database. Do not enable scripts for such a persona.
+- `readOnlyHint` comes from the MCP server. If the hint is wrong, a write tool runs in a dry run.
+- All personas share one read-only scripts mount. A script can read the script files of another persona.
 
 ### What a script can reach
 

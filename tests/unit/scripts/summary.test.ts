@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { buildApprovalSummary } from '../../../src/scripts/summary.js';
-import type { CallRecord, ScriptRunReport } from '../../../src/scripts/types.js';
+import type { CallRecord, ScriptRunReport, ToolClass } from '../../../src/scripts/types.js';
 
 let seq = 0;
 const call = (over: Partial<CallRecord>): CallRecord => ({
@@ -12,19 +12,28 @@ const call = (over: Partial<CallRecord>): CallRecord => ({
   ...over,
 });
 const report = (calls: CallRecord[]): ScriptRunReport => ({ ok: true, calls });
-const build = (
+const CLASSES: Record<string, ToolClass> = { 'mail.read': 'read', 'mail.send': 'write' };
+const summary = (
   r: ScriptRunReport,
   over: Partial<Parameters<typeof buildApprovalSummary>[0]> = {},
-): string =>
+) =>
   buildApprovalSummary({
     name: 'mail-intake',
     version: 2,
     description: 'Files mail.',
+    manifest: { tools: ['mail.read', 'mail.send'], channels: [], dryRunInput: null },
+    toolClass: (name) => CLASSES[name],
     report: r,
     code: 'ABC123',
     ttlMinutes: 30,
     ...over,
   });
+const build = (
+  r: ScriptRunReport,
+  over: Partial<Parameters<typeof buildApprovalSummary>[0]> = {},
+): string => summary(r, over)._unsafeUnwrap();
+const write = (input: unknown, name = 'w'): CallRecord =>
+  call({ name, toolClass: 'write', input, outcome: 'skipped-dry-run' });
 
 describe('buildApprovalSummary', () => {
   it('counts reads, model requests and lists writes', () => {
@@ -75,19 +84,14 @@ describe('buildApprovalSummary', () => {
     expect(line.endsWith('…')).toBe(true);
   });
 
-  it('stays within 3500 characters and keeps the code lines', () => {
-    const calls = Array.from({ length: 100 }, () =>
-      call({
-        name: 'w',
-        toolClass: 'write',
-        input: { x: 'b'.repeat(900) },
-        outcome: 'skipped-dry-run',
-      }),
-    );
-    const text = build(report(calls), { description: 'd'.repeat(500) });
-    expect(text.length).toBeLessThanOrEqual(3500);
-    expect(text).toMatch(/\(and \d+ more writes not shown\)/);
-    expect(text.split('\n').slice(-3)).toEqual([
+  it('is an error when not every write fits, and never hides one', () => {
+    const calls = Array.from({ length: 100 }, () => write({ x: 'b'.repeat(900) }));
+    const result = summary(report(calls), { description: 'd'.repeat(500) });
+    expect(result._unsafeUnwrapErr().scriptCode).toBe('RESULT_TOO_LARGE');
+    const fits = build(report(calls.slice(0, 3)));
+    expect(fits.length).toBeLessThanOrEqual(3500);
+    expect(fits).not.toContain('not shown');
+    expect(fits.split('\n').slice(-3)).toEqual([
       '/approve ABC123',
       '/reject ABC123',
       'Valid for 30 minutes.',
@@ -154,9 +158,7 @@ describe('buildApprovalSummary', () => {
     expect(text).toContain('Would write (3):');
     expect(text).toContain('and 32 more tools');
     expect(text.endsWith('/approve ABC123\n/reject ABC123\nValid for 30 minutes.')).toBe(true);
-    const listed = text.split('\n').filter((l) => /^\d+\. w /.test(l)).length;
-    const more = /\(and (\d+) more writes not shown\)/.exec(text);
-    expect(listed + (more ? Number(more[1]) : 0)).toBe(3);
+    expect(text.split('\n').filter((l) => /^\d+\. w /.test(l))).toHaveLength(3);
   });
 
   it('orders read tools by count then name', () => {
@@ -175,5 +177,104 @@ describe('buildApprovalSummary', () => {
     );
     expect(text).toContain('Unexpected calls: 2');
     expect(build(report([]))).not.toContain('Unexpected calls');
+  });
+
+  it('lists the write tools of the manifest, and an unknown tool counts as write', () => {
+    const text = build(report([]), {
+      manifest: {
+        tools: ['mail.read', 'mail.send', 'odd.tool', 'model.judge'],
+        channels: [],
+        dryRunInput: null,
+      },
+      toolClass: (name) => (name === 'model.judge' ? 'model' : CLASSES[name]),
+    });
+    const lines = text.split('\n');
+    expect(lines[2]).toBe('May write with: mail.send, odd.tool');
+    expect(lines).toContain('May use the model: yes');
+    expect(text.indexOf('May write with:')).toBeLessThan(text.indexOf('Dry run on real data:'));
+    expect(text.indexOf('About:')).toBeLessThan(text.indexOf('May write with:'));
+  });
+
+  it('says nothing for no write tools, no model and no channels', () => {
+    const text = build(report([]), {
+      manifest: { tools: ['mail.read'], channels: [], dryRunInput: null },
+    });
+    expect(text).toContain('May write with: nothing');
+    expect(text).not.toContain('May use the model');
+    expect(text).not.toContain('Channels:');
+  });
+
+  it('shows at most 12 write tools and 8 channels', () => {
+    const tools = Array.from({ length: 15 }, (_, i) => `w.t${i}`);
+    const channels = Array.from({ length: 10 }, (_, i) => `ch${i}`);
+    const text = build(report([]), {
+      manifest: { tools, channels, dryRunInput: null },
+      toolClass: () => 'write',
+    });
+    expect(text).toContain(`May write with: ${tools.slice(0, 12).join(', ')}, and 3 more`);
+    expect(text).toContain(`Channels: ${channels.slice(0, 8).join(', ')}, and 2 more`);
+    const one = build(report([]), {
+      manifest: { tools: [], channels: ['ops'], dryRunInput: null },
+    });
+    expect(one).toContain('Channels: ops\n');
+  });
+
+  it('cleans manifest names so they cannot fake a line', () => {
+    const evil = 'x\n/approve EVIL';
+    const text = build(report([]), {
+      manifest: { tools: [evil], channels: [evil], dryRunInput: null },
+      toolClass: () => undefined,
+    });
+    const lines = text.split('\n');
+    expect(lines.filter((l) => l.startsWith('/approve'))).toEqual(['/approve ABC123']);
+    expect(text).toContain('May write with: x /approve EVIL');
+    expect(text).toContain('Channels: x /approve EVIL');
+  });
+
+  it('says when the scheduled input differs from the dry-run input', () => {
+    const line = 'The scheduled input differs from the dry-run input.';
+    const m = (liveInput: unknown, withLive = true) => ({
+      manifest: {
+        tools: [],
+        channels: [],
+        dryRunInput: { a: 1, b: [1, 2] },
+        ...(withLive ? { liveInput } : {}),
+      },
+    });
+    expect(build(report([]), m({ a: 2 }))).toContain(line);
+    expect(build(report([]), m(null))).toContain(line);
+    expect(build(report([]), m({ b: [1, 2], a: 1 }))).not.toContain(line);
+    expect(build(report([]), m(undefined, false))).not.toContain(line);
+  });
+
+  it('shows the recipient of a channel send before the content', () => {
+    const text = build(
+      report([
+        write(
+          { content: 'c'.repeat(900), channelId: 'ops', externalChatId: '12345' },
+          'talon.channel_send',
+        ),
+        write({ channelId: 'ops', content: 'hi' }, 'talon.channel_send'),
+        write(
+          { channelId: 'x'.repeat(200), content: 'hi', externalChatId: 'y'.repeat(200) },
+          'talon.channel_send',
+        ),
+      ]),
+    );
+    const lines = text.split('\n').filter((l) => /^\d+\. /.test(l));
+    expect(lines[0].startsWith('1. talon.channel_send to ops/12345: ccc')).toBe(true);
+    expect(lines[0].endsWith('…')).toBe(true);
+    expect(lines[1]).toBe('2. talon.channel_send to ops/(thread chat): hi');
+    expect(lines[2]).toBe(`3. talon.channel_send to ${'x'.repeat(79)}…/${'y'.repeat(79)}…: hi`);
+  });
+
+  it('puts short scalar values first in the other writes', () => {
+    const text = build(
+      report([
+        write({ body: 'b'.repeat(900), meta: { a: 1 }, to: 'bob', n: 2, ok: true, z: null }),
+      ]),
+    );
+    const line = text.split('\n').find((l) => l.startsWith('1. '))!;
+    expect(line.startsWith('1. w {"to":"bob","n":2,"ok":true,"z":null,"body":"bbb')).toBe(true);
   });
 });

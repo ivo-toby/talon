@@ -69,7 +69,7 @@ describe('talon script SDK', () => {
     writeFileSync(join(root, 'demo/script.ts'), source);
     const run = new Run(root, 'demo/script.ts');
     runs.push(run);
-    run.send({ t: 'start', mode: 'live', input });
+    run.send({ t: 'start', input });
     return run;
   }
 
@@ -81,6 +81,20 @@ describe('talon script SDK', () => {
     await run.waitFor(1);
     expect(run.lines[0]).toEqual({ t: 'done', ok: true, result: { got: 5 } });
     expect(await run.exitCode).toBe(0);
+  }, 20_000);
+
+  it('gives the script no mode, even if the host sent one', async () => {
+    mkdirSync(join(root, 'demo'), { recursive: true });
+    writeFileSync(
+      join(root, 'demo/script.ts'),
+      `import { _waitForStart } from 'talon';
+       export default async function () { return Object.keys(await _waitForStart()); }`,
+    );
+    const run = new Run(root, 'demo/script.ts');
+    runs.push(run);
+    run.send({ t: 'start', mode: 'live', input: 1 });
+    await run.waitFor(1);
+    expect(run.lines[0]).toEqual({ t: 'done', ok: true, result: ['input'] });
   }, 20_000);
 
   it('sends a call and resolves with the result value', async () => {

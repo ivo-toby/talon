@@ -1,5 +1,5 @@
 import { err, ok, type Result } from 'neverthrow';
-import { ScriptError, type ScriptErrorCode, type ScriptMode } from './types.js';
+import { ScriptError, type ScriptErrorCode } from './types.js';
 
 /** One JSON object per line, UTF-8. Upper bound for a single line, in bytes. */
 export const MAX_LINE_BYTES = 1_048_576;
@@ -7,8 +7,9 @@ export const MAX_LINE_BYTES = 1_048_576;
 const MAX_CALL_NAME_CHARS = 200;
 const CALL_NAME = /^[A-Za-z0-9._-]+$/;
 
+/** `start` carries no mode: a script cannot tell a dry run from a live run by asking. */
 export type HostMessage =
-  | { t: 'start'; mode: ScriptMode; input: unknown }
+  | { t: 'start'; input: unknown }
   | { t: 'result'; id: number; ok: true; value: unknown }
   | { t: 'result'; id: number; ok: false; code: ScriptErrorCode; message: string };
 

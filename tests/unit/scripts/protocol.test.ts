@@ -7,10 +7,10 @@ function line(value: unknown): string {
 
 describe('encodeMessage', () => {
   it('emits one line ending in a single newline', () => {
-    const out = encodeMessage({ t: 'start', mode: 'unit', input: { a: 1 } });
+    const out = encodeMessage({ t: 'start', input: { a: 1 } });
     expect(out.endsWith('\n')).toBe(true);
     expect(out.indexOf('\n')).toBe(out.length - 1);
-    expect(JSON.parse(out)).toEqual({ t: 'start', mode: 'unit', input: { a: 1 } });
+    expect(JSON.parse(out)).toEqual({ t: 'start', input: { a: 1 } });
   });
 
   it('keeps newlines inside values escaped', () => {

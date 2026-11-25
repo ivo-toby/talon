@@ -46,6 +46,12 @@ const SCRIPTS: Record<string, string> = {
       return { count: notes.length, written };
     }
   `,
+  startkeys: `
+    import { _waitForStart } from 'talon';
+    export default async function (): Promise<string[]> {
+      return Object.keys(await _waitForStart());
+    }
+  `,
   spin: `
     export default async function (): Promise<void> {
       while (true) {}
@@ -213,6 +219,13 @@ describe.skipIf(!enabled)('script runtime against a real Docker daemon', () => {
     expect(report).toMatchObject({ ok: true, result: { count: 1, written: { stubbed: true } } });
     expect(readCalls).toHaveLength(0);
     expect(writeCalls).toHaveLength(0);
+  }, 60_000);
+
+  it('gives the script no way to read the mode', async () => {
+    for (const mode of ['dry-run', 'live'] as const) {
+      const report = await run('startkeys', mode);
+      expect(report).toMatchObject({ ok: true, result: ['input'] });
+    }
   }, 60_000);
 
   it('refuses a tool that is not in the manifest, also in live mode', async () => {
