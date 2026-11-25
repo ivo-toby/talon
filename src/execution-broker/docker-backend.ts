@@ -1,11 +1,13 @@
 import { err, ok, type Result } from 'neverthrow';
 
 import { ExecutionBrokerError } from './errors.js';
-import { demuxDockerStream } from './docker-stream.js';
+import { createDockerDemuxer, demuxDockerStream } from './docker-stream.js';
 import type { DockerBackendConfig, DockerEngineClient } from './docker-types.js';
 import type {
   BackendCapabilities,
   BackendExecRequest,
+  BackendExecSession,
+  BackendStreamExecRequest,
   ContainerBackend,
   ContainerSpec,
   RawExecOutput,
@@ -22,6 +24,9 @@ const BIND_PATH_RE = /^\/[^:\s]*$/;
 
 /** Container IDs we are willing to interpolate into a URL path segment. */
 const CONTAINER_ID_RE = /^[A-Za-z0-9_.-]+$/;
+
+/** Backend-side cap on collected stderr of a streaming exec. */
+const STREAM_STDERR_CAP = 65_536;
 
 const FIXED_CMD = ['sleep', 'infinity'];
 
@@ -248,6 +253,176 @@ export function createDockerBackend(
       }
 
       return ok({ exitCode, stdout: demuxed.value.stdout, stderr: demuxed.value.stderr });
+    },
+
+    async execStream(
+      containerId: string,
+      request: BackendStreamExecRequest,
+    ): Promise<Result<BackendExecSession, ExecutionBrokerError>> {
+      const idCheck = validateContainerId(containerId);
+      if (idCheck.isErr()) {
+        return err(idCheck.error);
+      }
+
+      const execCreated = await client.request({
+        method: 'POST',
+        path: `/containers/${containerId}/exec`,
+        body: {
+          Cmd: [...request.argv],
+          WorkingDir: request.cwd,
+          AttachStdin: true,
+          AttachStdout: true,
+          AttachStderr: true,
+          Tty: false,
+        },
+        signal: request.signal,
+      });
+      if (execCreated.isErr()) {
+        return err(backendFailure('docker exec create request failed'));
+      }
+      if (execCreated.value.status !== 201) {
+        return err(backendFailure('docker exec create was rejected'));
+      }
+      const parsed = asRecord(parseJsonBody(execCreated.value.body).unwrapOr(null));
+      if (parsed.isErr()) {
+        return err(parsed.error);
+      }
+      const idResult = readStringField(parsed.value, 'Id');
+      if (idResult.isErr()) {
+        return err(idResult.error);
+      }
+      const execId = idResult.value;
+      if (validateContainerId(execId).isErr()) {
+        return err(backendFailure('docker engine returned an unusable exec id'));
+      }
+
+      const opened = await client.openStream({
+        method: 'POST',
+        path: `/exec/${execId}/start`,
+        body: { Detach: false, Tty: false },
+        signal: request.signal,
+      });
+      if (opened.isErr()) {
+        return err(backendFailure('docker exec start request failed'));
+      }
+      const duplex = opened.value;
+      const demuxer = createDockerDemuxer();
+
+      let ended = false;
+      let stdinEnded = false;
+      let stderr = '';
+      let resolveDone!: (result: Result<{ exitCode: number; stderr: string }, ExecutionBrokerError>) => void;
+      const done = new Promise<Result<{ exitCode: number; stderr: string }, ExecutionBrokerError>>((resolve) => {
+        resolveDone = resolve;
+      });
+
+      const finish = (result: Result<{ exitCode: number; stderr: string }, ExecutionBrokerError>): void => {
+        if (ended) {
+          return;
+        }
+        ended = true;
+        request.signal.removeEventListener('abort', onAbort);
+        resolveDone(result);
+      };
+      const fail = (error: ExecutionBrokerError): void => {
+        if (ended) {
+          return;
+        }
+        duplex.destroy();
+        finish(err(error));
+      };
+      const onAbort = (): void => {
+        duplex.destroy();
+      };
+
+      const deliver = (frames: { stream: 'stdout' | 'stderr'; text: string }[]): void => {
+        for (const frame of frames) {
+          if (frame.stream === 'stdout') {
+            request.onStdout(frame.text);
+          } else if (stderr.length < STREAM_STDERR_CAP) {
+            stderr += frame.text.slice(0, STREAM_STDERR_CAP - stderr.length);
+          }
+        }
+      };
+
+      const readExitCode = async (): Promise<Result<{ exitCode: number; stderr: string }, ExecutionBrokerError>> => {
+        const inspected = await client.request({
+          method: 'GET',
+          path: `/exec/${execId}/json`,
+          signal: request.signal,
+        });
+        if (inspected.isErr()) {
+          return err(backendFailure('docker exec inspect request failed'));
+        }
+        if (inspected.value.status !== 200) {
+          return err(backendFailure('docker exec inspect was rejected'));
+        }
+        const record = asRecord(parseJsonBody(inspected.value.body).unwrapOr(null));
+        if (record.isErr()) {
+          return err(record.error);
+        }
+        const { ExitCode: exitCode, Running: running } = record.value;
+        if (running === true) {
+          return err(backendFailure('docker exec still running after its stream ended'));
+        }
+        if (typeof exitCode !== 'number' || !Number.isInteger(exitCode)) {
+          return err(backendFailure('docker exec inspect is missing an integer exit code'));
+        }
+        return ok({ exitCode, stderr });
+      };
+
+      duplex.onData((chunk) => {
+        if (ended) {
+          return;
+        }
+        const frames = demuxer.push(chunk);
+        if (frames.isErr()) {
+          fail(frames.error);
+          return;
+        }
+        deliver(frames.value);
+      });
+
+      duplex.onClose((error) => {
+        if (ended) {
+          return;
+        }
+        if (error) {
+          finish(err(backendFailure('docker exec stream failed')));
+          return;
+        }
+        const flushed = demuxer.end();
+        if (flushed.isErr()) {
+          finish(err(flushed.error));
+          return;
+        }
+        deliver(flushed.value);
+        void readExitCode().then(finish);
+      });
+
+      if (request.signal.aborted) {
+        onAbort();
+      } else {
+        request.signal.addEventListener('abort', onAbort, { once: true });
+      }
+
+      const session: BackendExecSession = {
+        writeStdin(text: string): void {
+          if (ended || stdinEnded) {
+            return;
+          }
+          duplex.write(Buffer.from(text, 'utf8'));
+        },
+        endStdin(): void {
+          if (ended || stdinEnded) {
+            return;
+          }
+          stdinEnded = true;
+          duplex.endInput();
+        },
+        done,
+      };
+      return ok(session);
     },
 
     async removeContainer(containerId: string): Promise<Result<void, ExecutionBrokerError>> {

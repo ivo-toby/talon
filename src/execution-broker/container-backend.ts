@@ -4,6 +4,8 @@ import { ExecutionBrokerError } from './errors.js';
 import type {
   BackendCapabilities,
   BackendExecRequest,
+  BackendExecSession,
+  BackendStreamExecRequest,
   ContainerBackend,
   ContainerSpec,
   RawExecOutput,
@@ -22,6 +24,19 @@ export interface InMemoryExecCallInput extends InMemoryExecCall {
 }
 
 export type InMemoryExecHandler = (call: InMemoryExecCallInput) => Promise<RawExecOutput>;
+
+/** What the stream handler receives: the recorded call, the abort signal and the stream hooks. */
+export interface InMemoryExecStreamCall extends InMemoryExecCallInput {
+  emitStdout(text: string): void;
+  /** Called for every text written to the session's stdin, in order. */
+  onStdin(listener: (text: string) => void): void;
+  /** Called one time when the session's stdin is closed. */
+  onStdinEnd(listener: () => void): void;
+}
+
+export type InMemoryExecStreamHandler = (
+  call: InMemoryExecStreamCall,
+) => Promise<{ exitCode: number; stderr: string }>;
 
 export interface InMemoryContainerBackendOptions {
   /** Reported by capabilities(); drives the QUOTA_UNENFORCEABLE guard upstream. */
@@ -49,6 +64,9 @@ export class InMemoryContainerBackend implements ContainerBackend {
   private execHandler: InMemoryExecHandler = () =>
     Promise.resolve({ exitCode: 0, stdout: '', stderr: '' });
 
+  private execStreamHandler: InMemoryExecStreamHandler = () =>
+    Promise.resolve({ exitCode: 0, stderr: '' });
+
   constructor(opts: InMemoryContainerBackendOptions = {}) {
     this.diskQuotaEnforced = opts.diskQuotaEnforced ?? false;
     this.failCreate = opts.failCreate ?? false;
@@ -60,6 +78,10 @@ export class InMemoryContainerBackend implements ContainerBackend {
 
   liveContainers(): string[] {
     return [...this.live];
+  }
+
+  setExecStreamHandler(handler: InMemoryExecStreamHandler): void {
+    this.execStreamHandler = handler;
   }
 
   setExecHandler(handler: InMemoryExecHandler): void {
@@ -104,6 +126,78 @@ export class InMemoryContainerBackend implements ContainerBackend {
         new ExecutionBrokerError('BACKEND_FAILURE', 'in-memory exec handler failed', cause),
       );
     }
+  }
+
+  execStream(
+    containerId: string,
+    request: BackendStreamExecRequest,
+  ): Promise<Result<BackendExecSession, ExecutionBrokerError>> {
+    if (!this.live.has(containerId)) {
+      return Promise.resolve(err(new ExecutionBrokerError('BACKEND_FAILURE', 'unknown container')));
+    }
+    this.execCalls.push({ containerId, argv: request.argv, cwd: request.cwd });
+
+    const stdinListeners: ((text: string) => void)[] = [];
+    const endListeners: (() => void)[] = [];
+    let stdinEnded = false;
+    let finished = false;
+
+    const handled = this.execStreamHandler({
+      containerId,
+      argv: request.argv,
+      cwd: request.cwd,
+      signal: request.signal,
+      emitStdout: (text) => {
+        if (!finished) {
+          request.onStdout(text);
+        }
+      },
+      onStdin: (listener) => {
+        stdinListeners.push(listener);
+      },
+      onStdinEnd: (listener) => {
+        if (stdinEnded) {
+          listener();
+        } else {
+          endListeners.push(listener);
+        }
+      },
+    });
+    const done = handled.then(
+      (output): Result<{ exitCode: number; stderr: string }, ExecutionBrokerError> => {
+        finished = true;
+        return ok({ exitCode: output.exitCode, stderr: output.stderr.slice(0, 65_536) });
+      },
+      (error: unknown): Result<{ exitCode: number; stderr: string }, ExecutionBrokerError> => {
+        finished = true;
+        // Constraint: handler messages must not leak into broker error messages.
+        const cause = error instanceof Error ? error : new Error('unknown exec failure');
+        return err(new ExecutionBrokerError('BACKEND_FAILURE', 'in-memory exec handler failed', cause));
+      },
+    );
+
+    return Promise.resolve(
+      ok({
+        writeStdin: (text: string): void => {
+          if (finished || stdinEnded) {
+            return;
+          }
+          for (const listener of stdinListeners) {
+            listener(text);
+          }
+        },
+        endStdin: (): void => {
+          if (finished || stdinEnded) {
+            return;
+          }
+          stdinEnded = true;
+          for (const listener of endListeners) {
+            listener();
+          }
+        },
+        done,
+      }),
+    );
   }
 
   removeContainer(containerId: string): Promise<Result<void, ExecutionBrokerError>> {

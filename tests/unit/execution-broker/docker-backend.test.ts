@@ -5,11 +5,12 @@ import { createDockerBackend } from '../../../src/execution-broker/docker-backen
 import { ExecutionBrokerError } from '../../../src/execution-broker/errors.js';
 import type {
   DockerBackendConfig,
+  DockerDuplex,
   DockerEngineClient,
   DockerRequest,
   DockerResponse,
 } from '../../../src/execution-broker/docker-types.js';
-import type { ContainerSpec } from '../../../src/execution-broker/types.js';
+import type { ContainerBackend, ContainerSpec } from '../../../src/execution-broker/types.js';
 
 const DIGEST = `registry.local/talon-worker@sha256:${'a'.repeat(64)}`;
 
@@ -51,7 +52,10 @@ function frame(stream: 1 | 2, text: string): Buffer {
 
 type Script = (request: DockerRequest) => Result<DockerResponse, ExecutionBrokerError>;
 
-function fakeClient(script: Script): { client: DockerEngineClient; calls: DockerRequest[] } {
+function fakeClient(
+  script: Script,
+  openStream?: DockerEngineClient['openStream'],
+): { client: DockerEngineClient; calls: DockerRequest[] } {
   const calls: DockerRequest[] = [];
   return {
     calls,
@@ -60,7 +64,9 @@ function fakeClient(script: Script): { client: DockerEngineClient; calls: Docker
         calls.push(request);
         return Promise.resolve(script(request));
       },
-      openStream: () => Promise.resolve(err(new ExecutionBrokerError('BACKEND_FAILURE', 'openStream not scripted'))),
+      openStream:
+        openStream ??
+        (() => Promise.resolve(err(new ExecutionBrokerError('BACKEND_FAILURE', 'openStream not scripted')))),
     },
   };
 }
@@ -291,5 +297,179 @@ describe('DockerContainerBackend.removeContainer', () => {
     const backend = createDockerBackend(client, config)._unsafeUnwrap();
     expect((await backend.removeContainer('../images/x'))._unsafeUnwrapErr().brokerCode).toBe('INVALID_ARGUMENT');
     expect(calls).toHaveLength(0);
+  });
+});
+
+class FakeDuplex implements DockerDuplex {
+  written: Buffer[] = [];
+  inputEnded = false;
+  destroyed = false;
+  private dataListener: (chunk: Buffer) => void = () => undefined;
+  private closeListener: (error?: ExecutionBrokerError) => void = () => undefined;
+  write(chunk: Buffer): void {
+    this.written.push(chunk);
+  }
+  endInput(): void {
+    this.inputEnded = true;
+  }
+  onData(listener: (chunk: Buffer) => void): void {
+    this.dataListener = listener;
+  }
+  onClose(listener: (error?: ExecutionBrokerError) => void): void {
+    this.closeListener = listener;
+  }
+  destroy(): void {
+    this.destroyed = true;
+  }
+  emitData(chunk: Buffer): void {
+    this.dataListener(chunk);
+  }
+  close(error?: ExecutionBrokerError): void {
+    this.closeListener(error);
+  }
+}
+
+function streamHarness(): {
+  duplex: FakeDuplex;
+  calls: DockerRequest[];
+  streamCalls: DockerRequest[];
+  backend: ContainerBackend;
+} {
+  const duplex = new FakeDuplex();
+  const streamCalls: DockerRequest[] = [];
+  const { client, calls } = fakeClient(happyScript, (request) => {
+    streamCalls.push(request);
+    return Promise.resolve(ok(duplex));
+  });
+  return { duplex, calls, streamCalls, backend: createDockerBackend(client, config)._unsafeUnwrap() };
+}
+
+describe('DockerContainerBackend.execStream', () => {
+  it('creates an exec with stdin attached and starts it over openStream', async () => {
+    const { backend, calls, streamCalls } = streamHarness();
+    const session = (
+      await backend.execStream('c1', { argv: ['cat'], cwd: '/epic-wiki', signal: signal(), onStdout: () => undefined })
+    )._unsafeUnwrap();
+    expect(session).toBeDefined();
+    const body = calls.find((c) => c.path === '/containers/c1/exec')?.body as Record<string, unknown>;
+    expect(body).toMatchObject({
+      Cmd: ['cat'],
+      WorkingDir: '/epic-wiki',
+      AttachStdin: true,
+      AttachStdout: true,
+      AttachStderr: true,
+      Tty: false,
+    });
+    expect(streamCalls).toHaveLength(1);
+    expect(streamCalls[0]?.path).toBe('/exec/e1/start');
+    expect(streamCalls[0]?.body).toEqual({ Detach: false, Tty: false });
+  });
+
+  it('delivers stdout in order, collects stderr and reads the exit code after close', async () => {
+    const { backend, duplex, calls } = streamHarness();
+    const out: string[] = [];
+    const session = (
+      await backend.execStream('c1', {
+        argv: ['x'],
+        cwd: '/epic-wiki',
+        signal: signal(),
+        onStdout: (t) => out.push(t),
+      })
+    )._unsafeUnwrap();
+    duplex.emitData(frame(1, 'a'));
+    duplex.emitData(Buffer.concat([frame(2, 'e1'), frame(1, 'b')]));
+    duplex.emitData(frame(2, 'e2'));
+    duplex.close();
+    expect((await session.done)._unsafeUnwrap()).toEqual({ exitCode: 3, stderr: 'e1e2' });
+    expect(out).toEqual(['a', 'b']);
+    expect(calls.some((c) => c.path === '/exec/e1/json')).toBe(true);
+  });
+
+  it('writes stdin as UTF-8 bytes, half-closes input, and ignores writes after the end', async () => {
+    const { backend, duplex } = streamHarness();
+    const session = (
+      await backend.execStream('c1', { argv: ['x'], cwd: '/epic-wiki', signal: signal(), onStdout: () => undefined })
+    )._unsafeUnwrap();
+    session.writeStdin('héllo\n');
+    session.endStdin();
+    expect(Buffer.concat(duplex.written).toString('utf8')).toBe('héllo\n');
+    expect(duplex.inputEnded).toBe(true);
+    duplex.close();
+    await session.done;
+    expect(() => session.writeStdin('late')).not.toThrow();
+    expect(duplex.written).toHaveLength(1);
+  });
+
+  it('caps stderr at 65_536 characters, keeping the first ones', async () => {
+    const { backend, duplex } = streamHarness();
+    const session = (
+      await backend.execStream('c1', { argv: ['x'], cwd: '/epic-wiki', signal: signal(), onStdout: () => undefined })
+    )._unsafeUnwrap();
+    duplex.emitData(frame(2, 'a'.repeat(65_000)));
+    duplex.emitData(frame(2, 'b'.repeat(2_000)));
+    duplex.close();
+    const { stderr } = (await session.done)._unsafeUnwrap();
+    expect(stderr).toHaveLength(65_536);
+    expect(stderr.endsWith('b'.repeat(536))).toBe(true);
+  });
+
+  it('gives BACKEND_FAILURE in done when the stream closes with an error', async () => {
+    const { backend, duplex } = streamHarness();
+    const session = (
+      await backend.execStream('c1', { argv: ['x'], cwd: '/epic-wiki', signal: signal(), onStdout: () => undefined })
+    )._unsafeUnwrap();
+    duplex.close(new ExecutionBrokerError('BACKEND_FAILURE', 'socket reset'));
+    expect((await session.done)._unsafeUnwrapErr().brokerCode).toBe('BACKEND_FAILURE');
+  });
+
+  it('destroys the duplex and fails done on a malformed frame', async () => {
+    const { backend, duplex } = streamHarness();
+    const session = (
+      await backend.execStream('c1', { argv: ['x'], cwd: '/epic-wiki', signal: signal(), onStdout: () => undefined })
+    )._unsafeUnwrap();
+    const bad = Buffer.alloc(8);
+    bad[0] = 9;
+    duplex.emitData(bad);
+    expect((await session.done)._unsafeUnwrapErr().brokerCode).toBe('BACKEND_FAILURE');
+    expect(duplex.destroyed).toBe(true);
+  });
+
+  it('rejects an invalid container id without calling the client', async () => {
+    const { backend, calls, streamCalls } = streamHarness();
+    const result = await backend.execStream('../x', {
+      argv: ['x'],
+      cwd: '/epic-wiki',
+      signal: signal(),
+      onStdout: () => undefined,
+    });
+    expect(result._unsafeUnwrapErr().brokerCode).toBe('INVALID_ARGUMENT');
+    expect(calls).toHaveLength(0);
+    expect(streamCalls).toHaveLength(0);
+  });
+
+  it('destroys the duplex when the signal aborts', async () => {
+    const { backend, duplex } = streamHarness();
+    const controller = new AbortController();
+    await backend.execStream('c1', {
+      argv: ['x'],
+      cwd: '/epic-wiki',
+      signal: controller.signal,
+      onStdout: () => undefined,
+    });
+    expect(duplex.destroyed).toBe(false);
+    controller.abort();
+    expect(duplex.destroyed).toBe(true);
+  });
+
+  it('returns BACKEND_FAILURE when openStream fails', async () => {
+    const { client } = fakeClient(happyScript);
+    const backend = createDockerBackend(client, config)._unsafeUnwrap();
+    const result = await backend.execStream('c1', {
+      argv: ['x'],
+      cwd: '/epic-wiki',
+      signal: signal(),
+      onStdout: () => undefined,
+    });
+    expect(result._unsafeUnwrapErr().brokerCode).toBe('BACKEND_FAILURE');
   });
 });

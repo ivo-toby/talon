@@ -111,6 +111,17 @@ export interface BackendExecRequest {
   signal: AbortSignal;
 }
 
+export interface BackendStreamExecRequest extends BackendExecRequest {
+  onStdout(text: string): void;
+}
+
+export interface BackendExecSession {
+  writeStdin(text: string): void;
+  endStdin(): void;
+  /** stderr is capped at 65_536 characters by the backend. */
+  done: Promise<Result<{ exitCode: number; stderr: string }, ExecutionBrokerError>>;
+}
+
 export interface RawExecOutput {
   exitCode: number;
   stdout: string;
@@ -125,5 +136,9 @@ export interface ContainerBackend {
   capabilities(): BackendCapabilities;
   createContainer(spec: ContainerSpec): Promise<Result<{ containerId: string }, ExecutionBrokerError>>;
   exec(containerId: string, request: BackendExecRequest): Promise<Result<RawExecOutput, ExecutionBrokerError>>;
+  execStream(
+    containerId: string,
+    request: BackendStreamExecRequest,
+  ): Promise<Result<BackendExecSession, ExecutionBrokerError>>;
   removeContainer(containerId: string): Promise<Result<void, ExecutionBrokerError>>;
 }

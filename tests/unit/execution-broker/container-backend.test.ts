@@ -101,4 +101,70 @@ describe('InMemoryContainerBackend', () => {
     expect(backend.liveContainers()).toEqual([]);
     expect(backend.removeCalls).toEqual([containerId, containerId]);
   });
+
+  describe('execStream', () => {
+    it('hands stdin to the handler, streams stdout and records the call', async () => {
+      const backend = new InMemoryContainerBackend();
+      const { containerId } = (await backend.createContainer(spec))._unsafeUnwrap();
+      const stdin: string[] = [];
+      let stdinEnded = false;
+      backend.setExecStreamHandler((call) => {
+        call.onStdin((text) => {
+          stdin.push(text);
+          call.emitStdout(text.toUpperCase());
+        });
+        return new Promise((resolve) => {
+          call.onStdinEnd(() => {
+            stdinEnded = true;
+            resolve({ exitCode: 4, stderr: 'warn' });
+          });
+        });
+      });
+      const out: string[] = [];
+      const session = (
+        await backend.execStream(containerId, {
+          argv: ['cat'],
+          cwd: '/epic-wiki',
+          signal: signal(),
+          onStdout: (t) => out.push(t),
+        })
+      )._unsafeUnwrap();
+      session.writeStdin('hi\n');
+      session.endStdin();
+      expect((await session.done)._unsafeUnwrap()).toEqual({ exitCode: 4, stderr: 'warn' });
+      expect(stdin).toEqual(['hi\n']);
+      expect(stdinEnded).toBe(true);
+      expect(out).toEqual(['HI\n']);
+      expect(backend.execCalls).toEqual([{ containerId, argv: ['cat'], cwd: '/epic-wiki' }]);
+    });
+
+    it('gives BACKEND_FAILURE for an unknown container and records nothing', async () => {
+      const backend = new InMemoryContainerBackend();
+      const result = await backend.execStream('nope', {
+        argv: ['x'],
+        cwd: '/epic-wiki',
+        signal: signal(),
+        onStdout: () => undefined,
+      });
+      expect(result._unsafeUnwrapErr().brokerCode).toBe('BACKEND_FAILURE');
+      expect(backend.execCalls).toEqual([]);
+    });
+
+    it('gives BACKEND_FAILURE in done when the handler rejects', async () => {
+      const backend = new InMemoryContainerBackend();
+      const { containerId } = (await backend.createContainer(spec))._unsafeUnwrap();
+      backend.setExecStreamHandler(() => Promise.reject(new Error('secret detail')));
+      const session = (
+        await backend.execStream(containerId, {
+          argv: ['x'],
+          cwd: '/epic-wiki',
+          signal: signal(),
+          onStdout: () => undefined,
+        })
+      )._unsafeUnwrap();
+      const error = (await session.done)._unsafeUnwrapErr();
+      expect(error.brokerCode).toBe('BACKEND_FAILURE');
+      expect(error.message).not.toContain('secret');
+    });
+  });
 });
