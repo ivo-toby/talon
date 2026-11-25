@@ -11,6 +11,17 @@
 // ---------------------------------------------------------------------------
 
 /**
+ * Settings that can be overridden for one chat (`TelegramConfig.chats`).
+ * An absent field falls back to the connector-wide setting.
+ */
+export interface TelegramChatSettings {
+  /** Per-chat override of {@link TelegramConfig.requireMention}. */
+  requireMention?: boolean;
+  /** Per-chat override of {@link TelegramConfig.replyToTrigger}. */
+  replyToTrigger?: 'never' | 'groups' | 'always';
+}
+
+/**
  * Configuration for a TelegramConnector instance.
  */
 export interface TelegramConfig {
@@ -28,17 +39,54 @@ export interface TelegramConfig {
   allowedChatIds?: string[];
   /**
    * Allow messages from group and supergroup chats.
-   * In group chats the bot only responds when @mentioned by username or when
-   * a message starts with one of the configured triggerWords.
+   * In group chats the bot only responds when @mentioned by username, when
+   * a message starts with one of the configured triggerWords, or when a
+   * message replies to one of the bot's own messages — unless
+   * `requireMention` is false.
    * Defaults to false.
    */
   allowGroupChats?: boolean;
+  /**
+   * Whether a group message must address the bot (an @mention, a trigger
+   * word, or a reply to the bot) to be answered. Defaults to true. Set to
+   * false to answer every message in the allowed group chats, e.g. a forum
+   * group where each topic is a conversation with the bot. Telegram only
+   * delivers every group message when the bot is a group administrator or
+   * has Group Privacy turned off. Combine with `allowedChatIds`: without it
+   * the bot answers everything in any group it is added to. Direct chats are
+   * not affected.
+   */
+  requireMention?: boolean;
   /**
    * Optional trigger words. A message must start with one of these (case-
    * insensitive) for the bot to respond. The matched prefix is stripped before
    * the message reaches the agent. Applies to both DMs and group chats.
    */
   triggerWords?: string[];
+  /**
+   * When Talon's answer is sent as a native reply to the message that
+   * triggered it: `groups` (default) in group chats only, `always`, or
+   * `never`. A reply the agent requests explicitly is always sent as one.
+   */
+  replyToTrigger?: 'never' | 'groups' | 'always';
+  /**
+   * Forward emoji reactions that users place on Talon's messages to the
+   * agent. Defaults to true. Telegram only delivers reactions in private
+   * chats and in groups where the bot is an administrator.
+   */
+  inboundReactions?: boolean;
+  /**
+   * Per-chat overrides, keyed by chat ID (as a string), or by
+   * `<chat_id>:<topic_id>` for one topic of a forum group. Lets one bot
+   * treat chats differently: a forum group used as a topic workspace can
+   * answer every message without quoting (`requireMention: false`,
+   * `replyToTrigger: never`) while an ordinary multi-person group keeps the
+   * defaults. A topic entry wins over its chat's entry, which wins over the
+   * connector-wide setting; that is how several bots share one group, each
+   * answering unprompted in its own topic. An entry here is still subject to
+   * `allowGroupChats` and `allowedChatIds`; listing it does not admit it.
+   */
+  chats?: Record<string, TelegramChatSettings>;
 }
 
 // ---------------------------------------------------------------------------
@@ -146,6 +194,46 @@ export interface TelegramMessage {
   document?: TelegramDocument;
   /** Platform sticker — always excluded from image ingestion. */
   sticker?: TelegramSticker;
+  /** Topic the message belongs to (forum supergroups and private chats). */
+  message_thread_id?: number;
+  /** True when the message was sent inside a topic. */
+  is_topic_message?: boolean;
+  /**
+   * The message this one replies to. In a topic, a message that replies to
+   * nothing still points at the topic's creation service message.
+   */
+  reply_to_message?: TelegramMessage;
+  /** The part of the replied-to message the sender chose to quote. */
+  quote?: { text?: string };
+  /** Present on the service message that created a forum topic. */
+  forum_topic_created?: unknown;
+}
+
+/**
+ * One reaction on a message (Bot API `ReactionType`). Only `emoji` reactions
+ * carry a portable emoji; `custom_emoji` and `paid` do not.
+ */
+export interface TelegramReactionType {
+  type: string;
+  emoji?: string;
+}
+
+/**
+ * A change of a user's reactions on a message (Bot API
+ * `MessageReactionUpdated`). Delivered only when `message_reaction` is listed
+ * in `allowed_updates`, and never for reactions set by bots.
+ */
+export interface TelegramMessageReactionUpdated {
+  chat: TelegramChat;
+  message_id: number;
+  /** The reacting user; absent for anonymous reactions. */
+  user?: TelegramUser;
+  /** The chat an anonymous reaction was made on behalf of. */
+  actor_chat?: TelegramChat;
+  /** Unix timestamp of the change. */
+  date: number;
+  old_reaction?: TelegramReactionType[];
+  new_reaction?: TelegramReactionType[];
 }
 
 /**
@@ -155,6 +243,7 @@ export interface TelegramMessage {
 export interface TelegramUpdate {
   update_id: number;
   message?: TelegramMessage;
+  message_reaction?: TelegramMessageReactionUpdated;
 }
 
 // ---------------------------------------------------------------------------
@@ -167,6 +256,16 @@ export interface TelegramUpdate {
 export interface TelegramSendResult {
   ok: boolean;
   result?: TelegramMessage;
+  description?: string;
+  error_code?: number;
+}
+
+/**
+ * Result of a Bot API call that returns `True` (setMessageReaction).
+ */
+export interface TelegramBooleanResult {
+  ok: boolean;
+  result?: boolean;
   description?: string;
   error_code?: number;
 }

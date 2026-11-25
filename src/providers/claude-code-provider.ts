@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { err, ok, type Result } from 'neverthrow';
 import { BackgroundAgentError } from '../core/errors/error-types.js';
 import type { AgentProvider, AgentRunInput, AgentStreamEvent } from './provider.js';
@@ -38,27 +38,22 @@ export class ClaudeCodeProvider implements AgentProvider {
    * bare `claude`) is honored verbatim — an operator who set a specific
    * path or wrapper did so deliberately.
    *
-   * For the default `claude`, we resolve the CLI bundled inside the
-   * `@anthropic-ai/claude-agent-sdk` package (`cli.js`) and spawn it via
-   * node. That makes background runs work without a `claude` binary on
-   * PATH (e.g. inside the docker image, where only the SDK dependency is
-   * present) and keeps the CLI version matched to the SDK the foreground
-   * path uses. Falls back to bare `claude` if the SDK layout changes.
+   * For the default `claude`, we resolve the native Claude Code binary that
+   * ships with `@anthropic-ai/claude-agent-sdk` as a per-platform optional
+   * dependency (`@anthropic-ai/claude-agent-sdk-<platform>-<arch>[-musl]`)
+   * and spawn it directly. That makes background runs work without a
+   * `claude` binary on PATH (e.g. inside the docker image, where only the
+   * SDK dependency is present) and keeps the CLI version matched to the SDK
+   * the foreground path uses. Falls back to bare `claude` if no matching
+   * platform package is installed (e.g. `npm install --omit=optional`).
    */
   private resolveBackgroundCommand(): { command: string; prefixArgs: string[] } {
     if (this.config.command !== 'claude') {
       return { command: this.config.command, prefixArgs: [] };
     }
-    try {
-      const require = createRequire(import.meta.url);
-      const sdkDir = dirname(require.resolve('@anthropic-ai/claude-agent-sdk'));
-      const cliJs = join(sdkDir, 'cli.js');
-      if (existsSync(cliJs)) {
-        return { command: process.execPath, prefixArgs: [cliJs] };
-      }
-    } catch {
-      // SDK layout changed or not resolvable — fall back to the
-      // configured command below.
+    const nativeBinary = resolveSdkNativeBinary();
+    if (nativeBinary) {
+      return { command: nativeBinary, prefixArgs: [] };
     }
     return { command: this.config.command, prefixArgs: [] };
   }
@@ -217,7 +212,7 @@ export class ClaudeCodeProvider implements AgentProvider {
 
     const agentQuery = query({
       prompt: input.prompt,
-      options: options as Parameters<typeof query>[0]['options'],
+      options: options,
     });
 
     try {
@@ -448,4 +443,44 @@ export class ClaudeCodeProvider implements AgentProvider {
 
     return false;
   }
+}
+
+/**
+ * Locate the SDK's native Claude Code binary, mirroring the SDK's own lookup:
+ * on Linux prefer the musl or glibc package matching the running libc, then
+ * the other as a fallback; on other platforms the single matching package.
+ */
+function resolveSdkNativeBinary(): string | null {
+  const platform = process.platform;
+  const arch = process.arch;
+  const prefix = '@anthropic-ai/claude-agent-sdk';
+  const candidates =
+    platform === 'linux'
+      ? isMuslRuntime()
+        ? [`${prefix}-linux-${arch}-musl`, `${prefix}-linux-${arch}`]
+        : [`${prefix}-linux-${arch}`, `${prefix}-linux-${arch}-musl`]
+      : [`${prefix}-${platform}-${arch}`];
+  const executable = platform === 'win32' ? 'claude.exe' : 'claude';
+  const require = createRequire(import.meta.url);
+  for (const candidate of candidates) {
+    try {
+      const resolved = require.resolve(`${candidate}/${executable}`);
+      if (existsSync(resolved)) {
+        return resolved;
+      }
+    } catch {
+      // Package not installed for this platform — try the next candidate.
+    }
+  }
+  return null;
+}
+
+function isMuslRuntime(): boolean {
+  if (process.platform !== 'linux') {
+    return false;
+  }
+  const report = process.report?.getReport() as
+    | { header?: { glibcVersionRuntime?: string } }
+    | undefined;
+  return report?.header?.glibcVersionRuntime === undefined;
 }

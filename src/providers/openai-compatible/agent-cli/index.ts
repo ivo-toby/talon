@@ -211,7 +211,7 @@ async function main(): Promise<void> {
         tools: workspaceToolsConfig,
       });
       await workspace.init();
-      workspaceTools = createWorkspaceTools(workspace) as Record<
+      workspaceTools = (await createWorkspaceTools(workspace)) as Record<
         string,
         Tool<unknown, unknown, unknown, unknown>
       >;
@@ -272,7 +272,7 @@ async function main(): Promise<void> {
           ? { previousResponseId: input.previousResponseId }
           : {}),
         ...(input.providerOptions?.[providerId]
-          ? { providerOptions: input.providerOptions[providerId] as Record<string, unknown> }
+          ? { providerOptions: input.providerOptions[providerId] }
           : {}),
         ...(input.reasoningEffort ? { reasoningEffort: input.reasoningEffort } : {}),
         tools: { ...combinedTools, ...workspaceTools },

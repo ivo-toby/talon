@@ -378,7 +378,7 @@ function readExif(row: ImageRow): ImageExifMetadata | undefined {
   try {
     const parsed = JSON.parse(row.exif) as unknown;
     if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      return parsed as ImageExifMetadata;
+      return parsed;
     }
   } catch {
     /* stored EXIF is unreadable: descriptor simply omits it */

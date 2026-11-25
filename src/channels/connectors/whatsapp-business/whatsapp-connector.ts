@@ -22,7 +22,10 @@ import type {
   InboundAttachment,
   InboundEvent,
   AgentOutput,
+  MessageTarget,
+  SendReceipt,
 } from '../../channel-types.js';
+import { resolveReplyToTriggerMode, shouldSendAsReply } from '../../channel-types.js';
 import type { Result } from '../../../core/types/result.js';
 import { ok, err } from '../../../core/types/result.js';
 import { ChannelError } from '../../../core/errors/error-types.js';
@@ -192,20 +195,75 @@ export class WhatsAppConnector implements ChannelConnector {
   /**
    * Send an AgentOutput to a WhatsApp conversation.
    *
+   * A reply target is sent as a contextual reply (`context.message_id`) when
+   * the agent asked for it explicitly, or when it is the implicit trigger
+   * message and `replyToTrigger` is `always`.
+   *
    * @param externalThreadId - WhatsApp phone number (the recipient's `wa_id`).
    * @param output            - Agent output to deliver.
+   * @returns The sent message's `wamid` as the receipt.
    */
-  async send(externalThreadId: string, output: AgentOutput): Promise<Result<void, ChannelError>> {
+  async send(
+    externalThreadId: string,
+    output: AgentOutput,
+  ): Promise<Result<SendReceipt | void, ChannelError>> {
     const text = this.format(output.body);
-    const apiVersion = this.config.apiVersion ?? DEFAULT_API_VERSION;
-    const url = `${GRAPH_API_BASE}/${apiVersion}/${this.config.phoneNumberId}/messages`;
+    const mode = resolveReplyToTriggerMode(this.config.replyToTrigger);
+    // The Cloud API has no group chats, so `groups` never applies here.
+    const replyTarget = shouldSendAsReply(output.replyTo, mode, false) ? output.replyTo : undefined;
 
-    const requestBody = JSON.stringify({
+    const result = await this.postMessage('send', {
       messaging_product: 'whatsapp',
       to: externalThreadId,
       type: 'text',
       text: { body: text },
+      ...(replyTarget !== undefined
+        ? { context: { message_id: replyTarget.externalMessageId } }
+        : {}),
     });
+    if (result.isErr()) {
+      return err(result.error);
+    }
+    const sentId = result.value.messages?.[0]?.id;
+    return typeof sentId === 'string' && sentId !== ''
+      ? ok({ externalMessageId: sentId })
+      : ok(undefined);
+  }
+
+  /**
+   * Place an emoji reaction on a message, or clear the business number's
+   * reaction when `emoji` is empty (the Cloud API removes a reaction by
+   * sending an empty emoji for the same message).
+   *
+   * @param externalThreadId - WhatsApp phone number (the recipient's `wa_id`).
+   * @param target           - The message to react to (its `wamid`).
+   * @param emoji            - A single emoji, or '' to clear the reaction.
+   */
+  async react(
+    externalThreadId: string,
+    target: MessageTarget,
+    emoji: string,
+  ): Promise<Result<void, ChannelError>> {
+    const result = await this.postMessage('reaction', {
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to: externalThreadId,
+      type: 'reaction',
+      reaction: { message_id: target.externalMessageId, emoji },
+    });
+    return result.isErr() ? err(result.error) : ok(undefined);
+  }
+
+  /**
+   * POST one payload to the Cloud API `/messages` endpoint and return the
+   * parsed envelope. `operation` only names the action in error messages.
+   */
+  private async postMessage(
+    operation: 'send' | 'reaction',
+    payload: Record<string, unknown>,
+  ): Promise<Result<WhatsAppSendResult, ChannelError>> {
+    const apiVersion = this.config.apiVersion ?? DEFAULT_API_VERSION;
+    const url = `${GRAPH_API_BASE}/${apiVersion}/${this.config.phoneNumberId}/messages`;
 
     let response: Response;
     try {
@@ -215,11 +273,13 @@ export class WhatsAppConnector implements ChannelConnector {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${this.config.accessToken}`,
         },
-        body: requestBody,
+        body: JSON.stringify(payload),
       });
     } catch (fetchErr) {
       const cause = fetchErr instanceof Error ? fetchErr : undefined;
-      return err(new ChannelError(`WhatsApp send network error: ${String(fetchErr)}`, cause));
+      return err(
+        new ChannelError(`WhatsApp ${operation} network error: ${String(fetchErr)}`, cause),
+      );
     }
 
     let data: WhatsAppSendResult;
@@ -227,20 +287,22 @@ export class WhatsAppConnector implements ChannelConnector {
       data = (await response.json()) as WhatsAppSendResult;
     } catch {
       return err(
-        new ChannelError(`WhatsApp send: could not parse response (HTTP ${response.status})`),
+        new ChannelError(
+          `WhatsApp ${operation}: could not parse response (HTTP ${response.status})`,
+        ),
       );
     }
 
     if (data.error) {
       const { code, message } = data.error;
-      return err(new ChannelError(`WhatsApp send failed (${code}): ${message}`));
+      return err(new ChannelError(`WhatsApp ${operation} failed (${code}): ${message}`));
     }
 
     if (!response.ok) {
-      return err(new ChannelError(`WhatsApp send failed with HTTP ${response.status}`));
+      return err(new ChannelError(`WhatsApp ${operation} failed with HTTP ${response.status}`));
     }
 
-    return ok(undefined);
+    return ok(data);
   }
 
   /**
@@ -311,6 +373,14 @@ export class WhatsAppConnector implements ChannelConnector {
     message: import('./whatsapp-types.js').WhatsAppMessage,
     contacts: import('./whatsapp-types.js').WhatsAppContact[],
   ): Promise<void> {
+    // A reaction is not a message: it carries no text and no media, and is
+    // forwarded as a reaction event. The pipeline keeps it only when it
+    // targets a message Talon sent.
+    if (message.type === 'reaction' || message.reaction !== undefined) {
+      await this.handleReaction(message, contacts);
+      return;
+    }
+
     // Effective text source: a text body, or the caption carried INSIDE the
     // media object (WhatsApp puts a photo's caption on `image.caption`). An
     // empty string is not content, matching the pre-media behavior.
@@ -368,9 +438,76 @@ export class WhatsAppConnector implements ChannelConnector {
       senderId,
       idempotencyKey: message.id,
       content: sourceText,
+      externalMessageId: message.id,
+      // A contextual reply names the replied-to message by ID only; the
+      // pipeline fills in its author and text from the message ledger.
+      ...(typeof message.context?.id === 'string' && message.context.id !== ''
+        ? {
+            replyTo: {
+              externalMessageId: message.context.id,
+              ...(typeof message.context.from === 'string' && message.context.from !== ''
+                ? { senderId: message.context.from }
+                : {}),
+            },
+          }
+        : {}),
       timestamp: Number(message.timestamp) * 1000, // WhatsApp sends seconds; we want ms
       raw: { message, contact: contact ?? null },
       ...(attachments.length > 0 ? { attachments } : {}),
+    };
+
+    try {
+      await this.handler(event);
+    } catch (handlerErr) {
+      this.logger.error(
+        { channelName: this.name, err: handlerErr },
+        'whatsapp-business connector handler threw an error',
+      );
+    }
+  }
+
+  /**
+   * Normalise a `type: 'reaction'` webhook message into a reaction event.
+   * A reaction without an emoji is a removal and is dropped.
+   */
+  private async handleReaction(
+    message: import('./whatsapp-types.js').WhatsAppMessage,
+    contacts: import('./whatsapp-types.js').WhatsAppContact[],
+  ): Promise<void> {
+    const targetMessageId = message.reaction?.message_id;
+    const emoji = message.reaction?.emoji;
+    if (
+      this.config.inboundReactions === false ||
+      typeof targetMessageId !== 'string' ||
+      targetMessageId === '' ||
+      typeof emoji !== 'string' ||
+      emoji === ''
+    ) {
+      this.logger.debug(
+        { channelName: this.name, messageId: message.id },
+        'whatsapp reaction skipped (disabled, removed, or without a target)',
+      );
+      return;
+    }
+    if (!this.handler) {
+      this.logger.warn(
+        { channelName: this.name },
+        'whatsapp-business connector received reaction but no handler is registered',
+      );
+      return;
+    }
+
+    const contact = contacts.find((c) => c.wa_id === message.from);
+    const event: InboundEvent = {
+      channelType: this.type,
+      channelName: this.name,
+      externalThreadId: message.from,
+      senderId: message.from,
+      idempotencyKey: message.id,
+      content: '',
+      reaction: { targetMessageId, emoji },
+      timestamp: Number(message.timestamp) * 1000,
+      raw: { message, contact: contact ?? null },
     };
 
     try {

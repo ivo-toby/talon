@@ -48,6 +48,20 @@ Important constraints:
 - `prompt` and `promptFile` are mutually exclusive
 - `promptFile` is a prompt alias from the persona's `prompts/` directory, not an arbitrary path
 
+## Where a scheduled message is delivered
+
+A scheduled run reaches the user only when the agent calls `channel_send`. Where that message goes depends on how the schedule was created:
+
+| Schedule created | Delivered to |
+|---|---|
+| By the agent, with `schedule_manage`, in a chat | That chat |
+| By the agent, inside a Telegram topic | That topic |
+| With `talonctl add-schedule` | Nowhere by default: the agent must pass `externalChatId` |
+
+Talon records the conversation a schedule was created in and routes `channel_send` back to it, as long as the agent does not pass `externalChatId`. An explicit `externalChatId` always wins, so a persona that has learned one fixed chat ID will send every reminder there. The log line `channel.send: message sent successfully` shows the `recipient` and the `recipientSource` (`schedule origin`, `externalChatId argument` or `current thread`). For Signal channels the line omits both fields, so no Signal identifiers reach the logs.
+
+To deliver a CLI-created schedule into a Telegram topic, put the topic's thread key in its prompt, for example "send the result with `externalChatId` `-1004452318413:42`". Send `/chatid` inside the topic to get that key.
+
 ## Using `promptFile`
 
 If a persona has:

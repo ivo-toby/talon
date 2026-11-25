@@ -285,7 +285,7 @@ describe('ChannelSendHandler — success', () => {
     );
   });
 
-  it('passes replyTo in the output metadata', async () => {
+  it('passes replyTo to the connector as an explicit reply target', async () => {
     const connector = makeConnector(ok(undefined));
     const registry = makeRegistry(connector);
     const handler = new ChannelSendHandler({ channelRegistry: registry, threadRepository: makeThreadRepo(), logger: makeLogger() });
@@ -294,8 +294,119 @@ describe('ChannelSendHandler — success', () => {
 
     expect(connector.send).toHaveBeenCalledWith(
       'ext-001',
-      expect.objectContaining({ metadata: { replyTo: 'msg-123' } }),
+      expect.objectContaining({ replyTo: { externalMessageId: 'msg-123' } }),
     );
+  });
+
+  it('sends no reply target when replyTo is absent or blank', async () => {
+    const connector = makeConnector(ok(undefined));
+    const handler = new ChannelSendHandler({ channelRegistry: makeRegistry(connector), threadRepository: makeThreadRepo(), logger: makeLogger() });
+
+    await handler.execute(makeArgs(), makeContext());
+    await handler.execute(makeArgs({ replyTo: '   ' }), makeContext());
+
+    for (const call of vi.mocked(connector.send).mock.calls) {
+      expect(call[1]).not.toHaveProperty('replyTo');
+    }
+  });
+
+  it('completes the reply target from the ledger of the recipient thread', async () => {
+    const connector = makeConnector(ok(undefined));
+    const threadRepository = {
+      findById: vi.fn().mockReturnValue(ok({ id: 'thread-001', external_id: 'ext-001', channel_id: 'chan-001' })),
+      findByExternalId: vi.fn().mockReturnValue(ok({ id: 'thread-001', external_id: 'ext-001', channel_id: 'chan-001' })),
+    } as any;
+    const messageRefRepository = {
+      find: vi.fn().mockReturnValue(ok({
+        thread_id: 'thread-001',
+        external_id: 'msg-123',
+        direction: 'inbound',
+        message_id: 'm1',
+        sender_id: 'alice@s.whatsapp.net',
+        excerpt: 'can you check this?',
+        created_at: 1,
+      })),
+      record: vi.fn().mockReturnValue(ok(undefined)),
+    };
+    const handler = new ChannelSendHandler({
+      channelRegistry: makeRegistry(connector),
+      threadRepository,
+      channelRepository: makeChannelRepo(),
+      messageRefRepository,
+      logger: makeLogger(),
+    });
+
+    await handler.execute(makeArgs({ replyTo: 'msg-123' }), makeContext());
+
+    expect(messageRefRepository.find).toHaveBeenCalledWith('thread-001', 'msg-123');
+    expect(connector.send).toHaveBeenCalledWith(
+      'ext-001',
+      expect.objectContaining({
+        replyTo: {
+          externalMessageId: 'msg-123',
+          fromSelf: false,
+          author: 'alice@s.whatsapp.net',
+          text: 'can you check this?',
+        },
+      }),
+    );
+  });
+
+  it('records the sent message in the ledger of the thread it was persisted to', async () => {
+    const connector = makeConnector(ok({ externalMessageId: 'tg-555' }));
+    const threadRepository = {
+      findById: vi.fn().mockReturnValue(ok({ id: 'thread-001', external_id: 'ext-001', channel_id: 'chan-001' })),
+      findByExternalId: vi.fn().mockReturnValue(ok({ id: 'thread-001', external_id: 'ext-001', channel_id: 'chan-001' })),
+    } as any;
+    const messageRepository = makeMessageRepo();
+    const messageRefRepository = {
+      find: vi.fn().mockReturnValue(ok(null)),
+      record: vi.fn().mockReturnValue(ok(undefined)),
+    };
+    const handler = new ChannelSendHandler({
+      channelRegistry: makeRegistry(connector),
+      threadRepository,
+      channelRepository: makeChannelRepo(),
+      messageRepository,
+      messageRefRepository,
+      logger: makeLogger(),
+    });
+
+    const result = await handler.execute(makeArgs(), makeContext());
+
+    expect(result.status).toBe('success');
+    const persisted = vi.mocked(messageRepository.insert).mock.calls[0][0] as { id: string };
+    expect(messageRefRepository.record).toHaveBeenCalledWith({
+      thread_id: 'thread-001',
+      external_id: 'tg-555',
+      direction: 'outbound',
+      message_id: persisted.id,
+      text: 'Hello from persona!',
+    });
+  });
+
+  it('records no ledger ref when the connector returns no receipt', async () => {
+    const connector = makeConnector(ok(undefined));
+    const threadRepository = {
+      findById: vi.fn().mockReturnValue(ok({ id: 'thread-001', external_id: 'ext-001', channel_id: 'chan-001' })),
+      findByExternalId: vi.fn().mockReturnValue(ok({ id: 'thread-001', external_id: 'ext-001', channel_id: 'chan-001' })),
+    } as any;
+    const messageRefRepository = {
+      find: vi.fn().mockReturnValue(ok(null)),
+      record: vi.fn().mockReturnValue(ok(undefined)),
+    };
+    const handler = new ChannelSendHandler({
+      channelRegistry: makeRegistry(connector),
+      threadRepository,
+      channelRepository: makeChannelRepo(),
+      messageRepository: makeMessageRepo(),
+      messageRefRepository,
+      logger: makeLogger(),
+    });
+
+    await handler.execute(makeArgs(), makeContext());
+
+    expect(messageRefRepository.record).not.toHaveBeenCalled();
   });
 
   it('uses unknown as requestId when context.requestId is not provided', async () => {
@@ -1558,6 +1669,25 @@ describe('Signal channel tools — actual connector/guard/SQLite boundary', () =
     ).toEqual([{ body: '**hello** 😀' }, { body: 'second' }]);
     expect(guard.checkTarget(account, self).isOk()).toBe(true);
     expect(leases.find(account, self)._unsafeUnwrap()).toBeNull();
+  });
+
+  it('does not log the Signal external ID as recipient or recipientSource on success', async () => {
+    register();
+    const info = vi.spyOn(logger, 'info');
+    answerSend = (request, socket) => {
+      reply(socket, request, { timestamp: 901, results: [recipient()] });
+    };
+    const result = await finish(
+      handler().execute({ channelId: 'signal-0', externalChatId: self, content: 'hi' }, context),
+    );
+    expect(result.status).toBe('success');
+    const sent = info.mock.calls.filter((c) => c[1] === 'channel.send: message sent successfully');
+    expect(sent).toHaveLength(1);
+    const fields = sent[0]?.[0] as Record<string, unknown>;
+    expect(fields).not.toHaveProperty('recipient');
+    expect(fields).not.toHaveProperty('recipientSource');
+    expect(JSON.stringify(info.mock.calls)).not.toContain(account);
+    info.mockRestore();
   });
 
   it.each(['runId', 'threadId', 'personaId'] as const)(

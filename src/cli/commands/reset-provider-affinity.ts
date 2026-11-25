@@ -210,7 +210,7 @@ export async function resetProviderAffinityCommand(options: {
       channel: options.channel,
       externalId: options.externalId!,
       db,
-      confirm: options.yes ? async () => true : promptForConfirmation,
+      confirm: options.yes ? () => Promise.resolve(true) : promptForConfirmation,
     });
 
     if (result.aborted) {

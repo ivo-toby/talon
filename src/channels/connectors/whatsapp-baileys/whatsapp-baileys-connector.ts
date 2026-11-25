@@ -20,6 +20,13 @@
  * - `send()` accepts a standard WhatsApp JID, e.g. `447700900000@s.whatsapp.net`
  *   for individual chats or `<groupId>@g.us` for groups.
  *
+ * Replies and reactions:
+ * - An inbound quoted reply carries its target as `replyTo`; an inbound emoji
+ *   reaction is forwarded as a reaction event (`inboundReactions`).
+ * - `send()` quotes its reply target per `replyToTrigger`, and `react()`
+ *   places or clears a reaction. Both rebuild the WhatsApp message key from
+ *   the message ledger (see `whatsapp-baileys-replies.ts`).
+ *
  * Reconnection:
  * - On `connectionUpdate` with `DisconnectReason.loggedOut`, the session is
  *   cleared and the connector stops (re-authenticate required).
@@ -27,7 +34,17 @@
  */
 
 import type pino from 'pino';
-import type { ChannelConnector, InboundEvent, AgentOutput, InboundAttachment } from '../../channel-types.js';
+import type { WASocket } from '@whiskeysockets/baileys';
+import type {
+  ChannelConnector,
+  InboundEvent,
+  AgentOutput,
+  InboundAttachment,
+  InboundReaction,
+  MessageTarget,
+  SendReceipt,
+} from '../../channel-types.js';
+import { resolveReplyToTriggerMode, shouldSendAsReply } from '../../channel-types.js';
 import type { Result } from '../../../core/types/result.js';
 import { ok, err } from '../../../core/types/result.js';
 import { ChannelError } from '../../../core/errors/error-types.js';
@@ -45,11 +62,19 @@ import {
   type ResolvedBaileysImageSettings,
 } from './whatsapp-baileys-images.js';
 import type { WhatsAppBaileysConfig } from './whatsapp-baileys-types.js';
+import {
+  buildMessageKey,
+  buildQuotedMessage,
+  extractQuotedContext,
+  extractReaction,
+} from './whatsapp-baileys-replies.js';
 import { isBaileysInternalRejection } from './whatsapp-baileys-rejection-matcher.js';
 
-/** Baileys socket type — intentionally loose to keep Baileys as an optional dependency. */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type BaileysSocket = any;
+/**
+ * Baileys socket type. Type-only import: erased at compile time, so Baileys
+ * stays an optional runtime dependency (loaded via dynamic import in start()).
+ */
+type BaileysSocket = WASocket;
 
 /** Loose representation of a Baileys WAMessage for the inbound handler. */
 interface InboundWAMessage {
@@ -179,9 +204,7 @@ export class WhatsAppBaileysConnector implements ChannelConnector {
         auth: state,
         version,
         browser: this.config.browser ?? Browsers.appropriate('Talon'),
-        logger: this.logger.child({ component: 'baileys' }) as unknown as ReturnType<
-          typeof pino
-        >,
+        logger: this.logger.child({ component: 'baileys' }),
         markOnlineOnConnect: this.config.markOnlineOnConnect ?? false,
       });
 
@@ -190,16 +213,20 @@ export class WhatsAppBaileysConnector implements ChannelConnector {
       // If stop() interleaved between makeWASocket and now, tear the socket
       // down and bail before wiring up handlers that would keep it alive.
       if (this.stopRequested) {
-        try {
-          sock.end(undefined);
-        } catch {
-          // ignore
-        }
+        this.endSocket(sock);
         this.sock = null;
         return;
       }
 
-      sock.ev.on('creds.update', saveCreds);
+      sock.ev.on('creds.update', () => {
+        // saveCreds is async; a failed write must not become an unhandled rejection.
+        Promise.resolve(saveCreds()).catch((saveErr: unknown) => {
+          this.logger.warn(
+            { channelName: this.name, err: saveErr },
+            'whatsapp-baileys: failed to save credentials',
+          );
+        });
+      });
 
       return await new Promise<void>((resolve, reject) => {
         let settled = false;
@@ -222,8 +249,7 @@ export class WhatsAppBaileysConnector implements ChannelConnector {
             // Self-chat messages may arrive under either format, so store both.
             this.selfIds.clear();
             const userPn = sock.user?.id;
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            const userLid = (sock.user as any)?.lid as string | undefined;
+            const userLid = sock.user?.lid;
             if (userPn) this.selfIds.add(userPn.replace(/@.*$/, '').replace(/:\d+$/, ''));
             if (userLid) this.selfIds.add(userLid.replace(/@.*$/, '').replace(/:\d+$/, ''));
             const allowedSenders = this.config.allowedSenders;
@@ -316,6 +342,7 @@ export class WhatsAppBaileysConnector implements ChannelConnector {
     }
   }
 
+  // eslint-disable-next-line @typescript-eslint/require-await -- shutdown deliberately does not wait on Baileys' async end()
   async stop(): Promise<void> {
     if (this.stopRequested) {
       // Already stopped. The grace timer scheduled by the original stop()
@@ -334,11 +361,7 @@ export class WhatsAppBaileysConnector implements ChannelConnector {
 
     this.running = false;
     if (this.sock) {
-      try {
-        this.sock.end(undefined);
-      } catch {
-        // ignore errors during shutdown
-      }
+      this.endSocket(this.sock);
       this.sock = null;
     }
 
@@ -351,6 +374,21 @@ export class WhatsAppBaileysConnector implements ChannelConnector {
     this.logger.info({ channelName: this.name }, 'whatsapp-baileys connector stopped');
   }
 
+  /**
+   * Tear a socket down without blocking on it. `end()` is async in current
+   * Baileys; sync throws and rejections during shutdown are ignored (late
+   * rejections are covered by the rejection shield).
+   */
+  private endSocket(sock: BaileysSocket): void {
+    try {
+      Promise.resolve(sock.end(undefined)).catch(() => {
+        // ignore errors during shutdown
+      });
+    } catch {
+      // ignore errors during shutdown
+    }
+  }
+
   onMessage(handler: (event: InboundEvent) => void | Promise<void>): void {
     this.handler = handler;
   }
@@ -358,18 +396,62 @@ export class WhatsAppBaileysConnector implements ChannelConnector {
   async send(
     externalThreadId: string,
     output: AgentOutput,
-  ): Promise<Result<void, ChannelError>> {
+  ): Promise<Result<SendReceipt | void, ChannelError>> {
     if (!this.running || !this.sock) {
       return err(new ChannelError('whatsapp-baileys connector is not running'));
     }
     const text = this.format(output.body);
+    const mode = resolveReplyToTriggerMode(this.config.replyToTrigger);
+    const quoteTarget = shouldSendAsReply(
+      output.replyTo,
+      mode,
+      externalThreadId.endsWith('@g.us'),
+    )
+      ? output.replyTo
+      : undefined;
     try {
-      await this.sock.sendMessage(externalThreadId, { text });
-      return ok(undefined);
+      const sent =
+        quoteTarget !== undefined
+          ? await this.sock.sendMessage(
+              externalThreadId,
+              { text },
+              { quoted: buildQuotedMessage(externalThreadId, quoteTarget) },
+            )
+          : await this.sock.sendMessage(externalThreadId, { text });
+      const sentId = sent?.key?.id;
+      return typeof sentId === 'string' && sentId !== ''
+        ? ok({ externalMessageId: sentId })
+        : ok(undefined);
     } catch (sendErr) {
       const cause = sendErr instanceof Error ? sendErr : undefined;
       return err(
         new ChannelError(`whatsapp-baileys send failed: ${String(sendErr)}`, cause),
+      );
+    }
+  }
+
+  /**
+   * Place an emoji reaction on a message, or clear this account's reaction
+   * when `emoji` is empty (WhatsApp removes a reaction by sending an empty
+   * one for the same message key).
+   */
+  async react(
+    externalThreadId: string,
+    target: MessageTarget,
+    emoji: string,
+  ): Promise<Result<void, ChannelError>> {
+    if (!this.running || !this.sock) {
+      return err(new ChannelError('whatsapp-baileys connector is not running'));
+    }
+    try {
+      await this.sock.sendMessage(externalThreadId, {
+        react: { text: emoji, key: buildMessageKey(externalThreadId, target) },
+      });
+      return ok(undefined);
+    } catch (reactErr) {
+      const cause = reactErr instanceof Error ? reactErr : undefined;
+      return err(
+        new ChannelError(`whatsapp-baileys reaction failed: ${String(reactErr)}`, cause),
       );
     }
   }
@@ -565,6 +647,18 @@ export class WhatsAppBaileysConnector implements ChannelConnector {
     // come before any media download — TASK-007). Unwrapping mirrors the
     // pinned Baileys normalize contract (see whatsapp-baileys-images.ts).
     const unwrapped = unwrapMessageContent(msg.message);
+
+    // ── Reactions ─────────────────────────────────────────────────────
+    // A reaction is not a message: it has no text and no trigger word, and it
+    // passed the same sender/group authorization as a message above. The
+    // pipeline forwards it only when it targets a message Talon sent.
+    const reaction = extractReaction(unwrapped);
+    if (reaction !== undefined) {
+      await this.handleInboundReaction(msg, jid, reaction);
+      return;
+    }
+
+    const replyTo = extractQuotedContext(unwrapped);
     const { text: extractedText, candidates } = extractTextAndMediaCandidates(unwrapped);
     let text = extractedText;
 
@@ -613,15 +707,7 @@ export class WhatsAppBaileysConnector implements ChannelConnector {
       attachments = await fetchSelectedImageAttachments(msg, selection.images, this.imageMedia);
     }
 
-    const rawTimestamp = msg.messageTimestamp;
-    let epochSeconds = 0;
-    if (typeof rawTimestamp === 'number') {
-      epochSeconds = rawTimestamp;
-    } else if (typeof rawTimestamp === 'object' && rawTimestamp !== null && 'low' in rawTimestamp) {
-      // Baileys/Protobuf Long-like object with {low, high, unsigned} fields.
-      epochSeconds = (rawTimestamp.high >>> 0) * 0x100000000 + (rawTimestamp.low >>> 0);
-    }
-    const epochMs = epochSeconds * 1000;
+    const epochMs = messageEpochMs(msg.messageTimestamp);
 
     // For group messages the individual sender is in key.participant; jid is the group.
     // Participant is guaranteed non-null here — groups without a participant are dropped above.
@@ -634,6 +720,8 @@ export class WhatsAppBaileysConnector implements ChannelConnector {
       senderId,
       idempotencyKey: msg.key.id,
       content: text,
+      externalMessageId: msg.key.id,
+      ...(replyTo !== undefined ? { replyTo } : {}),
       ...(attachments !== undefined ? { attachments } : {}),
       timestamp: epochMs,
       raw: msg,
@@ -647,6 +735,44 @@ export class WhatsAppBaileysConnector implements ChannelConnector {
       return;
     }
 
+    try {
+      await this.handler(event);
+    } catch (handlerErr) {
+      this.logger.error(
+        { channelName: this.name, err: handlerErr },
+        'whatsapp-baileys: message handler threw',
+      );
+    }
+  }
+
+  /**
+   * Forwards an authorized inbound reaction as a reaction event. Removed
+   * reactions (empty emoji) are dropped here; the pipeline decides whether
+   * the target is one of Talon's messages.
+   */
+  private async handleInboundReaction(
+    msg: InboundWAMessage,
+    jid: string,
+    reaction: InboundReaction,
+  ): Promise<void> {
+    if (this.config.inboundReactions === false || reaction.emoji === '' || !msg.key.id) {
+      return;
+    }
+    if (!this.handler) {
+      this.logger.warn({ channelName: this.name }, 'whatsapp-baileys: no handler registered');
+      return;
+    }
+    const event: InboundEvent = {
+      channelType: this.type,
+      channelName: this.name,
+      externalThreadId: jid,
+      senderId: jid.endsWith('@g.us') ? (msg.key.participant ?? jid) : jid,
+      idempotencyKey: msg.key.id,
+      content: '',
+      reaction,
+      timestamp: messageEpochMs(msg.messageTimestamp),
+      raw: msg,
+    };
     try {
       await this.handler(event);
     } catch (handlerErr) {
@@ -713,4 +839,18 @@ export class WhatsAppBaileysConnector implements ChannelConnector {
     }, this.shieldTeardownGraceMs);
     if (typeof timer.unref === 'function') timer.unref();
   }
+}
+
+/**
+ * Converts a Baileys message timestamp (seconds, as a number or a protobuf
+ * Long-like `{low, high, unsigned}` object) to epoch milliseconds.
+ */
+function messageEpochMs(rawTimestamp: InboundWAMessage['messageTimestamp']): number {
+  let epochSeconds = 0;
+  if (typeof rawTimestamp === 'number') {
+    epochSeconds = rawTimestamp;
+  } else if (typeof rawTimestamp === 'object' && rawTimestamp !== null && 'low' in rawTimestamp) {
+    epochSeconds = (rawTimestamp.high >>> 0) * 0x100000000 + (rawTimestamp.low >>> 0);
+  }
+  return epochSeconds * 1000;
 }

@@ -70,8 +70,8 @@ Examples:
 | Tier | Use when intent suggests | Claude provider | Gemini provider |
 |---|---|---|---|
 | `strong` | review, audit, analyze, plan, architect | `claude-opus-4-6` | `gemini-2.5-pro` |
-| `balanced` | summarize, draft, write, general assistance | `claude-sonnet-4-6` | `gemini-2.5-flash` |
-| `fast` | classify, tag, triage, quick, simple | `claude-haiku-4-5` | `gemini-2.5-flash` |
+| `balanced` | summarize, draft, write, general assistance | `claude-sonnet-5-5` | `gemini-2.5-flash` |
+| `fast` | classify, tag, triage, quick, simple | `claude-haiku-5-5` | `gemini-2.5-flash` |
 
 **`backgroundProvider`** *(optional)* — provider used when this persona spawns a background agent. Resolution order: explicit tool arg → `backgroundProvider` → persona's foreground `provider` (only if it is also enabled under `backgroundAgent.providers`) → `backgroundAgent.defaultProvider`. Set when the foreground provider is unsuitable for background work (e.g. local Ollama running short-context models). Must be enabled under `backgroundAgent.providers` — the daemon refuses to start otherwise.
 
@@ -87,6 +87,7 @@ Use these exact labels.
 |---|---|---|
 | memory, remember, context, knowledge | `memory.access:*` | |
 | message, notify, send, communicate | | `channel.send:*` |
+| react, emoji, acknowledge, thumbs up | `channel.react:*` | |
 | search, fetch, http, api | `net.http` | |
 | queue async work, background jobs | `subagent.background` | |
 | ask another agent inline, specialist consultation | `subagent.invoke` | |

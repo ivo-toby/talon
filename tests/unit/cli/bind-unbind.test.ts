@@ -81,27 +81,31 @@ describe('bind()', () => {
 
   it('throws when persona not found', async () => {
     const p = writeYaml(fullConfig);
-    await expect(bind({ persona: 'nonexistent', channel: 'my-telegram', configPath: p }))
-      .rejects.toThrow(/Persona.*not found/);
+    await expect(
+      bind({ persona: 'nonexistent', channel: 'my-telegram', configPath: p }),
+    ).rejects.toThrow(/Persona.*not found/);
   });
 
   it('throws when channel not found', async () => {
     const p = writeYaml(fullConfig);
-    await expect(bind({ persona: 'assistant', channel: 'nonexistent', configPath: p }))
-      .rejects.toThrow(/Channel.*not found/);
+    await expect(
+      bind({ persona: 'assistant', channel: 'nonexistent', configPath: p }),
+    ).rejects.toThrow(/Channel.*not found/);
   });
 
   it('throws on duplicate binding', async () => {
     const p = writeYaml(fullConfig);
     await bind({ persona: 'assistant', channel: 'my-telegram', configPath: p });
-    await expect(bind({ persona: 'assistant', channel: 'my-telegram', configPath: p }))
-      .rejects.toThrow(/already bound/);
+    await expect(
+      bind({ persona: 'assistant', channel: 'my-telegram', configPath: p }),
+    ).rejects.toThrow(/already bound/);
   });
 
   it('rejects invalid persona name', async () => {
     const p = writeYaml(fullConfig);
-    await expect(bind({ persona: 'bad name', channel: 'my-telegram', configPath: p }))
-      .rejects.toThrow(/invalid/);
+    await expect(
+      bind({ persona: 'bad name', channel: 'my-telegram', configPath: p }),
+    ).rejects.toThrow(/invalid/);
   });
 });
 
@@ -118,14 +122,16 @@ describe('unbind()', () => {
 
   it('throws when binding does not exist', async () => {
     const p = writeYaml(fullConfig);
-    await expect(unbind({ persona: 'assistant', channel: 'my-telegram', configPath: p }))
-      .rejects.toThrow(/No binding exists/);
+    await expect(
+      unbind({ persona: 'assistant', channel: 'my-telegram', configPath: p }),
+    ).rejects.toThrow(/No binding exists/);
   });
 
   it('throws when no bindings array exists', async () => {
     const p = writeYaml('channels: []\npersonas: []\n');
-    await expect(unbind({ persona: 'assistant', channel: 'my-telegram', configPath: p }))
-      .rejects.toThrow(/No binding exists/);
+    await expect(
+      unbind({ persona: 'assistant', channel: 'my-telegram', configPath: p }),
+    ).rejects.toThrow(/No binding exists/);
   });
 
   it('promotes next binding to default when removing default', async () => {
@@ -141,5 +147,105 @@ describe('unbind()', () => {
     expect(bindings).toHaveLength(1);
     expect(bindings[0]!.persona).toBe('coder');
     expect(bindings[0]!.isDefault).toBe(true);
+  });
+});
+
+describe('bind() and unbind() with --thread', () => {
+  const TOPIC = '-1004452318413:42';
+
+  function bindingsOf(p: string): Array<Record<string, unknown>> {
+    return (readYaml(p).bindings ?? []) as Array<Record<string, unknown>>;
+  }
+
+  it('adds a thread-scoped binding without making it a default', async () => {
+    const p = writeYaml(fullConfig);
+    const result = await bind({
+      persona: 'coder',
+      channel: 'my-telegram',
+      thread: TOPIC,
+      configPath: p,
+    });
+
+    expect(result).toEqual({ persona: 'coder', channel: 'my-telegram', thread: TOPIC });
+    expect(bindingsOf(p)).toEqual([{ persona: 'coder', channel: 'my-telegram', thread: TOPIC }]);
+  });
+
+  it('writes the thread id so it reads back as the same string', async () => {
+    const p = writeYaml(fullConfig);
+    await bind({
+      persona: 'coder',
+      channel: 'my-telegram',
+      thread: '-1004452318413',
+      configPath: p,
+    });
+    expect(String(bindingsOf(p)[0]!.thread)).toBe('-1004452318413');
+  });
+
+  it('lets a thread binding and a channel binding coexist for the same persona', async () => {
+    const p = writeYaml(fullConfig);
+    await bind({ persona: 'assistant', channel: 'my-telegram', configPath: p });
+    await bind({ persona: 'assistant', channel: 'my-telegram', thread: TOPIC, configPath: p });
+
+    const bindings = bindingsOf(p);
+    expect(bindings).toHaveLength(2);
+    expect(bindings[0]).toMatchObject({ isDefault: true });
+    expect(bindings[1]).toMatchObject({ thread: TOPIC });
+  });
+
+  it('does not count a thread binding when choosing the channel default', async () => {
+    const p = writeYaml(fullConfig);
+    await bind({ persona: 'coder', channel: 'my-telegram', thread: TOPIC, configPath: p });
+    await bind({ persona: 'assistant', channel: 'my-telegram', configPath: p });
+
+    const channelLevel = bindingsOf(p).find((b) => b.thread === undefined);
+    expect(channelLevel).toMatchObject({ persona: 'assistant', isDefault: true });
+  });
+
+  it('refuses a second persona on the same thread', async () => {
+    const p = writeYaml(fullConfig);
+    await bind({ persona: 'coder', channel: 'my-telegram', thread: TOPIC, configPath: p });
+    await expect(
+      bind({ persona: 'assistant', channel: 'my-telegram', thread: TOPIC, configPath: p }),
+    ).rejects.toThrow(/already bound to persona "coder"/);
+  });
+
+  it('rejects an empty thread id', async () => {
+    const p = writeYaml(fullConfig);
+    await expect(
+      bind({ persona: 'coder', channel: 'my-telegram', thread: '  ', configPath: p }),
+    ).rejects.toThrow(/non-empty thread ID/);
+  });
+
+  it('unbinds only the named thread', async () => {
+    const p = writeYaml(fullConfig);
+    await bind({ persona: 'assistant', channel: 'my-telegram', configPath: p });
+    await bind({ persona: 'assistant', channel: 'my-telegram', thread: TOPIC, configPath: p });
+
+    await unbind({ persona: 'assistant', channel: 'my-telegram', thread: TOPIC, configPath: p });
+
+    expect(bindingsOf(p)).toEqual([
+      { persona: 'assistant', channel: 'my-telegram', isDefault: true },
+    ]);
+  });
+
+  it('unbinding the channel-level binding leaves thread bindings in place', async () => {
+    const p = writeYaml(fullConfig);
+    await bind({ persona: 'assistant', channel: 'my-telegram', configPath: p });
+    await bind({ persona: 'assistant', channel: 'my-telegram', thread: TOPIC, configPath: p });
+
+    await unbind({ persona: 'assistant', channel: 'my-telegram', configPath: p });
+
+    const bindings = bindingsOf(p);
+    expect(bindings).toEqual([{ persona: 'assistant', channel: 'my-telegram', thread: TOPIC }]);
+    // A thread binding is never promoted to channel default.
+    expect(bindings[0]!.isDefault).toBeUndefined();
+  });
+
+  it('errors when the thread binding does not exist', async () => {
+    const p = writeYaml(fullConfig);
+    await bind({ persona: 'assistant', channel: 'my-telegram', configPath: p });
+    await expect(
+      unbind({ persona: 'assistant', channel: 'my-telegram', thread: TOPIC, configPath: p }),
+    ).rejects.toThrow(/No binding exists/);
   });
 });

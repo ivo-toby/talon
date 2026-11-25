@@ -122,7 +122,7 @@ const PersonaExecutionEnvSchema = z.object({
 
 export const PersonaConfigSchema = z.object({
   name: z.string().min(1),
-  model: z.string().default('claude-sonnet-4-6'),
+  model: z.string().default('claude-sonnet-5-5'),
   provider: z.string().trim().min(1).optional(),
   reasoningEffort: ReasoningEffortSchema.optional(),
   /**
@@ -207,6 +207,17 @@ export const BindingConfigSchema = z.object({
   persona: z.string().min(1),
   channel: z.string().min(1),
   isDefault: z.boolean().default(false),
+  /**
+   * Binds the persona to ONE conversation on the channel instead of the whole
+   * channel: the channel-specific thread ID, e.g. a Telegram chat ID
+   * (`'-1001234567890'`) or a forum topic (`'-1001234567890:42'`). A
+   * thread-scoped binding wins over the channel's default binding. Quote the
+   * value in YAML; a bare chat ID that parses as a number is accepted too.
+   */
+  thread: z
+    .union([z.string().trim().min(1), z.number().int()])
+    .transform((value) => String(value))
+    .optional(),
 });
 
 // ---------------------------------------------------------------------------

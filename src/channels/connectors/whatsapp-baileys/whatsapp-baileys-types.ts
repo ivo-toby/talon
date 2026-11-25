@@ -59,4 +59,15 @@ export interface WhatsAppBaileysConfig {
    * Defaults to false.
    */
   allowGroupChats?: boolean;
+  /**
+   * When Talon's answer is sent as a quoted reply to the message that
+   * triggered it: `groups` (default) in group chats only, `always`, or
+   * `never`. A reply the agent requests explicitly is always quoted.
+   */
+  replyToTrigger?: 'never' | 'groups' | 'always';
+  /**
+   * Forward emoji reactions that users place on Talon's messages to the
+   * agent. Defaults to true.
+   */
+  inboundReactions?: boolean;
 }

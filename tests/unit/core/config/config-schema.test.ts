@@ -242,7 +242,7 @@ describe('PersonaConfigSchema', () => {
     const result = PersonaConfigSchema.safeParse({ name: 'assistant' });
     expect(result.success).toBe(true);
     if (result.success) {
-      expect(result.data.model).toBe('claude-sonnet-4-6');
+      expect(result.data.model).toBe('claude-sonnet-5-5');
       expect(result.data.skills).toEqual([]);
       expect(result.data.capabilities.allow).toEqual([]);
       expect(result.data.mounts).toEqual([]);

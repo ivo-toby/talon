@@ -527,7 +527,7 @@ export class SignalConnector implements SignalChannelConnector {
     connection.handshake = true;
     this.scheduleAliases(connection);
     await this.verifier?.connect(connection.epoch, connection.rpc);
-    if (this.current(connection)) await this.react();
+    if (this.current(connection)) await this.reconcileSubscription();
   }
 
   private scheduleReaction(): void {
@@ -535,11 +535,11 @@ export class SignalConnector implements SignalChannelConnector {
     this.reactionQueued = true;
     queueMicrotask(() => {
       this.reactionQueued = false;
-      if (this.running) void this.react();
+      if (this.running) void this.reconcileSubscription();
     });
   }
 
-  private async react(): Promise<void> {
+  private async reconcileSubscription(): Promise<void> {
     const connection = this.connection;
     if (!connection || !this.current(connection) || !connection.handshake) return;
     const status = this.verifier?.status();

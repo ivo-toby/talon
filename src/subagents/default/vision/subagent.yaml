@@ -1,11 +1,11 @@
 # Built-in vision sub-agent: one-shot multimodal Inspections
 # (docs/adr/0001-vision-subagent.md).
 #
-# Default model: Anthropic Claude Haiku 4.5 — the same low-cost tier the other
-# built-in sub-agents use. Primary source for its vision capability:
-# Anthropic's vision guide, "All currently supported Claude models" (Opus,
-# Sonnet, and Haiku, including Haiku 4.5) accept image inputs:
-# https://docs.anthropic.com/en/docs/build-with-claude/vision
+# Default model: Anthropic Claude Haiku 5.5 — the low-cost, lowest-latency
+# tier. Primary source for its vision capability: Anthropic's models
+# overview ("All current models support text and image input ... vision"),
+# which lists Haiku 5.5 (`claude-haiku-5-5`) among them:
+# https://platform.claude.com/docs/en/about-claude/models/overview
 #
 # The vision chain may only contain the inference adapters
 # (anthropic/openai/google/ollama). Overrides go under `subagents.vision.model`
@@ -19,7 +19,7 @@ description: "Answers one question about the current thread's Images in a single
 
 model:
   provider: anthropic
-  name: claude-haiku-4-5-20251001
+  name: claude-haiku-5-5
   maxTokens: 8192
 
 # Inspection is gated by persona assignment plus the `subagent.invoke`

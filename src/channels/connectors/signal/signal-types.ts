@@ -14,6 +14,8 @@ export interface SignalInboundEvent extends InboundEvent {
   readonly channelType: 'signal';
   readonly raw?: never;
   readonly attachments?: never;
+  readonly replyTo?: never;
+  readonly reaction?: never;
 }
 
 export interface SignalPreparedText {

@@ -53,6 +53,7 @@ vi.mock('../../../src/core/database/repositories/index.js', () => ({
   A2ATaskRepository: vi.fn().mockImplementation(() => ({})),
   ImageRepository: vi.fn().mockImplementation(() => ({})),
   ImageIngestionRepository: vi.fn().mockImplementation(() => ({})),
+  MessageRefRepository: vi.fn().mockImplementation(() => ({})),
   FindingRepository: vi.fn().mockImplementation(() => ({})),
 }));
 

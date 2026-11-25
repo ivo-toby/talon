@@ -27,6 +27,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 import { MCP_TO_INTERNAL } from './tool-filter.js';
 import { getHostToolRequestTimeoutMs } from './tool-timeouts.js';
 import { TALOND_BRIDGE_SECRET_ENV } from './host-tools-bridge-auth.js';
+import { NO_REPLY_SENTINEL } from '../channels/no-reply.js';
 import {
   IMAGE_LOOKUP_OPERATIONS,
   IMAGE_LOOKUP_DEFAULT_LIMIT,
@@ -322,7 +323,7 @@ const TOOLS = [
   {
     name: 'channel_send',
     description:
-      'Sends a message to a channel on behalf of a persona. Pass `externalChatId` to target a specific chat on the channel (e.g. a Telegram chat_id). When omitted, the tool routes to the schedule thread\'s origin chat if the run is on a persona-created schedule. If neither is available (CLI-created schedules), the tool errors — use `channel_list` to discover available chats or `channel_broadcast` to fan out.',
+'Sends a message to a channel on behalf of a persona. On a scheduled run, leave `externalChatId` out: the message is then delivered to the conversation where the schedule was created, including the exact Telegram topic. Pass `externalChatId` only to deliver somewhere else on purpose (e.g. a Telegram chat_id, or `<chat_id>:<topic_id>` for one topic); it overrides the schedule\'s origin. If the schedule has no origin (CLI-created schedules) and no `externalChatId` is given, the tool errors — use `channel_list` to discover available chats or `channel_broadcast` to fan out.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -336,15 +337,49 @@ const TOOLS = [
         },
         replyTo: {
           type: 'string' as const,
-          description: 'Optional thread or message ID to reply to',
+          description:
+            'Optional message ID to send this as a native reply to (quotes that message). Use the "(id …)" value from a "[Replying to …]" or "[Reaction: …]" header. Ignored on channels without native replies.',
         },
         externalChatId: {
           type: 'string' as const,
           description:
-            'Optional explicit recipient chat id on the target channel (e.g. Telegram chat_id, Slack channel id). Required for CLI-created scheduled tasks that have no originExternalId.',
+'Optional explicit recipient on the target channel (e.g. Telegram chat_id or `<chat_id>:<topic_id>`, Slack channel id). Leave out to answer where the run or schedule belongs. Required only for CLI-created scheduled tasks that have no origin chat.',
         },
       },
       required: ['channelId', 'content'],
+    },
+  },
+  {
+    name: 'channel_react',
+    description:
+      'Places an emoji reaction on a message in the current conversation (Telegram, WhatsApp). '
+      + 'To react to the message you are answering, pass only `emoji` and leave `messageId` out — that is the normal case. '
+      + `Use it to acknowledge without writing a reply (e.g. 👍 for "understood"): react, then make your final response exactly ${NO_REPLY_SENTINEL} so no text message is sent. `
+      + 'To react to a different message, pass its id as `messageId`. Valid ids are the "(id …)" values in "[Replying to …]" and "[Reaction: …]" headers, and the ids returned by `list: true`, which lists the recent messages of this conversation. '
+      + 'Never take an id from the database: the numbers stored with messages are delivery keys, not message ids. '
+      + 'Telegram only accepts its standard reaction set (👍 👎 ❤ 🔥 🎉 🙏 👌 🤔 👀 😁 😢 💯 and similar); an unsupported emoji returns an error naming the alternatives.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        emoji: {
+          type: 'string' as const,
+          description: 'A single emoji, e.g. 👍. Not needed when remove or list is true.',
+        },
+        messageId: {
+          type: 'string' as const,
+          description:
+            'Leave out to react to the message that started this run. Otherwise the id of another message in this conversation: an "(id …)" value from a header, or an id from `list: true`.',
+        },
+        remove: {
+          type: 'boolean' as const,
+          description: 'Remove your reaction from the message instead of adding one.',
+        },
+        list: {
+          type: 'boolean' as const,
+          description:
+            'Do not react; return the recent messages of this conversation with their ids, sender and text, newest first.',
+        },
+      },
     },
   },
   {

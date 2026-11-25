@@ -212,7 +212,7 @@ Find:
 ```yaml
 personas:
   - name: assistant
-    model: Codex-sonnet-4-6
+    model: Codex-sonnet-5-5
     provider: Codex
 ```
 
@@ -292,6 +292,12 @@ auth:
 ```
 
 #### Set the channel's `allowedChatIds` / equivalent
+
+To use one Telegram group with a separate conversation per topic, or a
+persona per topic, finish this basic setup first and then follow the
+**Topic Workspace (forum group)** flow in the `add-telegram` skill. Its
+last step can move or copy the memory and history of your existing chat into
+a topic (`talonctl move-context`).
 
 For Telegram, find the channels block and set the chat ID the bot is
 allowed to talk to (find your ID via [@userinfobot](https://t.me/userinfobot)):

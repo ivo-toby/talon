@@ -2784,6 +2784,79 @@ describe('AgentRunner', () => {
     });
   });
 
+  describe('recipient of a schedule thread', () => {
+    const notificationItem = () =>
+      makeQueueItem({
+        type: 'collaboration',
+        payload: {
+          personaId: 'persona-001',
+          kind: 'background_task_notification',
+          taskId: 'task-123',
+          status: 'completed',
+          content: '[Background Task Complete] Task task-123',
+        },
+      });
+
+    function useThread(externalId: string, metadata: string): void {
+      ctx.repos.thread.findById = vi.fn().mockReturnValue(
+        ok({ id: 'thread-001', channel_id: 'chan-001', external_id: externalId, metadata }),
+      ) as any;
+    }
+
+    it('sends the typing indicator to the origin chat of a scheduled run', async () => {
+      useThread(
+        'schedule:assistant:TalonMain:-1004452318413:42',
+        JSON.stringify({ kind: 'schedule', originExternalId: '-1004452318413:42' }),
+      );
+      mockQuery.mockReturnValue(makeAgentStream({ result: 'done' }));
+      const connector = ctx.channelRegistry.get('test-channel')!;
+
+      await runner.run(makeQueueItem({ type: 'schedule' }));
+
+      expect(connector.sendTyping).toHaveBeenCalledWith('-1004452318413:42');
+    });
+
+    it('sends no typing indicator for a schedule thread without an origin chat', async () => {
+      // Reported in production: Telegram answered "chat not found" because
+      // the synthetic thread id was used as the chat id.
+      useThread('schedule:assistant:TalonMain', '{}');
+      mockQuery.mockReturnValue(makeAgentStream({ result: 'done' }));
+      const connector = ctx.channelRegistry.get('test-channel')!;
+
+      const result = await runner.run(makeQueueItem({ type: 'schedule' }));
+
+      expect(result.isOk()).toBe(true);
+      expect(connector.sendTyping).not.toHaveBeenCalled();
+      expect(connector.send).not.toHaveBeenCalled();
+    });
+
+    it('delivers a background task notification to the origin chat', async () => {
+      useThread(
+        'schedule:assistant:TalonMain:74575531',
+        JSON.stringify({ kind: 'schedule', originExternalId: '74575531' }),
+      );
+      const connector = ctx.channelRegistry.get('test-channel')!;
+
+      const result = await runner.run(notificationItem());
+
+      expect(result.isOk()).toBe(true);
+      expect(connector.send).toHaveBeenCalledWith('74575531', {
+        body: '[Background Task Complete] Task task-123',
+      });
+    });
+
+    it('fails a background task notification that has no chat, without calling the provider', async () => {
+      useThread('schedule:assistant:TalonMain', '{}');
+      const connector = ctx.channelRegistry.get('test-channel')!;
+
+      const result = await runner.run(notificationItem());
+
+      expect(result.isErr()).toBe(true);
+      expect(result._unsafeUnwrapErr().message).toContain('no chat to deliver to');
+      expect(connector.send).not.toHaveBeenCalled();
+    });
+  });
+
   // -------------------------------------------------------------------------
   // Scheduled-run delivery contract (issue #205)
   //
@@ -6187,6 +6260,36 @@ describe('AgentRunner saved Signal lifecycle', () => {
       queue_item_id: 'queue',
     });
     // The queue processor completes ordinary items after run() resolves; the runner must not send.
+  });
+
+  it('completes a Signal-origin run whose final text is only NO_REPLY without a saved reply or send', async () => {
+    async function* stream() {
+      yield { type: 'assistant', message: { content: [{ text: 'NO_REPLY' }] } };
+      yield {
+        type: 'result',
+        subtype: 'success',
+        result: '',
+        session_id: 'no-reply-session',
+        usage: { input_tokens: 5, output_tokens: 1 },
+        total_cost_usd: 0.001,
+        is_error: false,
+      };
+    }
+    mockQuery.mockReturnValue(stream());
+    const result = await finish(new AgentRunner(ctx).run(enqueue()));
+    expect(result.isOk()).toBe(true);
+    expect(sentBodies).toEqual([]);
+    expect(sendStates).toHaveLength(0);
+    expect(queue.inspectSignalDelivery('queue', Date.now())._unsafeUnwrap()).toEqual({
+      kind: 'ordinary',
+    });
+    const run = runs.findByThread('thread')._unsafeUnwrap();
+    expect(run).toHaveLength(1);
+    expect(run[0]).toMatchObject({
+      status: 'completed',
+      session_id: 'no-reply-session',
+      queue_item_id: 'queue',
+    });
   });
 
   it.each([

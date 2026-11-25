@@ -256,6 +256,8 @@ Each skill handles: bot/app creation, credentials, config, env vars, verificatio
 - Validate with fakes first (`npm run build`, then `.agents/skills/run-talon-smoke/scripts/run-talon-smoke.sh fake --no-build`). Live validation with a real account is a separate step and has not been run by this skill.
 - No secrets in chat, captures, or logs: linking URIs, QR codes, verification codes, and challenge tokens stay in the operator's terminal.
 
+**Telegram topic workspace.** If the user wants one Telegram group with a separate conversation per topic (and optionally a different persona per topic), run the **Topic Workspace (forum group)** flow in `/add-telegram` after the basic Telegram setup works. It finds the group ID with the `/chatid` command, writes `allowGroupChats`, `allowedChatIds` and the per-chat `chats` block, and binds personas to topics with `npx talonctl bind --thread`. Its last step moves or copies the memory and history of an existing conversation into a topic with `npx talonctl move-context`.
+**Moving a conversation.** To carry memory and history from one conversation to another outside that flow (any channel, not only Telegram), use `npx talonctl move-context --channel <channel> --from <source ID> --to <target ID>`. Always run it with `--dry-run` first and show the user the preview. `--copy` keeps the source; without it the source is emptied. `npx talonctl list-threads --channel <channel>` lists the IDs.
 Ask: **"Add another channel?"** Loop until done.
 
 ### Step 5: Persona configuration
@@ -313,6 +315,7 @@ After creating a persona, show what capabilities it has and what's available.
 If yes, help the user decide which to add or remove:
 
 - For agents that should message other channels: `npx talonctl set-capabilities --persona <name> --add "channel.send:*"`
+- For agents that should react with emoji on Telegram or WhatsApp (👍 instead of a written "understood"): `npx talonctl set-capabilities --persona <name> --add "channel.react:*"`
 - For agents that need database access: `npx talonctl set-capabilities --persona <name> --add "db.query:own"`
 - For agents that delegate to other personas: `npx talonctl set-capabilities --persona <name> --add "persona.send:<target-persona>"` (one label per allowed target, so the persona can only delegate to those; `persona.send:*` allows any persona). The same label also grants `persona_list`, `persona_task_status` and `persona_task_cancel`. An unknown target name only logs a warning at startup
 - For agents that run background tasks: `npx talonctl set-capabilities --persona <name> --add "subagent.background"`

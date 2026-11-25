@@ -31,7 +31,7 @@ storage:
 
 personas:
   - name: assistant
-    model: claude-sonnet-4-6
+    model: claude-sonnet-5-5
     systemPromptFile: personas/assistant/system.md
     capabilities:
       allow:
@@ -64,7 +64,7 @@ dataDir: data
 ```yaml
 personas:
   - name: assistant
-    model: claude-sonnet-4-6
+    model: claude-sonnet-5-5
     provider: claude-code
     systemPromptFile: personas/assistant/system.md
     skills:
@@ -88,7 +88,7 @@ personas:
 
 Key points:
 
-- `model` defaults to `claude-sonnet-4-6`
+- `model` defaults to `claude-sonnet-5-5`
 - `provider` is optional and overrides the default foreground provider for that persona
 - `skills` and `subagents` default to empty arrays
 - capability labels are default-deny; grant only what the persona needs
@@ -117,7 +117,7 @@ Common fields:
 | `showToolCalls` | Optional per-channel tool-call messages |
 | `config` | Connector-specific config |
 
-Connector-specific config is covered in the [Channels guide](/docs/guides/channels).
+Connector-specific config is covered in the [Channels guide](/docs/guides/channels). Telegram and WhatsApp connectors also take `replyToTrigger` and `inboundReactions` for native replies and emoji reactions, and Telegram takes `allowGroupChats`, `requireMention` and per-chat `chats` overrides for group and topic behaviour.
 
 ## Bindings
 
@@ -129,6 +129,20 @@ bindings:
 ```
 
 Bindings route a channel to a persona. The first binding created for a channel becomes its default binding automatically.
+
+Add `thread` to bind a single conversation, such as one Telegram forum topic, to its own persona:
+
+```yaml
+bindings:
+  - persona: assistant
+    channel: my-telegram
+    isDefault: true
+  - persona: groceries
+    channel: my-telegram
+    thread: '-1004452318413:42'
+```
+
+See [Telegram topic workspaces](/docs/guides/telegram-topics).
 
 ## Queue
 

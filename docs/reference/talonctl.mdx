@@ -237,6 +237,39 @@ npx talonctl set-capabilities --persona assistant --require-approval "db.query:o
 
 ---
 
+## Conversations
+
+### `move-context`
+
+Moves or copies what makes a conversation remember to another conversation: its memory items (facts, notes, summaries, observations), its message history, and the notebook files in its `memory/` directory.
+
+```bash
+npx talonctl move-context --channel my-telegram --from 123456789 --to '-1004452318413:42'
+```
+
+| Option | Description |
+|---|---|
+| `--channel <name>` | Channel of the source conversation. Required |
+| `--from <id>` | Source thread external ID. Required. `list-threads` shows the values |
+| `--to <id>` | Target thread external ID. Required. For a Telegram topic, `<chat_id>:<topic_id>` from `/chatid` |
+| `--to-channel <name>` | Channel of the target, when it differs from `--channel` |
+| `--copy` | Leave the source unchanged instead of emptying it |
+| `--memory-only` | Carry memory items and notebook files only, not the message history |
+| `--dry-run` | Show what would be moved, change nothing |
+| `--yes` | Skip the confirmation prompt |
+
+Behaviour:
+
+- Without `--copy` the source is emptied and starts fresh. With `--copy` the source is unchanged, and repeating the copy adds nothing.
+- The target is created when it has no history yet. An existing target is merged by time, and the preview warns about it.
+- Both affected conversations get a session reset, so the next message starts a fresh session that reads the migrated context. The daemon does not need a restart.
+- The command refuses while either conversation has queued or running work.
+- A memory item whose ID the target already has with different content is left where it is. One the target already holds identically (from an earlier `--copy`) is removed from the source on a move, and a move after a copy leaves no duplicate messages.
+- Images and Findings are not carried over. In move mode a message that owns images stays in the source; in copy mode its text is copied without the images.
+- The reply/reaction message ledger, runs, schedules and bindings are not touched.
+
+---
+
 ## Bindings
 
 ### `bind`
@@ -249,6 +282,14 @@ npx talonctl bind --persona assistant --channel my-telegram
 
 The first binding created for a channel becomes its default binding automatically.
 
+Add `--thread <id>` to bind one conversation instead of the whole channel, for example a single Telegram forum topic:
+
+```bash
+npx talonctl bind --persona groceries --channel my-telegram --thread '-1004452318413:42'
+```
+
+A thread-scoped binding wins over the channel's default binding and is never a default itself. A conversation can have one persona; binding a second one is refused until the first is unbound. Send `/chatid` in a Telegram chat or topic to get its thread ID. Restart talond to apply.
+
 ### `unbind`
 
 Removes a persona-to-channel binding from config.
@@ -258,6 +299,12 @@ npx talonctl unbind --persona assistant --channel my-telegram
 ```
 
 If the removed binding was the default binding for that channel, Talon promotes the next remaining binding on that channel to default.
+
+With `--thread <id>` only that conversation's binding is removed; after a restart the conversation is answered by the channel default again.
+
+```bash
+npx talonctl unbind --persona groceries --channel my-telegram --thread '-1004452318413:42'
+```
 
 ---
 

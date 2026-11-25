@@ -632,7 +632,7 @@ If the saved-delivery summary cannot be read, the line reads `Signal saved: unav
 - **Live evidence.** AC-15 was run once on 2026-11-13 on one Debian 13 VM with a fake provider. See [Live validation run, 2026-11-13](#live-validation-run-2026-11-13). Long-reply chunking, relinking, attachments, disappearing messages and background-agent sends have no live evidence. Other platforms and bridge builds are not validated.
 - **Version.** Only signal-cli v0.14.9 is accepted.
 - **Media.** No attachments, voice, stickers, video, or view-once in either direction.
-- **Not offered.** Group creation and management, contact management, mentions, buttons, reactions, edits, deletes, and read receipts.
+- **Not offered.** Group creation and management, contact management, mentions, buttons, reactions, edits, deletes, and read receipts. Native replies and the `channel_react` tool are likewise unsupported on Signal, and the Telegram/WhatsApp `replyToTrigger` and `inboundReactions` options do not apply to `signal` connectors.
 - **Delivery.** Acceptance by the bridge is the success boundary. Recipient delivery is not confirmed. Events the bridge consumed before Talon's local write can be lost. Talon does not replay bridge history.
 - **No automatic resend.** A PARTIAL saved reply whose current chunk was unwritten or refused is deferred and resumes from its cursor, so do not resend it by hand. Other partial sends and every unknown send are terminal. Inspect the chat and issue a new command if you still want it.
 - **Background agents** cannot send through Signal (`EXECUTION_UNAVAILABLE`).

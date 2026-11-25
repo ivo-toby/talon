@@ -34,6 +34,37 @@ channels:
 
 ---
 
+## Replies, threads and reactions
+
+Telegram, WhatsApp Baileys and WhatsApp Business support native replies and emoji reactions in both directions.
+
+The agent sees a reply or a reaction as one bracketed line at the top of the message:
+
+```text
+[Replying to your message (id 4521): "Shall I book the 14:00 slot?"]
+yes please
+
+[Reaction: the user reacted with 👍 to your message (id 4521): "Shall I book the 14:00 slot?"]
+```
+
+The `(id …)` value is the channel's own message ID. The agent passes it to `channel_react`, or to `channel_send` as `replyTo`.
+
+| What | How it works |
+|---|---|
+| A user replies to a message | The target is resolved from Talon's message ledger and shown in the header |
+| Talon answers as a reply | Controlled per connector by `replyToTrigger`; only the first message of an answer quotes |
+| Talon reacts | The `channel_react` tool, gated by the `channel.react:*` capability |
+| Talon stays silent | A response that is only `NO_REPLY` is not delivered |
+| A user reacts to a Talon message | Starts an agent run with the reaction as the message. Disable with `inboundReactions: false` |
+
+Limits:
+
+- only reactions on messages Talon sent are forwarded; reactions on other messages, and removed reactions, are ignored
+- messages sent or received before the message ledger existed cannot be resolved: a reply to one is shown as "an earlier message", and a reaction on one is ignored
+- each forwarded reaction costs one agent run
+
+---
+
 ## Telegram
 
 Telegram uses Bot API long polling.
@@ -54,12 +85,24 @@ channels:
 | `botToken` | Required bot token from BotFather |
 | `pollingTimeoutSec` | Optional long-poll timeout in seconds. Default: `30` |
 | `allowedChatIds` | Optional allow-list of Telegram chat IDs. Use strings, for example `"123456789"` |
+| `allowGroupChats` | Answer in group and supergroup chats. Default: `false` |
+| `requireMention` | Whether a group message must address the bot (an @mention, a trigger word, or a reply to the bot). Default: `true`. Set `false` to answer every message in the allowed groups |
+| `triggerWords` | Optional case-insensitive prefixes that address the bot; the prefix is stripped |
+| `replyToTrigger` | When an answer is sent as a native reply to the message that triggered it: `groups` (default), `always`, or `never` |
+| `inboundReactions` | Forward user reactions on Talon's messages to the agent. Default: `true` |
+| `chats` | Per-chat overrides of `requireMention` and `replyToTrigger`, keyed by chat ID or by `<chat_id>:<topic_id>` for one topic. The topic entry wins over the chat entry. Does not admit the chat |
 
 Notes:
 
-- each Telegram `chat_id` becomes its own Talon thread
+- to use a forum group as a set of separate conversations, with an optional persona per topic, follow the [Telegram topic workspaces guide](/docs/guides/telegram-topics)
+- `/chatid` (or `/chatid@YourBotName`) makes the bot answer with the chat ID, the topic ID and the Talon thread key. The connector answers it; the agent never sees it
+- each Telegram `chat_id` becomes its own Talon thread; a message inside a topic uses `<chat_id>:<topic_id>`, so every topic is its own conversation
 - Telegram supports `sendTyping()`, so the daemon shows activity while the agent works
-- non-text inbound updates are ignored
+- in group chats (`allowGroupChats: true`) the bot answers an @mention, a trigger word, or a native reply to one of its own messages; with `requireMention: false` it answers every message
+- `requireMention: false` needs the bot to be a group administrator (or Group Privacy turned off in BotFather), otherwise Telegram does not deliver ordinary group messages. Set `allowedChatIds` with it, or the bot answers in any group it is added to
+- a group that sends messages while `allowGroupChats` is off is reported once in the log, with its chat ID
+- Telegram delivers user reactions in private chats, and in groups only where the bot is an administrator
+- see [Replies, threads and reactions](#replies-threads-and-reactions)
 
 ---
 
@@ -119,9 +162,12 @@ channels:
 | `allowedSenders` | Optional allow-list of bare sender IDs |
 | `selfChat` | Optional self-chat mode. Default: `false` |
 | `triggerWords` | Optional case-insensitive prefixes that must start the message |
+| `replyToTrigger` | When an answer quotes the message that triggered it: `groups` (default), `always`, or `never` |
+| `inboundReactions` | Forward user reactions on Talon's messages to the agent. Default: `true` |
 
 Notes:
 
+- quoted replies and emoji reactions work in both directions; see [Replies, threads and reactions](#replies-threads-and-reactions)
 - in normal mode, group messages are ignored
 - in self-chat mode, Talon accepts only your own "Message Yourself" thread and only `fromMe` messages
 - trigger words are stripped before the prompt reaches the agent
@@ -163,6 +209,12 @@ channels:
 | `webhookPort` | Optional webhook port. Default: `3000` when `appSecret` is set |
 | `webhookHost` | Optional bind host. Default: `0.0.0.0` |
 | `webhookPath` | Optional webhook path. Default: `/webhook` |
+| `replyToTrigger` | When an answer is sent as a contextual reply to the message that triggered it: `groups` (default), `always`, or `never`. The Cloud API has no group chats, so the default never quotes; use `always` to quote every answer |
+| `inboundReactions` | Forward user reactions on Talon's messages to the agent. Default: `true` |
+
+Notes:
+
+- contextual replies and emoji reactions work in both directions; see [Replies, threads and reactions](#replies-threads-and-reactions)
 
 ---
 

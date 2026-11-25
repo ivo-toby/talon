@@ -1,0 +1,254 @@
+---
+title: Telegram topic workspaces
+description: Use one Telegram forum group as a set of separate Talon conversations, one per topic, each with its own memory and optionally its own persona
+---
+
+# Telegram topic workspaces
+
+A Telegram group with topics turned on is a forum: instead of one chat it holds a list of topics, each with its own message stream. Talon treats every topic as a separate conversation. That makes one group a workspace: a "Groceries" topic, a "Calendar" topic and a "Homelab" topic, each with its own history and, if you want, its own persona.
+
+This guide sets that up from scratch.
+
+## What you get
+
+| | Behaviour |
+|---|---|
+| Conversation | Each topic is its own Talon thread, `<chat_id>:<topic_id>`, with its own session and memory |
+| Answers | Delivered into the topic the message came from |
+| Trigger | Optional: with `requireMention: false` every message in the topic is answered, no @mention needed |
+| Quoting | Optional: with `replyToTrigger: never` answers are plain messages instead of replies |
+| Persona | One persona for the whole group, or a different one per topic |
+| Schedules | A reminder created in a topic is delivered into that topic |
+| General | The General topic is not a separate topic thread: it uses the group's plain `<chat_id>` thread |
+
+## Before you start
+
+- A working Telegram channel in `talond.yaml` (see the [Channels guide](/docs/guides/channels)).
+- The bot can already talk to you in a private chat.
+- `allowedChatIds` lists your own chat ID. Recommended: it is what lets the `/chatid` command recognise you in a group that is not configured yet.
+
+## Step 1: Create the forum group
+
+1. Create a Telegram group and add your bot to it.
+2. Open the group settings and turn on **Topics**. Telegram converts the group into a supergroup, and its chat ID changes to one that starts with `-100`.
+3. Make the bot an **administrator**. It needs no specific admin rights.
+
+The bot has to be an administrator for two reasons. Telegram only delivers ordinary group messages to bots that are administrators or have Group Privacy turned off, and it only delivers emoji reactions in groups to administrators. If the group's member list shows "has no access to messages" next to the bot, this step is missing.
+
+## Step 2: Find the group ID
+
+Send this in the group:
+
+```text
+/chatid@YourBotName
+```
+
+The bot answers with the IDs:
+
+```text
+Chat ID: -1004452318413
+Talon thread: -1004452318413
+```
+
+Sent inside a topic, the answer also carries the topic:
+
+```text
+Chat ID: -1004452318413
+Topic ID: 42
+Talon thread: -1004452318413:42
+```
+
+`/chatid` is handled by the connector itself and never reaches the agent. It works before the group is configured, which is its purpose. When `allowedChatIds` is set, only a sender listed there (or a member of an already allowed chat) gets an answer; everyone else is ignored.
+
+If the command gets no answer, the group ID is also in the log. The first message from a group that is not enabled yet logs one warning with the `chatId`:
+
+```text
+telegram group chat is ignored because allowGroupChats is not enabled
+```
+
+## Step 3: Configure the group
+
+```yaml
+channels:
+  - name: my-telegram
+    type: telegram
+    config:
+      botToken: ${TELEGRAM_BOT_TOKEN}
+      allowGroupChats: true
+      allowedChatIds:
+        - '123456789'        # your private chat
+        - '-1004452318413'   # the forum group
+      chats:
+        '-1004452318413':
+          requireMention: false   # answer every message, no @mention
+          replyToTrigger: never   # plain answers, no quoting
+```
+
+Restart talond after changing the config.
+
+What each setting does:
+
+| Setting | Effect |
+|---|---|
+| `allowGroupChats: true` | Group chats are answered at all. Off by default |
+| `allowedChatIds` | Only these chats are answered. Always list the group when you use `requireMention: false` |
+| `chats.<chat_id>.requireMention: false` | Every message in this group is answered. Without it the bot answers an @mention, a trigger word, or a reply to one of its own messages |
+| `chats.<chat_id>.replyToTrigger: never` | Answers in this group are not sent as replies. The default, `groups`, quotes the message being answered, which helps in a busy multi-person group and is noise in a one-person topic |
+
+Settings under `chats` apply to that one chat and override the connector-wide `requireMention` and `replyToTrigger`. A key can also be a single topic, `'<chat_id>:<topic_id>'`, which overrides the chat's entry; see [Several bots in one group](#several-bots-in-one-group). Other groups on the same bot keep the defaults. Listing a chat under `chats` does not admit it: `allowGroupChats` and `allowedChatIds` still decide that.
+
+Everyone in an allowed group can talk to the bot, and with `requireMention: false` every message is one agent run.
+
+## Step 4 (optional): A persona per topic
+
+By default every topic is answered by the channel's default persona. To give a topic its own persona, bind the persona to the topic's thread. Send `/chatid@YourBotName` inside the topic to get the `Talon thread` value, then:
+
+```bash
+npx talonctl bind --persona groceries --channel my-telegram --thread '-1004452318413:42'
+```
+
+Or write it in `talond.yaml` directly:
+
+```yaml
+bindings:
+  - persona: assistant
+    channel: my-telegram
+    isDefault: true
+  - persona: groceries
+    channel: my-telegram
+    thread: '-1004452318413:42'
+  - persona: calendar
+    channel: my-telegram
+    thread: '-1004452318413:43'
+```
+
+Restart talond to apply. Then:
+
+- The bound topics are answered by `groceries` and `calendar`.
+- Every other topic, and General, are answered by `assistant`.
+- All personas speak through the same bot account. The persona decides the system prompt, skills, tools and model; the name shown in Telegram stays the bot's.
+
+Always quote the `thread` value in YAML.
+
+To undo a topic binding:
+
+```bash
+npx talonctl unbind --persona groceries --channel my-telegram --thread '-1004452318413:42'
+```
+
+Removing the entry returns the topic to the default persona at the next restart. Bind a topic before you start using it: a topic that already has history keeps that history when its persona changes, so the new persona inherits a conversation it did not have.
+
+## Several bots in one group
+
+You can put more than one bot in the same forum group and have each answer unprompted in its own topic. Each bot is a separate channel in `talond.yaml`, and each lists only its own topic under `chats`:
+
+```yaml
+channels:
+  - name: groceries-bot
+    type: telegram
+    config:
+      botToken: ${GROCERIES_BOT_TOKEN}
+      allowGroupChats: true
+      allowedChatIds: ['123456789', '-1004452318413']
+      chats:
+        '-1004452318413:42':        # the Groceries topic
+          requireMention: false
+          replyToTrigger: never
+
+  - name: calendar-bot
+    type: telegram
+    config:
+      botToken: ${CALENDAR_BOT_TOKEN}
+      allowGroupChats: true
+      allowedChatIds: ['123456789', '-1004452318413']
+      chats:
+        '-1004452318413:43':        # the Calendar topic
+          requireMention: false
+          replyToTrigger: never
+```
+
+How it behaves:
+
+- A key under `chats` is a chat ID or a `<chat_id>:<topic_id>` thread key. The topic entry wins over the chat entry, which wins over the connector-wide setting.
+- Each bot answers every message in its own topic and stays silent in the others, unless it is @mentioned or someone replies to one of its messages. A mention works in any topic.
+- A bot that answers every message still stays out of a message aimed at a different bot: one that @mentions another bot, sends another bot a command (`/cmd@other_bot`), or replies to another bot's message. Mention both bots to get both answers. A mention of a person does not silence the bot.
+- Do **not** set `requireMention: false` on the chat ID itself (`'-1004452318413'`) for more than one bot: every bot would then answer every message in every topic.
+- Make every bot a group administrator. Telegram delivers each group message to all of them, and each decides for itself.
+- Talon ignores every message sent by a bot, so the bots cannot trigger one another.
+- Each bot keeps its own history per topic. Bind each channel to its persona with a normal channel binding; no `thread` binding is needed.
+- Send `/chatid@BotName` to address one bot. A bare `/chatid` is answered by every bot that receives it.
+
+One bot or several? One bot with a [persona per topic](#step-4-optional-a-persona-per-topic) gives the same separation of behaviour with one token and one config block. Use several bots when you want a different name and avatar per topic.
+
+## Bring an existing conversation into a topic
+
+A new topic starts with no memory. If you have already been talking to the bot about the subject somewhere else, usually in your private chat, you can carry that context over so the agent in the topic knows it.
+
+Preview first:
+
+```bash
+npx talonctl move-context --channel my-telegram --from 123456789 --to '-1004452318413:42' --dry-run
+```
+
+`--from` is the conversation you have been using (`talonctl list-threads --channel my-telegram` lists them; for a private chat it is your chat ID). `--to` is the `Talon thread` value from `/chatid` sent inside the topic.
+
+Then choose:
+
+| | Command | Result |
+|---|---|---|
+| Move | `talonctl move-context … ` | The topic gets the memory and history. The source conversation is emptied and starts fresh |
+| Copy | `talonctl move-context … --copy` | The topic gets a copy. The source keeps everything |
+| Memory only | add `--memory-only` | Facts, notes, summaries and notebook files, without the message history |
+
+What is carried over: memory items (facts, notes, summaries, observations), the message history, and notebook files. What is not: images and their Findings, schedules, and the reply/reaction ledger. In move mode a message that has images stays in the source conversation.
+
+Things to know:
+
+- A main chat usually covers many subjects, and all of its context goes to the one topic. Use `--copy` if the main chat should keep its memory.
+- Talon does not need a restart. The next message in the topic starts a fresh session that reads the migrated context.
+- Run it while the agent is idle in both conversations; the command refuses otherwise.
+- Do it before you use the topic. Moving into a topic that already has history merges the two by time.
+
+## Reminders and schedules
+
+A schedule or reminder created by asking the agent inside a topic is delivered into that topic. Talon records the conversation the schedule was created in and routes the scheduled message back to it.
+
+A scheduled run can override that by passing an explicit `externalChatId` to `channel_send`. If a reminder lands in the wrong place, look at this log line, which names where the message went and why:
+
+```text
+channel.send: message sent successfully
+    recipient: "-1004452318413:42"
+    recipientSource: "schedule origin"
+```
+
+`recipientSource` is `schedule origin` when Talon chose the conversation, and `externalChatId argument` when the agent named one itself. In the second case the persona's prompt or memory is telling it to use a fixed chat ID.
+
+Schedules created with `talonctl add-schedule` have no origin conversation: their thread is named `schedule:<persona>:<channel>`, and the agent has to pass `externalChatId` for them to be delivered at all. A persona that has such schedules tends to learn one fixed chat ID and use it everywhere. To deliver a CLI-created schedule into a topic, put the topic's thread key in its prompt, for example "send the result with `externalChatId` `-1004452318413:42`". A schedule thread without an origin gets no typing indicator, since there is no chat to show it in.
+
+## Troubleshooting
+
+| Problem | Cause and fix |
+|---|---|
+| Member list shows "has no access to messages" | The bot is in Group Privacy mode. Make it an administrator |
+| Nothing happens and nothing is logged | `allowGroupChats` is off. One warning with the chat ID is logged per group; set `allowGroupChats: true` |
+| Log shows `telegram message from disallowed chat` | The group is missing from `allowedChatIds`. Add the `-100…` ID as a quoted string |
+| The bot only answers when mentioned | Set `requireMention: false` for the group, and make sure the bot is an administrator |
+| Answers arrive in General instead of the topic | The message was sent in General, or the bot is running a build from before topic support |
+| Every answer quotes my message | Set `replyToTrigger: never` for the group |
+| No "typing…" while the agent works | Talon sends the typing action into the topic every 4 seconds. If Telegram refuses it, one warning per topic is logged: `telegram refused the typing indicator`, with Telegram's reason |
+| A topic answers with the wrong persona | Check the `thread` value against `/chatid` sent inside that topic, and restart talond after changing bindings |
+| Emoji reactions on bot messages are ignored | The bot must be an administrator, and `inboundReactions` must not be `false` |
+| The topic does not know what was discussed elsewhere | Carry the context over with `talonctl move-context`; see [Bring an existing conversation into a topic](#bring-an-existing-conversation-into-a-topic) |
+| Two bots answer the same message | Both answer every message in that topic. Give each bot its own topic under `chats`, or address one with an @mention: a message that mentions another bot is left to that bot |
+| A reminder arrives in the wrong chat | See [Reminders and schedules](#reminders-and-schedules) |
+
+To see every update Telegram delivers, set `logLevel: debug`: each one logs `telegram update received` with its chat ID, chat type and topic ID, before any filter runs.
+
+## Reference
+
+| Item | Where |
+|---|---|
+| Connector settings | [Channels guide](/docs/guides/channels) |
+| `bindings[].thread` | [Config schema](/docs/reference/config-schema) |
+| `talonctl bind --thread` | [talonctl reference](/docs/reference/talonctl) |
+| `channel_react`, `channel_send` | [Host tools](/docs/reference/host-tools) |

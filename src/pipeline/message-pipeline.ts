@@ -19,6 +19,13 @@
  *    staging and therefore cannot run inside a synchronous SQLite transaction; its atomicity
  *    lives in the coordinator.
  *
+ * Native replies and reactions ride on both paths. A reply's target is resolved through the
+ * message ledger and rendered as a header line in the message content; an emoji reaction on
+ * one of Talon's messages becomes a message of its own (see `message-context.ts`). Accepted
+ * messages with a provider message ID are recorded in the ledger so later replies and
+ * reactions can find them. Signal is text-only and produces neither replies nor reactions, and
+ * its messages are never written to the ledger.
+ *
  * All expected failure paths are returned as Result errors; exceptions are never thrown across
  * the public boundary. The public boundary is async because ingestion stages bytes first.
  */
@@ -30,6 +37,7 @@ import { runResultTransaction } from '../core/database/transaction.js';
 import type { ChannelRepository } from '../core/database/repositories/channel-repository.js';
 import type { ThreadRepository } from '../core/database/repositories/thread-repository.js';
 import type { MessageRepository } from '../core/database/repositories/message-repository.js';
+import type { MessageRefRepository } from '../core/database/repositories/message-ref-repository.js';
 import type { ChannelRouter } from '../channels/channel-router.js';
 import type { QueueManager } from '../queue/queue-manager.js';
 import type { AuditLogger } from '../core/logging/audit-logger.js';
@@ -37,6 +45,15 @@ import type { InboundEvent, InboundReceipt } from '../channels/channel-types.js'
 import { MessageNormalizer } from './message-normalizer.js';
 import type { ImageIngestionRequest, ImageIngestionService } from '../images/image-ingestion.js';
 import type { NormalizedMessage, PipelineResult, PipelineStats } from './pipeline-types.js';
+import {
+  prependReplyHeader,
+  renderReactionContent,
+  renderReplyHeader,
+  type ResolvedMessageReference,
+} from './message-context.js';
+
+/** Ledger excerpt recorded for a message that carried media but no text. */
+const MEDIA_ONLY_EXCERPT = '[image]';
 
 type AcceptanceResult = Exclude<PipelineResult, 'error'>;
 type FailureReason =
@@ -73,6 +90,12 @@ export class MessagePipeline {
      * plain text path (attachments are not admitted).
      */
     private readonly imageIngestion: ImageIngestionService | null = null,
+    /**
+     * Message ledger for native replies and reactions. Optional: without it
+     * reply targets are rendered from what the connector delivered only, no
+     * provider message IDs are recorded, and reaction events are ignored.
+     */
+    private readonly messageRefs: MessageRefRepository | null = null,
   ) {}
 
   /**
@@ -97,6 +120,7 @@ export class MessagePipeline {
         case 'duplicate':
           return 'duplicate';
         case 'no_persona':
+        case 'ignored':
           return 'dropped';
       }
     });
@@ -147,6 +171,12 @@ export class MessagePipeline {
     }
     const channelId = channel.id;
 
+    // Reactions never create a thread and carry no text of their own; they are
+    // resolved against the ledger instead.
+    if (event.reaction !== undefined) {
+      return this.handleReactionEvent(event, channelId);
+    }
+
     const threadResult = this.threadRepo.findByExternalId(channelId, event.externalThreadId);
     if (threadResult.isErr()) {
       return err(this.failure(event, 'THREAD_LOOKUP_FAILED', threadResult.error));
@@ -171,10 +201,24 @@ export class MessagePipeline {
     }
 
     const normalized: Readonly<NormalizedMessage> = this.normalizer.normalize(
-      event,
+      this.withReplyContext(event, threadId),
       channelId,
       threadId,
     );
+    return this.persistAndEnqueue(event, channelId, threadId, normalized);
+  }
+
+  /**
+   * Persist with deduplication, route to a persona and enqueue. Shared by ordinary messages and
+   * reaction events, which differ only in how `normalized.content` was produced. Runs inside the
+   * acceptance transaction.
+   */
+  private persistAndEnqueue(
+    event: InboundEvent,
+    channelId: string,
+    threadId: string,
+    normalized: Readonly<NormalizedMessage>,
+  ): Result<AcceptanceResult, PipelineError> {
     const scopedIdempotencyKey = `${channelId}:${normalized.idempotencyKey}`;
     if (this.messageRepo.existsByIdempotencyKey(scopedIdempotencyKey)) {
       this.logger.debug(
@@ -199,6 +243,7 @@ export class MessagePipeline {
     if (insertResult.isErr()) {
       return err(this.failure(event, 'MESSAGE_INSERT_FAILED', insertResult.error));
     }
+    this.recordInboundRef(event, threadId, normalized.id);
 
     const personaResult = this.router.resolvePersona(channelId, threadId);
     if (personaResult.isErr()) {
@@ -323,8 +368,22 @@ export class MessagePipeline {
         );
       }
 
-      const normalized = this.normalizer.normalize(event, channelId, threadId);
-      return await this.handleImageEvent(event, ingestion, channelId, threadId, normalized);
+      const normalized = this.normalizer.normalize(
+        this.withReplyContext(event, threadId),
+        channelId,
+        threadId,
+      );
+      const imageResult = await this.handleImageEvent(
+        event,
+        ingestion,
+        channelId,
+        threadId,
+        normalized,
+      );
+      if (imageResult.isOk() && imageResult.value !== 'duplicate') {
+        this.recordInboundRef(event, threadId, normalized.id);
+      }
+      return imageResult;
     } catch (cause) {
       // Catch-all for truly unexpected errors (programming bugs, not domain failures).
       this.statsCounters.errors++;
@@ -337,6 +396,163 @@ export class MessagePipeline {
         ),
       );
     }
+  }
+
+  /**
+   * Returns the event with its content prefixed by a reply header when it is
+   * a native reply; the event itself otherwise.
+   *
+   * The target is completed from the ledger: direction tells whether Talon
+   * sent it, and the stored excerpt covers providers that deliver only an ID
+   * (WhatsApp Cloud API). What the connector delivered wins over the ledger,
+   * since a provider quote can be a hand-picked part of the message. A target
+   * the ledger does not know is still rendered, as "an earlier message", and
+   * is then added to the ledger so the id shown in the header stays usable.
+   */
+  private withReplyContext(event: InboundEvent, threadId: string): InboundEvent {
+    const reply = event.replyTo;
+    if (reply === undefined || reply.externalMessageId === '') {
+      return event;
+    }
+    const target: ResolvedMessageReference = {
+      externalMessageId: reply.externalMessageId,
+      ...(reply.fromSelf !== undefined ? { fromSelf: reply.fromSelf } : {}),
+      ...(reply.senderId !== undefined ? { senderId: reply.senderId } : {}),
+      ...(reply.text !== undefined && reply.text !== '' ? { text: reply.text } : {}),
+    };
+    const ledger = this.messageRefs?.find(threadId, reply.externalMessageId);
+    if (ledger !== undefined && ledger.isOk() && ledger.value !== null) {
+      const ref = ledger.value;
+      // The ledger is authoritative for authorship: a WhatsApp Web account is
+      // shared with its human owner, so only a recorded outbound message is
+      // known to be Talon's.
+      target.fromSelf = ref.direction === 'outbound';
+      if (target.senderId === undefined && ref.sender_id !== null) {
+        target.senderId = ref.sender_id;
+      }
+      if (target.text === undefined && ref.excerpt !== '') {
+        target.text = ref.excerpt;
+      }
+    } else if (ledger !== undefined && ledger.isErr()) {
+      this.logger.warn(
+        { threadId, err: ledger.error.message },
+        'pipeline: reply target lookup failed; rendering from connector data only',
+      );
+    } else if (ledger !== undefined) {
+      // A target from before the ledger existed. Its id is about to be shown
+      // to the agent in the header, so it must be addressable afterwards:
+      // record it from what the connector delivered. Only a provider that
+      // positively identifies the message as Talon's makes it outbound.
+      const recorded = this.messageRefs?.record({
+        thread_id: threadId,
+        external_id: reply.externalMessageId,
+        direction: reply.fromSelf === true ? 'outbound' : 'inbound',
+        ...(reply.fromSelf !== true && reply.senderId !== undefined
+          ? { sender_id: reply.senderId }
+          : {}),
+        ...(reply.text !== undefined ? { text: reply.text } : {}),
+      });
+      if (recorded !== undefined && recorded.isErr()) {
+        this.logger.warn(
+          { threadId, err: recorded.error.message },
+          'pipeline: failed to record reply target ref',
+        );
+      }
+    }
+    return {
+      ...event,
+      content: prependReplyHeader(renderReplyHeader(target, event.senderId), event.content),
+    };
+  }
+
+  /**
+   * Records the inbound message in the ledger. Best effort: the ledger is
+   * metadata for later replies and reactions, so a failed write is logged and
+   * never fails the message.
+   */
+  private recordInboundRef(event: InboundEvent, threadId: string, messageId: string): void {
+    const refs = this.messageRefs;
+    const externalMessageId = event.externalMessageId;
+    // Signal never writes to the ledger: it is text-only and has no replies or reactions.
+    if (
+      refs === null ||
+      event.channelType === 'signal' ||
+      externalMessageId === undefined ||
+      externalMessageId === ''
+    ) {
+      return;
+    }
+    const hasMedia = event.attachments !== undefined && event.attachments.length > 0;
+    const recorded = refs.record({
+      thread_id: threadId,
+      external_id: externalMessageId,
+      direction: 'inbound',
+      message_id: messageId,
+      sender_id: event.senderId,
+      // The ORIGINAL text, without any reply header added above.
+      text: event.content === '' && hasMedia ? MEDIA_ONLY_EXCERPT : event.content,
+    });
+    if (recorded.isErr()) {
+      this.logger.warn(
+        { threadId, messageId, err: recorded.error.message },
+        'pipeline: failed to record inbound message ref',
+      );
+    }
+  }
+
+  /**
+   * Handles an emoji reaction event.
+   *
+   * Only a reaction on a message Talon itself sent is forwarded: the ledger
+   * must hold the target as an outbound message of this chat. Everything else
+   * is ignored — reactions on other people's messages in a group, reactions
+   * on messages sent before the ledger existed, and removed reactions. A
+   * forwarded reaction is persisted and enqueued like a text message, on the
+   * thread the target belongs to, so the agent runs with full conversation
+   * context and can answer, react back, or stay silent.
+   */
+  private handleReactionEvent(
+    event: InboundEvent,
+    channelId: string,
+  ): Result<AcceptanceResult, PipelineError> {
+    const reaction = event.reaction;
+    const refs = this.messageRefs;
+    if (reaction === undefined || refs === null || reaction.emoji === '') {
+      this.logger.debug(
+        { channelName: event.channelName },
+        'pipeline: reaction ignored (removed, or no message ledger)',
+      );
+      return ok('ignored');
+    }
+
+    const targetResult = refs.findInChat(
+      channelId,
+      event.externalThreadId,
+      reaction.targetMessageId,
+    );
+    if (targetResult.isErr()) {
+      return err(this.failure(event, 'ROUTING_FAILED', targetResult.error));
+    }
+    const target = targetResult.value;
+    if (target === null || target.direction !== 'outbound') {
+      this.logger.debug(
+        { channelName: event.channelName, known: target !== null },
+        'pipeline: reaction ignored (target is not a message Talon sent)',
+      );
+      return ok('ignored');
+    }
+
+    const content = renderReactionContent(reaction.emoji, {
+      externalMessageId: target.external_id,
+      fromSelf: true,
+      ...(target.excerpt !== '' ? { text: target.excerpt } : {}),
+    });
+    const normalized = this.normalizer.normalize(
+      { ...event, content },
+      channelId,
+      target.thread_id,
+    );
+    return this.persistAndEnqueue(event, channelId, target.thread_id, normalized);
   }
 
   /**

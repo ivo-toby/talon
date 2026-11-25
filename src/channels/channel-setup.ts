@@ -73,6 +73,11 @@ export interface ChannelSetupDeps {
   readonly logger: pino.Logger;
   /** Absent means Signal channels are not registered (no shared wiring to construct them with). */
   readonly signal?: SignalSetupWiring;
+  /**
+   * Needed to reconcile thread-scoped bindings (`bindings[].thread`). When
+   * absent those entries are skipped with a warning.
+   */
+  readonly threadRepo?: Pick<ThreadRepository, 'findByExternalId' | 'insert'>;
 }
 
 /** Per-generation Signal wiring: dependencies by channel name and the refresh router for the generation. */
@@ -436,6 +441,20 @@ export function registerChannels(
       logger,
     });
   }
+
+  // Thread-scoped bindings run even with an empty list: removing the last
+  // entry from the YAML must still unbind its conversation.
+  reconcileThreadBindings(
+    config.bindings ?? [],
+    config.channels.map((channel) => channel.name),
+    {
+      channelRepo,
+      bindingRepo,
+      personaRepo,
+      logger,
+      ...(deps.threadRepo ? { threadRepo: deps.threadRepo } : {}),
+    },
+  );
 }
 
 /**
@@ -498,9 +517,10 @@ export function reconcileBindings(
   const { channelRepo, personaRepo, bindingRepo, logger } = deps;
 
   for (const binding of bindings) {
-    // Only reconcile default bindings; non-default (thread-scoped) bindings
-    // are managed at runtime, not via config reconciliation.
-    if (!binding.isDefault) {
+    // Only default bindings are reconciled here. Thread-scoped entries
+    // (`thread`) belong to reconcileThreadBindings, and they never act as a
+    // channel default even when `isDefault` is set on them.
+    if (!binding.isDefault || binding.thread !== undefined) {
       continue;
     }
 
@@ -562,6 +582,187 @@ export function reconcileBindings(
       logger.info(
         { channel: binding.channel, persona: binding.persona },
         'reconcileBindings: created default binding from config',
+      );
+    }
+  }
+}
+
+/** Dependencies for thread-scoped binding reconciliation. */
+export interface ReconcileThreadBindingsDeps extends ReconcileBindingsDeps {
+  readonly threadRepo?: Pick<ThreadRepository, 'findByExternalId' | 'insert'>;
+}
+
+/**
+ * Reconciles thread-scoped bindings (`bindings[].thread`) with the database.
+ *
+ * A thread-scoped binding routes ONE conversation of a channel — a Telegram
+ * chat, or a single forum topic — to a persona, ahead of the channel's
+ * default binding. For each declared entry the thread row is created when it
+ * does not exist yet (the conversation may not have sent a message), and the
+ * binding is created or pointed at the declared persona.
+ *
+ * The YAML is the source of truth for bindings it created: a `config`-owned
+ * binding on a configured channel that is no longer declared is removed, so
+ * deleting the entry returns the conversation to the channel default.
+ * Bindings created any other way (`runtime`) are never removed here; one that
+ * the YAML now declares is taken over and becomes `config`-owned.
+ *
+ * @param bindings       - The full YAML `bindings` list.
+ * @param channelNames   - Names of the configured channels; pruning is
+ *                         limited to these.
+ */
+export function reconcileThreadBindings(
+  bindings: BindingConfig[],
+  channelNames: readonly string[],
+  deps: ReconcileThreadBindingsDeps,
+): void {
+  const { channelRepo, personaRepo, bindingRepo, threadRepo, logger } = deps;
+  const declared = bindings.filter((binding) => binding.thread !== undefined);
+
+  if (threadRepo === undefined) {
+    if (declared.length > 0) {
+      logger.warn(
+        { count: declared.length },
+        'reconcileThreadBindings: no thread repository available, thread-scoped bindings skipped',
+      );
+    }
+    return;
+  }
+
+  /** channel row id -> thread row ids that the YAML declares. */
+  const declaredThreads = new Map<string, Set<string>>();
+
+  for (const binding of declared) {
+    const externalThreadId = binding.thread as string;
+    const context = {
+      channel: binding.channel,
+      persona: binding.persona,
+      thread: externalThreadId,
+    };
+
+    const channelResult = channelRepo.findByName(binding.channel);
+    if (channelResult.isErr() || channelResult.value === null) {
+      logger.warn(context, 'reconcileThreadBindings: channel not found, skipping');
+      continue;
+    }
+    const channelId = channelResult.value.id;
+
+    const personaResult = personaRepo.findByName(binding.persona);
+    if (personaResult.isErr() || personaResult.value === null) {
+      logger.warn(context, 'reconcileThreadBindings: persona not found, skipping');
+      continue;
+    }
+    const personaId = personaResult.value.id;
+
+    const threadResult = threadRepo.findByExternalId(channelId, externalThreadId);
+    if (threadResult.isErr()) {
+      logger.error(
+        { ...context, err: threadResult.error.message },
+        'reconcileThreadBindings: failed to look up thread',
+      );
+      continue;
+    }
+    let threadId = threadResult.value?.id;
+    if (threadId === undefined) {
+      const inserted = threadRepo.insert({
+        id: uuidv4(),
+        channel_id: channelId,
+        external_id: externalThreadId,
+        metadata: '{}',
+      });
+      if (inserted.isErr()) {
+        logger.error(
+          { ...context, err: inserted.error.message },
+          'reconcileThreadBindings: failed to create thread',
+        );
+        continue;
+      }
+      threadId = inserted.value.id;
+    }
+
+    const known = declaredThreads.get(channelId) ?? new Set<string>();
+    if (known.has(threadId)) {
+      logger.warn(
+        context,
+        'reconcileThreadBindings: thread is bound more than once; last entry wins',
+      );
+    }
+    known.add(threadId);
+    declaredThreads.set(channelId, known);
+
+    const existing = bindingRepo.findByChannelAndThread(channelId, threadId);
+    if (existing.isErr()) {
+      logger.error(
+        { ...context, err: existing.error.message },
+        'reconcileThreadBindings: failed to query existing binding',
+      );
+      continue;
+    }
+    if (existing.value !== null) {
+      if (existing.value.persona_id === personaId && existing.value.source === 'config') {
+        continue;
+      }
+      const claimed = bindingRepo.claimForConfig(existing.value.id, personaId);
+      if (claimed.isErr()) {
+        logger.error(
+          { ...context, err: claimed.error.message },
+          'reconcileThreadBindings: failed to update binding',
+        );
+        continue;
+      }
+      logger.info(context, 'reconcileThreadBindings: updated thread binding from config');
+      continue;
+    }
+
+    const inserted = bindingRepo.insert({
+      id: uuidv4(),
+      channel_id: channelId,
+      thread_id: threadId,
+      persona_id: personaId,
+      is_default: 0,
+      source: 'config',
+    });
+    if (inserted.isErr()) {
+      logger.error(
+        { ...context, err: inserted.error.message },
+        'reconcileThreadBindings: failed to create binding',
+      );
+      continue;
+    }
+    logger.info(context, 'reconcileThreadBindings: created thread binding from config');
+  }
+
+  // Remove config-owned bindings the YAML no longer declares.
+  for (const channelName of channelNames) {
+    const channelResult = channelRepo.findByName(channelName);
+    if (channelResult.isErr() || channelResult.value === null) {
+      continue;
+    }
+    const channelId = channelResult.value.id;
+    const scoped = bindingRepo.findThreadScopedForChannel(channelId);
+    if (scoped.isErr()) {
+      logger.warn(
+        { channel: channelName, err: scoped.error.message },
+        'reconcileThreadBindings: failed to list thread bindings',
+      );
+      continue;
+    }
+    const keep = declaredThreads.get(channelId) ?? new Set<string>();
+    for (const row of scoped.value) {
+      if (row.source !== 'config' || row.thread_id === null || keep.has(row.thread_id)) {
+        continue;
+      }
+      const removed = bindingRepo.delete(row.id);
+      if (removed.isErr()) {
+        logger.error(
+          { channel: channelName, err: removed.error.message },
+          'reconcileThreadBindings: failed to remove binding',
+        );
+        continue;
+      }
+      logger.info(
+        { channel: channelName, threadId: row.thread_id },
+        'reconcileThreadBindings: removed thread binding no longer in config',
       );
     }
   }

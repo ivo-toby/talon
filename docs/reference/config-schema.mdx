@@ -72,7 +72,7 @@ sandbox:
 ```yaml
 personas:
   - name: assistant
-    model: claude-sonnet-4-6
+    model: claude-sonnet-5-5
     provider: claude-code
     systemPromptFile: personas/assistant/system.md
     skills:
@@ -96,7 +96,7 @@ personas:
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `name` | string | required | Persona name |
-| `model` | string | `claude-sonnet-4-6` | Model identifier |
+| `model` | string | `claude-sonnet-5-5` | Model identifier |
 | `provider` | string | — | Optional provider override |
 | `systemPromptFile` | string | — | Path to `system.md` |
 | `skills` | string[] | `[]` | Attached skill names |
@@ -168,6 +168,19 @@ bindings:
 | `persona` | string | required | Persona name |
 | `channel` | string | required | Channel name |
 | `isDefault` | boolean | `false` | Marks the default binding for the channel |
+| `thread` | string | — | Binds the persona to one conversation on the channel instead of the whole channel: the channel-specific thread ID, e.g. a Telegram chat (`'-1001234567890'`) or forum topic (`'-1001234567890:42'`). Always quote it. Wins over the default binding |
+
+```yaml
+bindings:
+  - persona: assistant
+    channel: my-telegram
+    isDefault: true
+  - persona: groceries
+    channel: my-telegram
+    thread: '-1001234567890:42'
+```
+
+Thread-scoped bindings are applied at startup. The thread is created if the conversation has not sent a message yet. Removing an entry removes the binding at the next start, and the conversation falls back to the channel default. See the [Telegram topic workspaces guide](/docs/guides/telegram-topics).
 
 ---
 
@@ -488,7 +501,7 @@ subagents:
       - provider: ollama
         name: qwen3-30b
       - provider: anthropic
-        name: claude-haiku-4-5-20251001
+        name: claude-haiku-5-5
 ```
 
 | Field | Type | Default | Description |

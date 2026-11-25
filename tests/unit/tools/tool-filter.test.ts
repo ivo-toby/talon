@@ -354,9 +354,32 @@ describe('isToolAllowed', () => {
 // ALL_HOST_TOOLS
 // ---------------------------------------------------------------------------
 
+describe('channel.react capability', () => {
+  it('maps channel.react to the channel_react MCP tool only', () => {
+    expect(filterAllowedMcpTools({ allow: ['channel.react:*'], requireApproval: [] })).toEqual([
+      'channel_react',
+    ]);
+  });
+
+  it('is not granted by channel.send', () => {
+    const tools = filterAllowedMcpTools({ allow: ['channel.send:*'], requireApproval: [] });
+    expect(tools).not.toContain('channel_react');
+    expect(isToolAllowed('channel.react', { allow: ['channel.send:*'], requireApproval: [] })).toBe(
+      false,
+    );
+  });
+
+  it('is allowed by an unscoped channel.react label', () => {
+    expect(isToolAllowed('channel.react', { allow: ['channel.react'], requireApproval: [] })).toBe(
+      true,
+    );
+  });
+});
+
 describe('ALL_HOST_TOOLS', () => {
-  it('contains all fifteen host tools', () => {
-    expect(ALL_HOST_TOOLS).toHaveLength(15);
+  it('contains all sixteen host tools', () => {
+    expect(ALL_HOST_TOOLS).toHaveLength(16);
+    expect(ALL_HOST_TOOLS).toContain('channel.react');
     expect(ALL_HOST_TOOLS).toContain('schedule.manage');
     expect(ALL_HOST_TOOLS).toContain('channel.send');
     expect(ALL_HOST_TOOLS).toContain('channel.list');

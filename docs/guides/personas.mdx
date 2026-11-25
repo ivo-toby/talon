@@ -12,7 +12,7 @@ A persona is Talon's runtime identity for an agent: system prompt, optional prov
 ```yaml
 personas:
   - name: assistant
-    model: claude-sonnet-4-6
+    model: claude-sonnet-5-5
     provider: claude-code
     systemPromptFile: personas/assistant/system.md
     skills:
@@ -71,6 +71,7 @@ These are the built-in host-tool labels exposed by the CLI today:
 | `memory.access:thread` | `memory_access` |
 | `net.http:egress` | `net_http` |
 | `channel.send:*` or `channel.send:<channel>` | `channel_send` |
+| `channel.react:*` | `channel_react`: emoji reactions on messages in the current conversation (Telegram, WhatsApp). Not implied by `channel.send` |
 | `schedule.manage:own` | `schedule_manage` |
 | `db.query:own` | `db_query` |
 | `subagent.invoke` | `subagent_invoke` |
@@ -97,10 +98,10 @@ Built-in sub-agents in this repo:
 
 | Name | Model | Purpose |
 |---|---|---|
-| `session-summarizer` | `claude-sonnet-4-6` | Compress conversation history |
-| `memory-retriever` | `claude-haiku-4-5-20251001` | Retrieve relevant memory entries |
-| `memory-groomer` | `claude-haiku-4-5-20251001` | Prune and consolidate memory |
-| `file-searcher` | `claude-haiku-4-5-20251001` | Search files and return snippets |
+| `session-summarizer` | `claude-sonnet-5-5` | Compress conversation history |
+| `memory-retriever` | `claude-haiku-5-5`          | Retrieve relevant memory entries |
+| `memory-groomer` | `claude-haiku-5-5`          | Prune and consolidate memory |
+| `file-searcher` | `claude-haiku-5-5`          | Search files and return snippets |
 
 ## Background-agent profiles
 
@@ -140,6 +141,32 @@ npx talonctl unbind --persona assistant --channel my-telegram
 ```
 
 The first binding on a channel becomes the default binding automatically.
+
+### Binding one conversation
+
+A binding with `thread` routes a single conversation to a persona instead of the whole channel. It wins over the channel's default binding. The typical use is one persona per topic of a Telegram forum group:
+
+```yaml
+bindings:
+  - persona: assistant
+    channel: my-telegram
+    isDefault: true
+  - persona: groceries
+    channel: my-telegram
+    thread: '-1004452318413:42'
+```
+
+```bash
+npx talonctl bind --persona groceries --channel my-telegram --thread '-1004452318413:42'
+npx talonctl unbind --persona groceries --channel my-telegram --thread '-1004452318413:42'
+```
+
+- `thread` is the channel's own thread ID. For Telegram, send `/chatid` in the chat or topic and use the `Talon thread` value. Always quote it in YAML.
+- Thread bindings are applied when talond starts. The thread is created if the conversation has not sent a message yet.
+- Removing the entry returns the conversation to the default persona at the next start.
+- A thread binding is never a channel default, and a conversation can have one persona.
+
+See the [Telegram topic workspaces guide](/docs/guides/telegram-topics) for the full setup.
 
 ## Mounts
 

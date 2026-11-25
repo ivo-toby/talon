@@ -18,6 +18,8 @@ import {
 export interface UnbindOptions {
   persona: string;
   channel: string;
+  /** Remove the binding of this one conversation instead of the channel-level binding. */
+  thread?: string;
   configPath?: string;
 }
 
@@ -52,8 +54,26 @@ export async function unbind(options: UnbindOptions): Promise<UnbindResult> {
     );
   }
 
+  const thread = options.thread?.trim();
+  if (options.thread !== undefined) {
+    const threadIdx = doc.bindings.findIndex(
+      (b) =>
+        b.persona === options.persona &&
+        b.channel === options.channel &&
+        String(b.thread ?? '') === thread,
+    );
+    if (!thread || threadIdx === -1) {
+      throw new Error(
+        `No binding exists between persona "${options.persona}" and thread "${options.thread}" on channel "${options.channel}".`,
+      );
+    }
+    doc.bindings.splice(threadIdx, 1);
+    await writeConfigAtomic(configPath, doc);
+    return { persona: options.persona, channel: options.channel };
+  }
+
   const idx = doc.bindings.findIndex(
-    (b) => b.persona === options.persona && b.channel === options.channel,
+    (b) => b.persona === options.persona && b.channel === options.channel && b.thread === undefined,
   );
   if (idx === -1) {
     throw new Error(
@@ -61,12 +81,14 @@ export async function unbind(options: UnbindOptions): Promise<UnbindResult> {
     );
   }
 
-  const wasDefault = doc.bindings[idx]!.isDefault === true;
+  const wasDefault = doc.bindings[idx].isDefault === true;
   doc.bindings.splice(idx, 1);
 
   // If we removed the default binding, promote the next binding on this channel.
   if (wasDefault) {
-    const nextOnChannel = doc.bindings.find((b) => b.channel === options.channel);
+    const nextOnChannel = doc.bindings.find(
+      (b) => b.channel === options.channel && b.thread === undefined,
+    );
     if (nextOnChannel) {
       nextOnChannel.isDefault = true;
     }
