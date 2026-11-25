@@ -20,6 +20,8 @@ import type {
 import { ScriptRepository } from '../core/database/repositories/script-repository.js';
 import type { AuditLogger } from '../core/logging/audit-logger.js';
 import { resolveThreadRecipient } from '../daemon/schedule-thread-utils.js';
+import { createDockerEngineClient, reapBrokerContainers } from '../execution-broker/index.js';
+import type { DockerEngineClient } from '../execution-broker/docker-types.js';
 import { createApprovalService } from './approval.js';
 import { buildScriptBroker } from './config.js';
 import { createDaemonProviderFactory, type DaemonProviderDeps } from './daemon-provider.js';
@@ -67,6 +69,31 @@ export function createChannelSender(channelRegistry: Pick<ChannelRegistry, 'get'
       );
     }
   };
+}
+
+/**
+ * Force-removes the script containers that an earlier process left behind: only
+ * containers with the broker label that mount the scripts root. A failure is a
+ * warning, never a boot failure. Never throws.
+ */
+export async function reapScriptContainers(
+  config: Pick<ScriptsConfig, 'root' | 'dockerSocket'>,
+  logger: Logger,
+  client: DockerEngineClient = createDockerEngineClient({ socketPath: config.dockerSocket }),
+): Promise<void> {
+  try {
+    const reaped = await reapBrokerContainers(client, resolve(config.root));
+    if (reaped.isErr()) {
+      logger.warn(
+        { brokerCode: reaped.error.brokerCode },
+        'scripts: old script containers could not be removed',
+      );
+    } else if (reaped.value > 0) {
+      logger.warn({ count: reaped.value }, 'scripts: removed containers of an earlier process');
+    }
+  } catch {
+    logger.warn('scripts: old script containers could not be removed');
+  }
 }
 
 /** The chat of a thread: its channel name and recipient. Never throws. */

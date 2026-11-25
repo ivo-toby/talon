@@ -30,6 +30,11 @@ const STREAM_STDERR_CAP = 65_536;
 
 const FIXED_CMD = ['sleep', 'infinity'];
 
+/** Every broker container carries this label, so a reaper can find it and only it. */
+export const BROKER_LABEL = 'talon.broker';
+/** The process id of the daemon that created the container. */
+export const BROKER_PID_LABEL = 'talon.broker.pid';
+
 function invalidArgument(detail: string): ExecutionBrokerError {
   return new ExecutionBrokerError('INVALID_ARGUMENT', detail);
 }
@@ -202,6 +207,7 @@ export function createDockerBackend(
         Cmd: [...FIXED_CMD],
         User: config.user,
         NetworkDisabled: true,
+        Labels: { [BROKER_LABEL]: '1', [BROKER_PID_LABEL]: String(process.pid) },
         HostConfig: {
           NetworkMode: 'none',
           ReadonlyRootfs: true,
@@ -462,4 +468,65 @@ export function createDockerBackend(
   };
 
   return ok(backend);
+}
+
+/**
+ * Force-removes the broker containers that mount `hostPath`: containers that an
+ * earlier process left behind. A container is removed only if the daemon lists
+ * it with the broker label and a mount of `hostPath`. Returns the number removed.
+ */
+export async function reapBrokerContainers(
+  client: DockerEngineClient,
+  hostPath: string,
+): Promise<Result<number, ExecutionBrokerError>> {
+  if (!BIND_PATH_RE.test(hostPath)) {
+    return err(invalidArgument('the host path must be absolute and must not contain a colon'));
+  }
+  const filters = JSON.stringify({ label: [`${BROKER_LABEL}=1`], volume: [hostPath] });
+  const listed = await client.request({
+    method: 'GET',
+    path: `/containers/json?all=true&filters=${encodeURIComponent(filters)}`,
+  });
+  if (listed.isErr()) return err(backendFailure('docker container list request failed'));
+  if (listed.value.status !== 200) return err(backendFailure('docker container list was rejected'));
+  const parsed = parseJsonBody(listed.value.body);
+  if (parsed.isErr()) return err(parsed.error);
+  if (!Array.isArray(parsed.value)) {
+    return err(backendFailure('docker engine returned an unexpected JSON shape'));
+  }
+
+  let removed = 0;
+  let failed = false;
+  for (const item of parsed.value as unknown[]) {
+    const record = asRecord(item);
+    if (record.isErr()) continue;
+    const { Id: id, Labels: labels, Mounts: mounts } = record.value;
+    // The filters run in the daemon; check again here, so nothing else is ever removed.
+    const labelled =
+      typeof labels === 'object' &&
+      labels !== null &&
+      (labels as Record<string, unknown>)[BROKER_LABEL] === '1';
+    const mountsRoot =
+      Array.isArray(mounts) &&
+      mounts.some(
+        (mount: unknown) =>
+          typeof mount === 'object' &&
+          mount !== null &&
+          (mount as Record<string, unknown>).Source === hostPath,
+      );
+    if (typeof id !== 'string' || validateContainerId(id).isErr() || !labelled || !mountsRoot) {
+      continue;
+    }
+    const deleted = await client.request({
+      method: 'DELETE',
+      path: `/containers/${id}?force=true&v=true`,
+    });
+    if (deleted.isOk() && (deleted.value.status === 204 || deleted.value.status === 404)) {
+      removed++;
+    } else {
+      failed = true;
+    }
+  }
+  if (failed) return err(backendFailure('docker could not remove every broker container'));
+  return ok(removed);
 }

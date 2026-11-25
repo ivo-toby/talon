@@ -300,6 +300,60 @@ describe.skipIf(!enabled)('script flow against a real Docker daemon', () => {
     expect(service.lastScheduledRunFailed(PERSONA, 'mail-intake')).toBe(true);
   }, 60_000);
 
+  it('removes the container of an active run at shutdown and refuses new runs', async () => {
+    const spin = service
+      .save({
+        personaId: PERSONA,
+        threadId: 'thread-1',
+        files: [
+          {
+            path: 'script.ts',
+            content: 'export default async function (): Promise<void> {\n  while (true) {}\n}\n',
+          },
+          {
+            path: 'manifest.json',
+            content: JSON.stringify({
+              name: 'spinner',
+              description: 'Never returns.',
+              tools: ['mailbox.list'],
+              channels: [],
+              dryRunInput: null,
+            }),
+          },
+          {
+            path: 'tests.json',
+            content: JSON.stringify({
+              cases: [{ name: 'spins', input: null, stubs: {}, expect: { ok: true } }],
+            }),
+          },
+        ],
+      })
+      ._unsafeUnwrap();
+    const running = service.test({ personaId: PERSONA, versionId: spin.versionId });
+    const deadline = Date.now() + 20_000;
+    while (containerIds(root).length === 0 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    expect(containerIds(root)).toHaveLength(1);
+
+    await service.shutdown();
+    expect(containerIds(root)).toEqual([]);
+    // The test settled: its exec was refused, or its unit case failed, because the lease went away.
+    const outcome = await running;
+    if (outcome.isErr()) {
+      expect(outcome.error.scriptCode).toBe('SANDBOX');
+    } else {
+      expect(outcome.value.state).toBe('draft');
+    }
+    const later = await service.runScheduled({
+      personaId: PERSONA,
+      threadId: 'thread-1',
+      scriptName: 'mail-intake',
+      scheduleId: 's1',
+    });
+    expect(later._unsafeUnwrapErr().scriptCode).toBe('SANDBOX');
+  }, 60_000);
+
   it('removes every container it created', () => {
     expect(containerIds(root)).toEqual([]);
   });

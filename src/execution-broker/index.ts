@@ -12,6 +12,11 @@ export {
 export { ExecutionBroker } from './lifecycle.js';
 export { demuxDockerStream } from './docker-stream.js';
 export { createDockerEngineClient } from './docker-client.js';
-export { createDockerBackend } from './docker-backend.js';
+export {
+  BROKER_LABEL,
+  BROKER_PID_LABEL,
+  createDockerBackend,
+  reapBrokerContainers,
+} from './docker-backend.js';
 export { createBrokerHttpServer } from './http-server.js';
 export type { BrokerApi, BrokerHttpServerOptions } from './http-types.js';

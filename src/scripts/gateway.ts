@@ -14,7 +14,7 @@ export interface ScriptGateway {
   handleCall(message: { id: number; name: string; input: unknown }): Promise<HostMessage>;
   /** Aborts every open provider call and fails every waiting call. */
   abortAll(): void;
-  /** True once a call was refused with `CALL_LIMIT`. */
+  /** True once a call was refused with `CALL_LIMIT`: too many calls, or too much call input. */
   limitExceeded(): boolean;
   records(): CallRecord[];
 }
@@ -22,6 +22,23 @@ export interface ScriptGateway {
 const DEFAULT_MAX_CONCURRENT = 8;
 const DEFAULT_MAX_CALLS = 200;
 const DEFAULT_MAX_RESULT_CHARS = 262_144;
+/** Budget per run for the bytes of the call lines, so call input cannot fill the host memory. */
+export const MAX_CALL_INPUT_BYTES = 8 * 1024 * 1024;
+
+/** The bytes of the JSON line of a call message, as the script sent it. */
+function callLineBytes(message: { id: number; name: string; input: unknown }): number {
+  try {
+    const line = JSON.stringify({
+      t: 'call',
+      id: message.id,
+      name: message.name,
+      input: message.input,
+    });
+    return Buffer.byteLength(line ?? '', 'utf8') + 1;
+  } catch {
+    return MAX_CALL_INPUT_BYTES + 1;
+  }
+}
 
 /** Fixed texts: never tool input, tool output or provider error text. */
 const MESSAGES: Partial<Record<ScriptErrorCode, string>> = {
@@ -284,13 +301,16 @@ function buildGateway(options: GatewayOptions): Result<ScriptGateway, ScriptErro
 
   let counter = 0;
   let limitHit = false;
+  let inputBytes = 0;
   return ok({
     async handleCall(message): Promise<HostMessage> {
       counter++;
-      if (counter > maxCalls + 1 && !aborted) {
-        // Only the first call past the limit is recorded; the rest cost nothing.
+      if ((counter > maxCalls + 1 || limitHit) && !aborted) {
+        // Only the first call past a limit is recorded; the rest cost nothing.
         return failure(message.id, 'CALL_LIMIT');
       }
+      inputBytes += callLineBytes(message);
+      const overBudget = inputBytes > MAX_CALL_INPUT_BYTES;
       const entry: OpenRecord = {
         finished: false,
         entered: false,
@@ -303,6 +323,10 @@ function buildGateway(options: GatewayOptions): Result<ScriptGateway, ScriptErro
         },
       };
       all.push(entry);
+      if (overBudget && !aborted) {
+        limitHit = true;
+        return deny(message.id, entry, 'CALL_LIMIT');
+      }
       try {
         return await dispatch(message.id, message.name, message.input, entry, counter);
       } catch {

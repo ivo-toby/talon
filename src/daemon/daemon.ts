@@ -110,7 +110,10 @@ export class TalondDaemon {
         startupTimeoutMs: codexRunner.startupTimeoutMs,
       });
       if (runnerReady.isErr()) {
-        return this.failStartup('Failed to start Codex sandbox runner dependency', runnerReady.error);
+        return this.failStartup(
+          'Failed to start Codex sandbox runner dependency',
+          runnerReady.error,
+        );
       }
       this.logger.info(
         { endpoint: new URL(codexRunner.endpoint).origin },
@@ -141,7 +144,9 @@ export class TalondDaemon {
       imageContextSource: this.ctx.imageContextSource,
       a2aAborts: this.a2aAborts,
       voiceOutputSink: this.ctx.voiceOutputSink ?? undefined,
-      voiceExecutionGate: this.ctx.voiceBackendBridge?.beforeProvider.bind(this.ctx.voiceBackendBridge),
+      voiceExecutionGate: this.ctx.voiceBackendBridge?.beforeProvider.bind(
+        this.ctx.voiceBackendBridge,
+      ),
     });
     this.ctx.a2aTaskMapper?.setAbortHook((taskId) => {
       this.a2aAborts.get(taskId)?.();
@@ -214,7 +219,9 @@ export class TalondDaemon {
       }
       return this.failStartup(
         'Image startup recovery did not complete within the bound',
-        new DaemonError('boot aborted: image startup recovery outstanding (fail closed; channels not started)'),
+        new DaemonError(
+          'boot aborted: image startup recovery outstanding (fail closed; channels not started)',
+        ),
       );
     } else if (imageStartup.report?.recoveryError) {
       // Diagnostics string stays in this log-free return value; the log
@@ -349,6 +356,8 @@ export class TalondDaemon {
       }
 
       this.ctx.scheduler.stop();
+      // Before the database closes: revoke the leases of active script runs and wait for them.
+      await this.ctx.scriptService?.shutdown();
 
       await this.ctx.voiceSessionService?.shutdown();
       try {
@@ -470,6 +479,7 @@ export class TalondDaemon {
         );
       }
       context.scheduler.stop();
+      await context.scriptService?.shutdown();
       try {
         await context.voiceSessionService?.shutdown();
         await context.voiceServer?.stop();
@@ -600,7 +610,9 @@ export class TalondDaemon {
     }
     const invalidated = this.ctx.voiceAuth?.invalidateRuntime();
     if (invalidated?.isErr()) {
-      return err(new DaemonError('Failed to revoke browser voice authentication', invalidated.error));
+      return err(
+        new DaemonError('Failed to revoke browser voice authentication', invalidated.error),
+      );
     }
     if (voiceReload) {
       await voiceReload.shutdown();
@@ -622,10 +634,7 @@ export class TalondDaemon {
         this.ctx.voiceAuth.disable();
         return err(new DaemonError('Failed to reload browser voice authentication'));
       }
-      const rebound = this.ctx.voiceAuth.rebind(
-        voiceAccessToken,
-        `voice:${voicePersonaName}`,
-      );
+      const rebound = this.ctx.voiceAuth.rebind(voiceAccessToken, `voice:${voicePersonaName}`);
       if (rebound.isErr()) {
         this.ctx.voiceAuth.disable();
         return err(new DaemonError('Failed to reload browser voice authentication', rebound.error));
@@ -697,9 +706,7 @@ export class TalondDaemon {
     );
     if (loadedSkillsResult.isErr()) {
       if (voiceReload && !voiceConfigChanged) voiceReload.openAdmission();
-      return err(
-        new DaemonError(`Failed to reload skills: ${loadedSkillsResult.error.message}`),
-      );
+      return err(new DaemonError(`Failed to reload skills: ${loadedSkillsResult.error.message}`));
     }
     // Update loadedSkills in-place on the context (mutable field for reload).
     (this.ctx as unknown as { loadedSkills: DaemonContext['loadedSkills'] }).loadedSkills =
@@ -737,13 +744,16 @@ export class TalondDaemon {
       logger: this.logger,
     });
     if (newConfig.voice?.enabled && this.ctx.voiceSessionService) {
-      const voiceConnector = registerVoiceConnector({
-        channelRegistry: this.ctx.channelRegistry,
-        channelRepo: this.ctx.repos.channel,
-        threadRepository: this.ctx.repos.thread,
-        sessionService: this.ctx.voiceSessionService,
-        logger: this.logger,
-      }, BROWSER_VOICE_CHANNEL_NAME);
+      const voiceConnector = registerVoiceConnector(
+        {
+          channelRegistry: this.ctx.channelRegistry,
+          channelRepo: this.ctx.repos.channel,
+          threadRepository: this.ctx.repos.thread,
+          sessionService: this.ctx.voiceSessionService,
+          logger: this.logger,
+        },
+        BROWSER_VOICE_CHANNEL_NAME,
+      );
       if (voiceConnector.isErr()) {
         this.logger.error(
           { cause: voiceConnector.error },
@@ -767,7 +777,9 @@ export class TalondDaemon {
       imageContextSource: this.ctx.imageContextSource,
       a2aAborts: this.a2aAborts,
       voiceOutputSink: this.ctx.voiceOutputSink ?? undefined,
-      voiceExecutionGate: this.ctx.voiceBackendBridge?.beforeProvider.bind(this.ctx.voiceBackendBridge),
+      voiceExecutionGate: this.ctx.voiceBackendBridge?.beforeProvider.bind(
+        this.ctx.voiceBackendBridge,
+      ),
     });
 
     // Update config snapshot.
@@ -776,9 +788,13 @@ export class TalondDaemon {
     if (voiceReload && !voiceConfigChanged && newConfig.voice?.enabled) {
       voiceReload.openAdmission();
     } else if (voiceReload && voiceConfigChanged) {
-      this.logger.warn('daemon: reload — browser voice configuration changed; restart required to rebuild its provider and auth runtime');
+      this.logger.warn(
+        'daemon: reload — browser voice configuration changed; restart required to rebuild its provider and auth runtime',
+      );
     } else if (!voiceReload && newConfig.voice?.enabled) {
-      this.logger.warn('daemon: reload — browser voice was enabled; restart required to initialize its provider and auth runtime');
+      this.logger.warn(
+        'daemon: reload — browser voice was enabled; restart required to initialize its provider and auth runtime',
+      );
     }
 
     this.logger.info('daemon: hot-reload complete');
@@ -879,7 +895,14 @@ export class TalondDaemon {
 
         // Default: purge pending, failed, and completed. Accept override via payload.
         type QS = 'pending' | 'claimed' | 'processing' | 'completed' | 'failed' | 'dead_letter';
-        const validStatuses: readonly QS[] = ['pending', 'claimed', 'processing', 'completed', 'failed', 'dead_letter'];
+        const validStatuses: readonly QS[] = [
+          'pending',
+          'claimed',
+          'processing',
+          'completed',
+          'failed',
+          'dead_letter',
+        ];
         const requestedStatuses: QS[] = Array.isArray(command.payload?.statuses)
           ? (command.payload.statuses as string[]).filter((s): s is QS =>
               (validStatuses as readonly string[]).includes(s),
@@ -921,7 +944,8 @@ export class TalondDaemon {
             error: 'A2A is not available in this daemon',
           };
         }
-        const taskId = typeof command.payload?.taskId === 'string' ? command.payload.taskId.trim() : '';
+        const taskId =
+          typeof command.payload?.taskId === 'string' ? command.payload.taskId.trim() : '';
         if (taskId === '') {
           return {
             id: responseId,
@@ -937,7 +961,12 @@ export class TalondDaemon {
 
         const before = mapper.getTaskStatus(taskId);
         if (before.isErr()) {
-          return { id: responseId, commandId: command.id, success: false, error: before.error.message };
+          return {
+            id: responseId,
+            commandId: command.id,
+            success: false,
+            error: before.error.message,
+          };
         }
         if (before.value === null) {
           return {
@@ -949,7 +978,12 @@ export class TalondDaemon {
         }
         const cancelResult = mapper.cancelTask(taskId, reason);
         if (cancelResult.isErr()) {
-          return { id: responseId, commandId: command.id, success: false, error: cancelResult.error.message };
+          return {
+            id: responseId,
+            commandId: command.id,
+            success: false,
+            error: cancelResult.error.message,
+          };
         }
         const after = mapper.getTaskStatus(taskId);
         const state = after.isOk() && after.value ? after.value.state : before.value.state;
@@ -1014,8 +1048,6 @@ function resolveVoiceAccessToken(config: TalondConfig): string | undefined {
   const voice = config.voice;
   if (!voice?.enabled) return undefined;
   return (
-    voice.accessToken ??
-    config.auth.providers[voice.accessTokenRef]?.apiKey ??
-    config.auth.apiKey
+    voice.accessToken ?? config.auth.providers[voice.accessTokenRef]?.apiKey ?? config.auth.apiKey
   );
 }

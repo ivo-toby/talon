@@ -114,6 +114,27 @@ describe('rules', () => {
     expect(recs[2]).toMatchObject({ outcome: 'denied', errorCode: 'CALL_LIMIT' });
   });
 
+  it('ends the run with CALL_LIMIT when the call input passes 8 MiB', async () => {
+    const provider = fakeProvider(CLASSES, () => Promise.resolve(ok({ done: true })));
+    const gw = make('live', provider);
+    const big = 'x'.repeat(1_000_000);
+    for (let i = 1; i <= 8; i++) {
+      expect(await gw.handleCall(call(i, 'r', { big }))).toMatchObject({ ok: true });
+    }
+    expect(gw.limitExceeded()).toBe(false);
+    expect(await gw.handleCall(call(9, 'r', { big }))).toMatchObject({
+      ok: false,
+      code: 'CALL_LIMIT',
+    });
+    expect(gw.limitExceeded()).toBe(true);
+    // later calls cost nothing and leave no record, also small ones
+    expect(await gw.handleCall(call(10, 'r'))).toMatchObject({ code: 'CALL_LIMIT' });
+    const recs = gw.records();
+    expect(recs).toHaveLength(9);
+    expect(recs[8]).toMatchObject({ seq: 9, outcome: 'denied', errorCode: 'CALL_LIMIT' });
+    expect(provider.calls).toHaveLength(8);
+  });
+
   it('rule 1 counts denied calls too', async () => {
     const gw = make('live', fakeProvider(CLASSES), { maxCalls: 2 });
     await gw.handleCall(call(1, 'nope'));

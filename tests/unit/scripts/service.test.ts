@@ -835,6 +835,44 @@ describe('failure streaks and the memory thread', () => {
   });
 });
 
+describe('shutdown', () => {
+  it('revokes the lease of an active run, waits for it and refuses new work', async () => {
+    const s = setup();
+    const v = await s.toApproved();
+    void v;
+    let started = false;
+    s.backend.setExecStreamHandler(() => {
+      started = true;
+      return new Promise(() => {});
+    });
+    const running = s.service.runScheduled(s.live);
+    await vi.waitFor(() => expect(started).toBe(true));
+    expect(s.backend.liveContainers()).toHaveLength(1);
+    await s.service.shutdown();
+    expect(s.backend.liveContainers()).toEqual([]);
+    const report = (await running)._unsafeUnwrap();
+    expect(report).toMatchObject({ ok: false });
+    const row = s.db
+      .prepare(`SELECT ok, ended_at FROM script_runs WHERE trigger = 'schedule'`)
+      .get() as { ok: number; ended_at: number };
+    expect(row.ok).toBe(0);
+    expect(row.ended_at).toBeGreaterThan(0);
+
+    const later = await s.service.runScheduled(s.live);
+    expect(later._unsafeUnwrapErr().scriptCode).toBe('SANDBOX');
+    const test = await s.service.test({ personaId: 'p1', versionId: 'x' });
+    expect(test._unsafeUnwrapErr().scriptCode).toBe('SANDBOX');
+    await expect(s.service.shutdown()).resolves.toBeUndefined();
+  });
+
+  it('returns at once with nothing active', async () => {
+    const s = setup();
+    const started = Date.now();
+    await s.service.shutdown();
+    expect(Date.now() - started).toBeLessThan(1000);
+  });
+});
+
 describe('notifyFailure, recovery', () => {
   it('sends the fixed text to the chat of the thread and falls back to SCRIPT_FAILED', async () => {
     const s = setup();

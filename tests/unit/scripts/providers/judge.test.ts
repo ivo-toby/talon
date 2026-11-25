@@ -441,6 +441,23 @@ describe('createOpenAiCompatibleJudgeModel', () => {
     expect(e.message).not.toContain('spam');
   });
 
+  it('refuses a reply over 262,144 characters before it is parsed', async () => {
+    const parse = vi.spyOn(JSON, 'parse');
+    replyWith(`{"label":"${'s'.repeat(262_144)}"}`);
+    const model = createOpenAiCompatibleJudgeModel({ baseUrl, modelId: 'm' });
+    parse.mockClear();
+    const e = (await model.generate(request()))._unsafeUnwrapErr();
+    const parsedReply = parse.mock.calls.some(
+      ([text]) => typeof text === 'string' && text.startsWith('{"label"'),
+    );
+    parse.mockRestore();
+    expect(e.scriptCode).toBe('TOOL_FAILED');
+    expect(e.message).toContain('too long');
+    expect(parsedReply).toBe(false);
+    replyWith(`{"label":"${'s'.repeat(1000)}"}`);
+    expect((await model.generate(request())).isOk()).toBe(true);
+  });
+
   it('fails TOOL_FAILED on HTTP 500', async () => {
     respond = (res) => {
       res.statusCode = 500;

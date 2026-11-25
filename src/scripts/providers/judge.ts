@@ -21,6 +21,8 @@ const TOOL_NAME = 'model.judge';
 const MAX_SCHEMA_CHARS = 16_384;
 const MAX_INPUT_CHARS = 200_000;
 const MAX_PROMPT_BYTES = 65_536;
+/** A longer model reply is refused before it is parsed. */
+const MAX_REPLY_CHARS = 262_144;
 const FORMAT_INSTRUCTION =
   'Reply with one JSON value that matches this JSON Schema, and with nothing else:';
 
@@ -263,6 +265,9 @@ export function createOpenAiCompatibleJudgeModel(options: {
               }
             : {}),
         });
+        if (text.length > MAX_REPLY_CHARS) {
+          return err(new ScriptError('TOOL_FAILED', 'the judge reply is too long'));
+        }
         const extracted = extractJson(text);
         if (!extracted) {
           return err(new ScriptError('TOOL_FAILED', 'the judge reply is not JSON'));

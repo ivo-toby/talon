@@ -18,7 +18,7 @@ import type {
   ScriptVersionRow,
 } from '../core/database/repositories/script-repository.js';
 import { createLogger } from '../core/logging/index.js';
-import type { ExecutionBroker } from '../execution-broker/index.js';
+import { ExecutionBrokerError, type ExecutionBroker } from '../execution-broker/index.js';
 import type { ApprovalService } from './approval.js';
 import { SCRIPT_PROFILE, SCRIPT_WORKSPACE } from './config.js';
 import { runScript } from './runner.js';
@@ -115,6 +115,11 @@ export interface ScriptService {
   lastScheduledRunFailed(personaId: string, scriptName: string): boolean;
   /** Marks runs that a crashed daemon left open as failed. Call one time at start. */
   recoverStaleRuns(): Result<number, ScriptError>;
+  /**
+   * Refuses new runs and tests, revokes the leases of the active runs (so their
+   * containers go away) and waits at most 10 seconds for them to settle. Never throws.
+   */
+  shutdown(): Promise<void>;
 }
 
 /** Why a scheduled run did not start: the files changed, or no version is approved. */
@@ -138,6 +143,7 @@ export class ScriptNotRunError extends ScriptError {
 
 const MAX_REPORT_CHARS = 1_000_000;
 const CODE_CHARS = 8;
+const SHUTDOWN_WAIT_MS = 10_000;
 const NAME_MAX = 60;
 const KNOWN_CODES: ReadonlySet<string> = new Set<ScriptErrorCode>([
   'INVALID_ARGUMENT',
@@ -182,8 +188,48 @@ export function createScriptService(deps: ScriptServiceDeps): ScriptService {
   /** Version ids with a `test` in flight. */
   const testing = new Set<string>();
 
+  let closed = false;
+  /** Leases of the runs in flight, so `shutdown` can revoke them. */
+  const leases = new Set<string>();
+  /** Runs and tests in flight, so `shutdown` can wait for them. */
+  const inFlight = new Set<Promise<unknown>>();
+  type Broker = ScriptServiceDeps['broker'];
+  const broker: Broker = {
+    async createLease(input): ReturnType<Broker['createLease']> {
+      if (closed) {
+        return err(new ExecutionBrokerError('BACKEND_FAILURE', 'the script service is closed'));
+      }
+      const lease = await deps.broker.createLease(input);
+      if (lease.isOk()) {
+        if (closed) {
+          // `shutdown` started while the lease was made: it cannot see this one.
+          await deps.broker.revoke(lease.value.leaseId);
+        } else {
+          leases.add(lease.value.leaseId);
+        }
+      }
+      return lease;
+    },
+    executeStream: (request, handlers) => deps.broker.executeStream(request, handlers),
+    revoke(leaseId): ReturnType<Broker['revoke']> {
+      leases.delete(leaseId);
+      return deps.broker.revoke(leaseId);
+    },
+  };
+
+  /** Runs `fn` as tracked work, or refuses it when the service is closed. */
+  function tracked<T>(fn: () => Promise<Result<T, ScriptError>>): Promise<Result<T, ScriptError>> {
+    if (closed) {
+      return Promise.resolve(err(new ScriptError('SANDBOX', 'the script service is closed')));
+    }
+    const work = guard(fn);
+    inFlight.add(work);
+    void work.finally(() => inFlight.delete(work));
+    return work;
+  }
+
   const runDeps: RunDeps = {
-    broker: deps.broker,
+    broker,
     profile: SCRIPT_PROFILE,
     workspace: SCRIPT_WORKSPACE,
     timeoutMs: config.runTimeoutMs,
@@ -682,7 +728,7 @@ export function createScriptService(deps: ScriptServiceDeps): ScriptService {
       }
       provider = created.value;
 
-      const run = await runScript(deps.broker, {
+      const run = await runScript(broker, {
         manifest: {
           name: manifest.name,
           personaId: input.personaId,
@@ -737,7 +783,7 @@ export function createScriptService(deps: ScriptServiceDeps): ScriptService {
       }
     },
 
-    test: (input) => guard(() => testImpl(input)),
+    test: (input) => tracked(() => testImpl(input)),
 
     requestApproval: (input) => guard(() => requestApprovalImpl(input)),
 
@@ -763,7 +809,7 @@ export function createScriptService(deps: ScriptServiceDeps): ScriptService {
     },
 
     async runScheduled(input): Promise<Result<ScriptRunReport | 'skipped', ScriptError>> {
-      const result = await guard(() => runScheduledImpl(input));
+      const result = await tracked(() => runScheduledImpl(input));
       const key = `${input.personaId}\0${input.scriptName}`;
       if (result.isErr() || (result.value !== 'skipped' && !result.value.ok)) {
         failedScripts.add(key);
@@ -816,6 +862,35 @@ export function createScriptService(deps: ScriptServiceDeps): ScriptService {
         return last.isOk() && last.value !== null && last.value.ok === 0;
       } catch {
         return false;
+      }
+    },
+
+    async shutdown(): Promise<void> {
+      closed = true;
+      try {
+        const revoked = [...leases].map(async (leaseId) => {
+          leases.delete(leaseId);
+          try {
+            const result = await deps.broker.revoke(leaseId);
+            if (result.isErr()) logger.warn('scripts: a lease could not be revoked at shutdown');
+          } catch {
+            logger.warn('scripts: a lease could not be revoked at shutdown');
+          }
+        });
+        let timer: NodeJS.Timeout | undefined;
+        const bound = new Promise<'timeout'>((resolve) => {
+          timer = setTimeout(() => resolve('timeout'), SHUTDOWN_WAIT_MS);
+        });
+        const settled = Promise.allSettled([...revoked, ...inFlight]).then(
+          () => 'settled' as const,
+        );
+        const outcome = await Promise.race([settled, bound]);
+        clearTimeout(timer);
+        if (outcome === 'timeout') {
+          logger.warn({ active: inFlight.size }, 'scripts: runs were still active at shutdown');
+        }
+      } catch (error) {
+        logger.error({ err: error }, 'scripts: shutdown failed unexpectedly');
       }
     },
 

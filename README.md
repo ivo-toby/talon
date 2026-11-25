@@ -3236,7 +3236,9 @@ If the server marks an MCP tool with `readOnlyHint`, the tool is a read tool. If
 
 ### Where a script runs
 
-Script code never runs inside the Talon process. Each run gets a new Docker container with no network, a non-root user, a read-only root file system and no capabilities. The scripts root is mounted read-only. The script talks to Talon over standard input and standard output, and Talon removes the container after the run.
+Script code never runs inside the Talon process. Each run gets a new Docker container with no network, a non-root user, a read-only root file system and no capabilities. The scripts root is mounted read-only. The script talks to Talon over standard input and standard output, and Talon removes the container after the run. The tool calls of one run can carry at most 8 MiB of input. A run that sends more ends with `CALL_LIMIT`. A `model.judge` reply longer than 262,144 characters is refused.
+
+Each container has the label `talon.broker=1`. When Talon stops, it revokes the active runs and waits at most 10 seconds for them. When Talon starts, it removes the containers with this label that mount the scripts root, because an earlier process left them behind. Talon never removes a container without this label.
 
 ### Configuration
 

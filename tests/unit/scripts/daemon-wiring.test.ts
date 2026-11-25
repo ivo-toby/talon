@@ -10,6 +10,7 @@ import {
   buildScriptRuntime,
   createChannelSender,
   createChatResolver,
+  reapScriptContainers,
 } from '../../../src/scripts/daemon-wiring.js';
 import type { ScriptRuntimeDeps } from '../../../src/scripts/daemon-wiring.js';
 import { createTestDb } from '../core/database/repositories/helpers.js';
@@ -88,6 +89,54 @@ describe('createChatResolver', () => {
       { findById: () => ok(null) } as never,
     );
     expect(throwing('t1')).toBeUndefined();
+  });
+});
+
+describe('reapScriptContainers', () => {
+  const root = '/srv/scripts';
+  const fake = (listing: unknown, status = 200) => {
+    const calls: Array<{ method: string; path: string }> = [];
+    return {
+      calls,
+      client: {
+        request: (r: { method: string; path: string }) => {
+          calls.push(r);
+          return Promise.resolve(
+            ok({
+              status: r.method === 'GET' ? status : 204,
+              body: Buffer.from(r.method === 'GET' ? JSON.stringify(listing) : ''),
+            }),
+          );
+        },
+        openStream: () => Promise.reject(new Error('unused')),
+      } as never,
+    };
+  };
+
+  it('removes only labelled containers that mount the scripts root', async () => {
+    const logger = pino({ level: 'silent' });
+    const warn = vi.spyOn(logger, 'warn');
+    const f = fake([
+      { Id: 'a1', Labels: { 'talon.broker': '1' }, Mounts: [{ Source: root }] },
+      { Id: 'b2', Labels: {}, Mounts: [{ Source: root }] },
+    ]);
+    await reapScriptContainers({ root, dockerSocket: '/nope' }, logger, f.client);
+    expect(f.calls.filter((c) => c.method === 'DELETE').map((c) => c.path)).toEqual([
+      '/containers/a1?force=true&v=true',
+    ]);
+    expect(warn).toHaveBeenCalledWith({ count: 1 }, expect.any(String));
+  });
+
+  it('only warns when Docker fails, and never throws', async () => {
+    const logger = pino({ level: 'silent' });
+    const warn = vi.spyOn(logger, 'warn');
+    await expect(
+      reapScriptContainers({ root, dockerSocket: '/nope' }, logger, fake([], 500).client),
+    ).resolves.toBeUndefined();
+    await expect(
+      reapScriptContainers({ root, dockerSocket: '/nonexistent/docker.sock' }, logger),
+    ).resolves.toBeUndefined();
+    expect(warn).toHaveBeenCalledTimes(2);
   });
 });
 

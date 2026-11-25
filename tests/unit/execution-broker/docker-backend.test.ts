@@ -1,7 +1,10 @@
 import { err, ok } from 'neverthrow';
 import type { Result } from 'neverthrow';
 import { describe, expect, it } from 'vitest';
-import { createDockerBackend } from '../../../src/execution-broker/docker-backend.js';
+import {
+  createDockerBackend,
+  reapBrokerContainers,
+} from '../../../src/execution-broker/docker-backend.js';
 import { ExecutionBrokerError } from '../../../src/execution-broker/errors.js';
 import type {
   DockerBackendConfig,
@@ -158,6 +161,13 @@ describe('DockerContainerBackend.createContainer', () => {
     expect(body.HostConfig.Tmpfs['/tmp']).toContain(`size=${config.tmpfsSizeBytes}`);
     expect(body.HostConfig.Tmpfs['/tmp']).toContain('noexec');
     expect(calls[1]).toMatchObject({ method: 'POST', path: '/containers/c1/start' });
+  });
+
+  it('labels the container as a broker container of this process', async () => {
+    const { client, calls } = fakeClient(happyScript);
+    await createDockerBackend(client, config)._unsafeUnwrap().createContainer(spec);
+    const body = calls[0].body as Record<string, any>;
+    expect(body.Labels).toEqual({ 'talon.broker': '1', 'talon.broker.pid': String(process.pid) });
   });
 
   it('mounts read-write workspaces with :rw', async () => {
@@ -612,5 +622,57 @@ describe('DockerContainerBackend.execStream', () => {
       onStdout: () => undefined,
     });
     expect(result._unsafeUnwrapErr().brokerCode).toBe('BACKEND_FAILURE');
+  });
+});
+
+describe('reapBrokerContainers', () => {
+  const root = '/srv/scripts';
+  const container = (id: string, labels: Record<string, string> | null, source = root) => ({
+    Id: id,
+    Labels: labels,
+    Mounts: [{ Type: 'bind', Source: source, Destination: '/scripts' }],
+  });
+
+  it('lists with the label and volume filters and removes only labelled containers of the root', async () => {
+    const listing = [
+      container('a1', { 'talon.broker': '1', 'talon.broker.pid': '42' }),
+      container('b2', { other: 'x' }),
+      container('c3', null),
+      container('d4', { 'talon.broker': '1' }, '/elsewhere'),
+      container('e5', { 'talon.broker': '0' }),
+      { Id: '../x', Labels: { 'talon.broker': '1' }, Mounts: [{ Source: root }] },
+    ];
+    const { client, calls } = fakeClient((request) =>
+      request.method === 'GET' ? json(200, listing) : ok({ status: 204, body: Buffer.alloc(0) }),
+    );
+    expect((await reapBrokerContainers(client, root))._unsafeUnwrap()).toBe(1);
+    const list = calls[0];
+    expect(list.method).toBe('GET');
+    const query = new URLSearchParams(list.path.split('?')[1]);
+    expect(query.get('all')).toBe('true');
+    expect(JSON.parse(query.get('filters')!)).toEqual({
+      label: ['talon.broker=1'],
+      volume: [root],
+    });
+    const deletes = calls.filter((c) => c.method === 'DELETE').map((c) => c.path);
+    expect(deletes).toEqual(['/containers/a1?force=true&v=true']);
+  });
+
+  it('fails without a request for an unsafe path, and on a failed list or remove', async () => {
+    const { client, calls } = fakeClient(() => json(200, []));
+    expect((await reapBrokerContainers(client, 'relative'))._unsafeUnwrapErr().brokerCode).toBe(
+      'INVALID_ARGUMENT',
+    );
+    expect(calls).toHaveLength(0);
+    const down = fakeClient(() => json(500, {}));
+    expect((await reapBrokerContainers(down.client, root)).isErr()).toBe(true);
+    const stuck = fakeClient((request) =>
+      request.method === 'GET'
+        ? json(200, [container('a1', { 'talon.broker': '1' })])
+        : json(500, {}),
+    );
+    expect((await reapBrokerContainers(stuck.client, root))._unsafeUnwrapErr().brokerCode).toBe(
+      'BACKEND_FAILURE',
+    );
   });
 });
