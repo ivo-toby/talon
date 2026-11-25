@@ -5,6 +5,9 @@
  * from inbound event normalization through to queue submission.
  */
 
+import type { Result } from 'neverthrow';
+import type { InboundEvent } from '../channels/channel-types.js';
+
 // ---------------------------------------------------------------------------
 // NormalizedMessage
 // ---------------------------------------------------------------------------
@@ -49,10 +52,34 @@ export interface NormalizedMessage {
  * - `'duplicate'`  — message was already present (idempotency_key matched).
  * - `'no_persona'` — no persona binding found for the channel+thread pair.
  * - `'ignored'`    — a reaction event that does not target a message Talon
- *                    sent (or a removed reaction); nothing was persisted.
+ *                    sent (or a removed reaction), or a command consumed by
+ *                    the inbound command handler; nothing was persisted.
  * - `'error'`      — an unexpected error occurred (details in the Err wrapper).
  */
 export type PipelineResult = 'enqueued' | 'duplicate' | 'no_persona' | 'ignored' | 'error';
+
+// ---------------------------------------------------------------------------
+// Inbound commands
+// ---------------------------------------------------------------------------
+
+/**
+ * Claims inbound chat commands (for example `/approve CODE`) before they can
+ * reach a thread, the message store or an agent.
+ */
+export interface InboundCommandHandler {
+  /** Returns the reply text if the event was a command, or undefined. Never throws. */
+  handle(event: InboundEvent): Promise<string | undefined>;
+}
+
+/**
+ * Sends a command reply to a chat. Resolves the connector by channel name;
+ * a missing connector or a failed send is reported as an Err.
+ */
+export type InboundReplySender = (
+  channelName: string,
+  externalThreadId: string,
+  body: string,
+) => Promise<Result<unknown, unknown>>;
 
 // ---------------------------------------------------------------------------
 // PipelineStats

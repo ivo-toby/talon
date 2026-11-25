@@ -42,7 +42,13 @@ import type {
   ImageIngestionRequest,
   ImageIngestionService,
 } from '../images/image-ingestion.js';
-import type { NormalizedMessage, PipelineResult, PipelineStats } from './pipeline-types.js';
+import type {
+  InboundCommandHandler,
+  InboundReplySender,
+  NormalizedMessage,
+  PipelineResult,
+  PipelineStats,
+} from './pipeline-types.js';
 import {
   prependReplyHeader,
   renderReactionContent,
@@ -52,6 +58,9 @@ import {
 
 /** Ledger excerpt recorded for a message that carried media but no text. */
 const MEDIA_ONLY_EXCERPT = '[image]';
+
+/** Only short messages starting with '/' are offered to the command handler. */
+const COMMAND_MAX_LENGTH = 64;
 
 /**
  * Orchestrates the full inbound message lifecycle from raw InboundEvent
@@ -69,6 +78,9 @@ export class MessagePipeline {
     noPersona: 0,
     errors: 0,
   };
+
+  private commandHandler: InboundCommandHandler | null = null;
+  private sendReply: InboundReplySender | null = null;
 
   constructor(
     private readonly messageRepo: MessageRepository,
@@ -92,6 +104,60 @@ export class MessagePipeline {
      */
     private readonly messageRefs: MessageRefRepository | null = null,
   ) {}
+
+  /**
+   * Installs the handler that may claim inbound commands before a thread is
+   * touched. `sendReply` delivers the handler's reply text to the chat. With
+   * no handler set the pipeline behaves as before.
+   */
+  setInboundCommandHandler(handler: InboundCommandHandler, sendReply: InboundReplySender): void {
+    this.commandHandler = handler;
+    this.sendReply = sendReply;
+  }
+
+  /**
+   * Offers a short slash-text event to the command handler. Returns true when
+   * the handler claimed it (reply sent or attempted); the event is then
+   * consumed. A claimed command is deliberately not recorded in the
+   * idempotency store: a connector redelivery reaches the handler again, so
+   * the handler is responsible for one-time use. Never logs event content.
+   */
+  private async tryHandleCommand(event: InboundEvent): Promise<boolean> {
+    const handler = this.commandHandler;
+    const sendReply = this.sendReply;
+    if (handler === null || sendReply === null) return false;
+    if (event.attachments !== undefined && event.attachments.length > 0) return false;
+    const text = event.content.trim();
+    if (!text.startsWith('/') || text.length > COMMAND_MAX_LENGTH) return false;
+
+    let reply: string | undefined;
+    try {
+      reply = await handler.handle(event);
+    } catch (cause) {
+      this.logger.error(
+        { err: cause, channelName: event.channelName },
+        'pipeline: inbound command handler failed; continuing as a normal message',
+      );
+      return false;
+    }
+    if (typeof reply !== 'string') return false;
+
+    try {
+      const sent = await sendReply(event.channelName, event.externalThreadId, reply);
+      if (sent.isErr()) {
+        this.logger.warn(
+          { channelName: event.channelName },
+          'pipeline: command reply could not be sent',
+        );
+      }
+    } catch {
+      this.logger.warn(
+        { channelName: event.channelName },
+        'pipeline: command reply could not be sent',
+      );
+    }
+    return true;
+  }
 
   /**
    * Processes a single InboundEvent through the full pipeline.
@@ -144,6 +210,14 @@ export class MessagePipeline {
       // ------------------------------------------------------------------
       if (event.reaction !== undefined) {
         return this.handleReactionEvent(event, channelId);
+      }
+
+      // ------------------------------------------------------------------
+      // Step 1b: Commands are consumed here, before any thread or message
+      // row exists, so an agent can never read or produce them.
+      // ------------------------------------------------------------------
+      if (await this.tryHandleCommand(event)) {
+        return ok('ignored');
       }
 
       // ------------------------------------------------------------------
