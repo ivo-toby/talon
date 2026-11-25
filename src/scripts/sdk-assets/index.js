@@ -93,8 +93,11 @@ function startReading() {
  * @returns {Promise<unknown>}
  */
 export function call(name, input) {
+  if (finished) {
+    return Promise.reject(new TalonToolError('script already finished', 'SCRIPT_FAILED'));
+  }
   startReading();
-  const id = nextId++;
+  const id = nextId;
   let line;
   try {
     line = JSON.stringify({ t: 'call', id, name, input: input === undefined ? null : input });
@@ -103,6 +106,7 @@ export function call(name, input) {
       new TalonToolError('tool input is not JSON-serializable', 'INVALID_ARGUMENT'),
     );
   }
+  nextId += 1;
   return new Promise((resolve, reject) => {
     pending.set(id, { resolve, reject });
     process.stdout.write(line + '\n');

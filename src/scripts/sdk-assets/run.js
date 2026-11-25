@@ -1,17 +1,14 @@
 // @ts-check
 // Runs `node run.js <name>/script.ts` with the working directory set to the scripts root.
+import { Console } from 'node:console';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { format } from 'node:util';
 import { _finish, _waitForStart } from './index.js';
 
 const MAX_ERROR_MESSAGE_CHARS = 2000;
 
-for (const method of ['log', 'info', 'warn', 'error']) {
-  console[method] = (/** @type {unknown[]} */ ...args) => {
-    process.stderr.write(format(...args) + '\n');
-  };
-}
+// Every console method goes to standard error, so no script can write a fake protocol line.
+globalThis.console = new Console({ stdout: process.stderr, stderr: process.stderr });
 
 /**
  * @param {unknown} error

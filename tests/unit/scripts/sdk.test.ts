@@ -155,6 +155,47 @@ describe('talon script SDK', () => {
     expect(run.stderr).toContain('w');
   }, 20_000);
 
+  it('sends every console method to standard error', async () => {
+    const run = start(
+      `export default async function () {
+         console.debug('d'); console.dir({ a: 1 }); console.table([{ b: 2 }]);
+         console.trace('t'); console.group('g'); console.groupEnd();
+         return 1;
+       }`,
+    );
+    await run.waitFor(1);
+    await run.exitCode;
+    expect(run.stdout).toBe('{"t":"done","ok":true,"result":1}\n');
+    expect(run.stderr).toContain('d');
+  }, 20_000);
+
+  it('does not use up an id for a call with a non-serializable input', async () => {
+    const run = start(
+      `import { tools } from 'talon';
+       export default async function () {
+         try { await tools.a.bad({ n: 1n }); } catch {}
+         return await tools.a.good();
+       }`,
+    );
+    await run.waitFor(1);
+    expect(run.lines[0]).toMatchObject({ t: 'call', id: 1, name: 'a.good' });
+  }, 20_000);
+
+  it('rejects with SCRIPT_FAILED when call runs after done was sent', async () => {
+    const run = start(
+      `import { call } from 'talon';
+       export default async function () {
+         process.on('exit', () => {});
+         return 1;
+       }
+       process.stdout.write = ((w) => (...a: any[]) => { const r = w(...a); queueMicrotask(() => { call('x.y').catch((e) => process.stderr.write('CODE:' + e.code)); }); return r; })(process.stdout.write.bind(process.stdout));`,
+    );
+    await run.waitFor(1);
+    await run.exitCode;
+    expect(run.lines).toEqual([{ t: 'done', ok: true, result: 1 }]);
+    expect(run.stderr).toContain('CODE:SCRIPT_FAILED');
+  }, 20_000);
+
   it('sends done with ok false when the script throws', async () => {
     const run = start('export default async function () { throw new Error("boom"); }');
     await run.waitFor(1);
