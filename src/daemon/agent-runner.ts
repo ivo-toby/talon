@@ -35,7 +35,7 @@ import {
   formatMissingTalonSkillError,
 } from '../skills/skill-runtime-text.js';
 import { getProviderAffinityResetAt } from '../threads/thread-metadata.js';
-import { readScheduleOriginExternalId } from './schedule-thread-utils.js';
+import { resolveThreadRecipient } from './schedule-thread-utils.js';
 import { buildTimeContext } from '../core/time-context.js';
 import { formatToolCall } from './tool-name-formatter.js';
 import { RunDelivery } from './run-delivery.js';
@@ -730,11 +730,12 @@ export class AgentRunner {
             // the thread's own external_id is a synthetic marker, not a
             // valid provider recipient. Prefer metadata.originExternalId
             // so typing indicators and any agent-runner-originated
-            // outbound reach the originating chat (issue #200).
+            // outbound reach the originating chat (issue #200). A schedule
+            // thread WITHOUT an origin has no recipient: leave it undefined
+            // so nothing (typing included) is sent to the synthetic id.
             const externalId =
               threadResult.isOk() && threadResult.value
-                ? (readScheduleOriginExternalId(threadResult.value.metadata) ??
-                  threadResult.value.external_id)
+                ? (resolveThreadRecipient(threadResult.value) ?? undefined)
                 : undefined;
             const channelName =
               channelRow?.isOk() && channelRow.value ? channelRow.value.name : undefined;
@@ -2343,7 +2344,18 @@ export class AgentRunner {
       return err(new Error(`channel connector not found: ${channelResult.value.name}`));
     }
 
-    const sendResult = await connector.send(threadResult.value.external_id, {
+    // A background task started from a scheduled run reports back to the
+    // chat the schedule came from, not to the synthetic schedule thread id.
+    const recipient = resolveThreadRecipient(threadResult.value);
+    if (recipient === null) {
+      return err(
+        new Error(
+          `thread ${threadId} has no chat to deliver to (schedule thread without an origin chat)`,
+        ),
+      );
+    }
+
+    const sendResult = await connector.send(recipient, {
       body: notification.content,
     });
     if (sendResult.isErr()) {
