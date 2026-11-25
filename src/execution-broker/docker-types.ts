@@ -15,6 +15,17 @@ export interface DockerResponse {
   body: Buffer;
 }
 
+/** A live two-way byte stream to a running exec (the upgraded socket). */
+export interface DockerDuplex {
+  write(chunk: Buffer): void;
+  /** Half-close: no more input, output continues. */
+  endInput(): void;
+  onData(listener: (chunk: Buffer) => void): void;
+  /** Called one time. error is set for a transport failure or an abort. */
+  onClose(listener: (error?: ExecutionBrokerError) => void): void;
+  destroy(): void;
+}
+
 /**
  * Transport seam: the only place that talks to the Docker daemon. Transport
  * failures (connect error, abort, oversize response) are returned as
@@ -22,6 +33,12 @@ export interface DockerResponse {
  */
 export interface DockerEngineClient {
   request(request: DockerRequest): Promise<Result<DockerResponse, ExecutionBrokerError>>;
+  /**
+   * Sends the request with `Connection: Upgrade` / `Upgrade: tcp`. Only a 101
+   * reply is `ok`; the socket then becomes a raw duplex. Any other status or a
+   * transport failure is `BACKEND_FAILURE`.
+   */
+  openStream(request: DockerRequest): Promise<Result<DockerDuplex, ExecutionBrokerError>>;
 }
 
 /** Operator-owned worker container posture. The model never supplies any of this. */

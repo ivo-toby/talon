@@ -60,6 +60,7 @@ function fakeClient(script: Script): { client: DockerEngineClient; calls: Docker
         calls.push(request);
         return Promise.resolve(script(request));
       },
+      openStream: () => Promise.resolve(err(new ExecutionBrokerError('BACKEND_FAILURE', 'openStream not scripted'))),
     },
   };
 }
