@@ -1,8 +1,9 @@
 /**
  * Builds the script runtime of the daemon from the `scripts` configuration.
  *
- * Called one time at bootstrap, only when `scripts.enabled` is true. Nothing
- * here connects to Docker: the first script run does.
+ * Called one time at bootstrap, only when `scripts.enabled` is true.
+ * `buildScriptRuntime` does not connect to Docker. `reapScriptContainers` does:
+ * the bootstrap calls it one time, with a bound of 5 seconds.
  */
 
 import { mkdirSync } from 'node:fs';
@@ -71,6 +72,9 @@ export function createChannelSender(channelRegistry: Pick<ChannelRegistry, 'get'
   };
 }
 
+/** The bound of the start cleanup. Docker that does not answer must not hold the boot. */
+const REAP_TIMEOUT_MS = 5_000;
+
 /**
  * Force-removes the script containers that an earlier process left behind: only
  * containers with the broker label that mount the scripts root. A failure is a
@@ -80,10 +84,21 @@ export async function reapScriptContainers(
   config: Pick<ScriptsConfig, 'root' | 'dockerSocket'>,
   logger: Logger,
   client: DockerEngineClient = createDockerEngineClient({ socketPath: config.dockerSocket }),
+  timeoutMs = REAP_TIMEOUT_MS,
 ): Promise<void> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<'timeout'>((done) => {
+    timer = setTimeout(() => done('timeout'), timeoutMs);
+    timer.unref();
+  });
   try {
-    const reaped = await reapBrokerContainers(client, resolve(config.root));
-    if (reaped.isErr()) {
+    const reaped = await Promise.race([
+      reapBrokerContainers(client, resolve(config.root)),
+      timeout,
+    ]);
+    if (reaped === 'timeout') {
+      logger.warn('scripts: the removal of old script containers took too long; the start goes on');
+    } else if (reaped.isErr()) {
       logger.warn(
         { brokerCode: reaped.error.brokerCode },
         'scripts: old script containers could not be removed',
@@ -93,6 +108,8 @@ export async function reapScriptContainers(
     }
   } catch {
     logger.warn('scripts: old script containers could not be removed');
+  } finally {
+    clearTimeout(timer);
   }
 }
 

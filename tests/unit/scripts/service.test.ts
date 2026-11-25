@@ -474,7 +474,8 @@ describe('approval', () => {
 
   it('refuses a dry run whose writes do not fit, keeps tested and sends nothing', async () => {
     const s = setup();
-    const big = { body: 'x'.repeat(900) };
+    // Each line fits (about 550 characters), but ten of them do not fit in one message.
+    const big = Object.fromEntries(['a', 'b', 'c', 'd', 'e'].map((k) => [k, 'x'.repeat(100)]));
     let phase = 0;
     s.backend.setExecStreamHandler((c) => {
       const unit = phase++ === 0;

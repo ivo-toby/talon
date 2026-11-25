@@ -128,6 +128,19 @@ describe('reapScriptContainers', () => {
     expect(warn).toHaveBeenCalledWith({ count: 1 }, expect.any(String));
   });
 
+  it('gives up after the bound with a warning when Docker does not answer', async () => {
+    const logger = pino({ level: 'silent' });
+    const warn = vi.spyOn(logger, 'warn');
+    const client = {
+      request: () => new Promise(() => {}),
+      openStream: () => Promise.reject(new Error('unused')),
+    } as never;
+    const started = Date.now();
+    await reapScriptContainers({ root, dockerSocket: '/nope' }, logger, client, 20);
+    expect(Date.now() - started).toBeLessThan(2000);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('took too long'));
+  });
+
   it('only warns when Docker fails, and never throws', async () => {
     const logger = pino({ level: 'silent' });
     const warn = vi.spyOn(logger, 'warn');

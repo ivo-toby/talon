@@ -3193,7 +3193,7 @@ This release contains the runtime, the approval flow and the schedule link. The 
 1. Talon stores the script as a version with a SHA-256 hash of its files. A version has three files: `script.ts`, `manifest.json` and `tests.json`.
 2. Talon runs the unit cases of `tests.json`. No tool runs in this step. Each tool call gets a fixed answer from the test case, and Talon compares the result on the host.
 3. Talon runs the script one time as a dry run on real data. Read tools run. Write tools do not run: Talon records each write and skips it.
-4. Talon sends a message to the chat. The message lists the write tools of the manifest, the use of the model, the channels, the tools that the script read, each write that the script wanted to do, and a one-time code. If the scheduled input is not the same as the dry-run input, the message says so. If not every write fits in the message, Talon sends no message and the version stays `tested`.
+4. Talon sends a message to the chat. The message lists the write tools of the manifest, the use of the model, the channels, the tools that the script read, each write that the script wanted to do, and a one-time code. If the scheduled input is not the same as the dry-run input, the message says so. The message shows the recipient of each channel send in full. In the other writes, the short values come first at each level, and Talon cuts each text value at 120 characters. If Talon cannot show the message in full, Talon sends no message and the version stays `tested`. This happens in these cases: not every write fits, a recipient is longer than 80 characters or is not text, a write line is longer than 600 characters, or the manifest lists more than 50 write tools or channels.
 5. You answer `/approve <code>` or `/reject <code>` in the same chat. The message pipeline handles this answer before a thread or an agent sees it, so a model cannot approve a script.
 6. A schedule that names the script runs the approved version.
 
@@ -3244,7 +3244,7 @@ If the server marks an MCP tool with `readOnlyHint`, the tool is a read tool. If
 
 Script code never runs inside the Talon process. Each run gets a new Docker container with no network, a non-root user, a read-only root file system and no capabilities. The scripts root is mounted read-only. The script talks to Talon over standard input and standard output, and Talon removes the container after the run. The tool calls of one run can carry at most 8 MiB of input. A run that sends more ends with `CALL_LIMIT`. A `model.judge` reply longer than 262,144 characters is refused.
 
-Each container has the label `talon.broker=1`. When Talon stops, it revokes the active runs and waits at most 10 seconds for them. When Talon starts, it removes the containers with this label that mount the scripts root, because an earlier process left them behind. Talon never removes a container without this label.
+Each container has the label `talon.broker=1`. When Talon stops, it revokes the active runs and waits at most 10 seconds for them. When Talon starts, it removes the containers with this label that mount the scripts root, because an earlier process left them behind. If Docker does not answer in 5 seconds, Talon logs a warning and starts without this cleanup. Talon never removes a container without this label.
 
 ### Configuration
 
@@ -3272,7 +3272,7 @@ A schedule payload with a `script` field runs the approved version of that scrip
 { "label": "Mail intake", "script": "mail-intake" }
 ```
 
-A payload cannot contain `script` together with `prompt` or `promptFile`. One run per script is active at a time: if a run is still active at the next tick, Talon skips that tick. If a run fails after a success, Talon sends one message to the chat of the schedule. Talon does not send a second message until the script succeeds again. A run that cannot start counts as a failure too: if the script has no approved version, or its files changed after the approval, the message says so.
+A payload cannot contain `script` together with `prompt` or `promptFile`. One run per script is active at a time: if a run is still active at the next tick, Talon skips that tick. If a run fails after a success, Talon sends one message to the chat of the schedule. Talon does not send a second message until the script succeeds again. After a restart of Talon, one more message can come for the same failure. A run that cannot start counts as a failure too: if the script has no approved version, or its files changed after the approval, the message says so.
 
 Each run, each executed write and each approval decision gets a row in `audit_log`. The audit rows do not contain tool input.
 

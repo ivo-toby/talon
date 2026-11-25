@@ -68,20 +68,22 @@ describe('buildApprovalSummary', () => {
     expect(build(report([]), { ttlMinutes: 119 })).toContain('Valid for 119 minutes.');
   });
 
-  it('cuts one write input at 600 characters', () => {
-    const text = build(
-      report([
-        call({
-          name: 'w',
-          toolClass: 'write',
-          input: { x: 'a'.repeat(2000) },
-          outcome: 'skipped-dry-run',
-        }),
-      ]),
-    );
+  it('cuts each string at 120 characters, and a line that is still too long is an error', () => {
+    const text = build(report([write({ x: 'a'.repeat(2000) })]));
     const line = text.split('\n').find((l) => l.startsWith('1. '))!;
-    expect(line.length).toBeLessThanOrEqual('1. w '.length + 600);
-    expect(line.endsWith('…')).toBe(true);
+    expect(line).toBe(`1. w {"x":"${'a'.repeat(119)}…"}`);
+    const many = Object.fromEntries(
+      Array.from({ length: 10 }, (_, i) => [`k${i}`, 'a'.repeat(200)]),
+    );
+    expect(summary(report([write(many)]))._unsafeUnwrapErr().scriptCode).toBe('RESULT_TOO_LARGE');
+  });
+
+  it('orders nested values, so a short value inside an object stays visible', () => {
+    const text = build(report([write({ message: { body: 'b'.repeat(700), to: 'x@y' } })]));
+    const line = text.split('\n').find((l) => l.startsWith('1. '))!;
+    expect(line.startsWith('1. w {"message":{"to":"x@y","body":"bbb')).toBe(true);
+    const listy = build(report([write({ items: [{ text: 'c'.repeat(300), id: 7 }], n: 1 })]));
+    expect(listy).toContain('1. w {"n":1,"items":[{"id":7,"text":"ccc');
   });
 
   it('is an error when not every write fits, and never hides one', () => {
@@ -204,19 +206,35 @@ describe('buildApprovalSummary', () => {
     expect(text).not.toContain('Channels:');
   });
 
-  it('shows at most 12 write tools and 8 channels', () => {
-    const tools = Array.from({ length: 15 }, (_, i) => `w.t${i}`);
+  it('lists every write tool and channel up to 50, and more is an error', () => {
+    const tools = Array.from({ length: 13 }, (_, i) => `w.t${i}`);
     const channels = Array.from({ length: 10 }, (_, i) => `ch${i}`);
     const text = build(report([]), {
       manifest: { tools, channels, dryRunInput: null },
       toolClass: () => 'write',
     });
-    expect(text).toContain(`May write with: ${tools.slice(0, 12).join(', ')}, and 3 more`);
-    expect(text).toContain(`Channels: ${channels.slice(0, 8).join(', ')}, and 2 more`);
+    expect(text).toContain(`May write with: ${tools.join(', ')}\n`);
+    expect(text).toContain(`Channels: ${channels.join(', ')}\n`);
     const one = build(report([]), {
       manifest: { tools: [], channels: ['ops'], dryRunInput: null },
     });
     expect(one).toContain('Channels: ops\n');
+    const fifty = Array.from({ length: 50 }, (_, i) => `t${i}`);
+    expect(
+      summary(report([]), {
+        manifest: { tools: fifty, channels: fifty, dryRunInput: null },
+        toolClass: () => 'write',
+      }).isOk(),
+    ).toBe(true);
+    const fiftyOne = [...fifty, 't50'];
+    for (const manifest of [
+      { tools: fiftyOne, channels: [], dryRunInput: null },
+      { tools: [], channels: fiftyOne, dryRunInput: null },
+    ]) {
+      expect(
+        summary(report([]), { manifest, toolClass: () => 'write' })._unsafeUnwrapErr().scriptCode,
+      ).toBe('RESULT_TOO_LARGE');
+    }
   });
 
   it('cleans manifest names so they cannot fake a line', () => {
@@ -255,17 +273,35 @@ describe('buildApprovalSummary', () => {
           'talon.channel_send',
         ),
         write({ channelId: 'ops', content: 'hi' }, 'talon.channel_send'),
-        write(
-          { channelId: 'x'.repeat(200), content: 'hi', externalChatId: 'y'.repeat(200) },
-          'talon.channel_send',
-        ),
+        write({ channelId: 'o p\u00a0s', content: 'hi', externalChatId: 42 }, 'talon.channel_send'),
       ]),
     );
     const lines = text.split('\n').filter((l) => /^\d+\. /.test(l));
     expect(lines[0].startsWith('1. talon.channel_send to ops/12345: ccc')).toBe(true);
     expect(lines[0].endsWith('…')).toBe(true);
     expect(lines[1]).toBe('2. talon.channel_send to ops/(thread chat): hi');
-    expect(lines[2]).toBe(`3. talon.channel_send to ${'x'.repeat(79)}…/${'y'.repeat(79)}…: hi`);
+    expect(lines[2]).toBe('3. talon.channel_send to ops/42: hi');
+  });
+
+  it('never cuts a recipient: one that cannot be shown in full is an error', () => {
+    const send = (input: Record<string, unknown>) =>
+      summary(report([write({ content: 'hi', ...input }, 'talon.channel_send')]));
+    const padded = send({ channelId: 'ops', externalChatId: '\uFEFF'.repeat(100) + '-100666' });
+    expect(padded._unsafeUnwrap()).toContain('1. talon.channel_send to ops/-100666: hi');
+    const spaced = send({ channelId: 'ops', externalChatId: ' '.repeat(100) + '-100\u2028666\t' });
+    expect(spaced._unsafeUnwrap()).toContain('to ops/-100666: hi');
+    const fine = send({ channelId: 'ops', externalChatId: 'y'.repeat(80) });
+    expect(fine._unsafeUnwrap()).toContain(`to ops/${'y'.repeat(80)}: hi`);
+    for (const input of [
+      { channelId: 'ops', externalChatId: 'y'.repeat(81) },
+      { channelId: 'x'.repeat(81) },
+      { channelId: 'ops', externalChatId: { id: 1 } },
+      { channelId: ['ops'] },
+      { channelId: 'ops', externalChatId: '\u200b\u200b' },
+      {},
+    ]) {
+      expect(send(input)._unsafeUnwrapErr().scriptCode).toBe('RESULT_TOO_LARGE');
+    }
   });
 
   it('puts short scalar values first in the other writes', () => {
