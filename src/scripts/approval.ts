@@ -33,7 +33,14 @@ export interface ApprovalService {
     channelName: string;
     externalThreadId: string;
   }): Result<
-    { outcome: 'approved' | 'rejected' | 'refused'; scriptName?: string; version?: number },
+    {
+      outcome: 'approved' | 'rejected' | 'refused';
+      scriptName?: string;
+      version?: number;
+      versionId?: string;
+      personaId?: string;
+      threadId?: string;
+    },
     ScriptError
   >;
   parseCommand(text: string): { decision: 'approved' | 'rejected'; code: string } | undefined;
@@ -146,10 +153,15 @@ export function createApprovalService(options: {
       return ok({ code });
     },
 
-    decide(
-      input,
-    ): Result<
-      { outcome: 'approved' | 'rejected' | 'refused'; scriptName?: string; version?: number },
+    decide(input): Result<
+      {
+        outcome: 'approved' | 'rejected' | 'refused';
+        scriptName?: string;
+        version?: number;
+        versionId?: string;
+        personaId?: string;
+        threadId?: string;
+      },
       ScriptError
     > {
       const at = now();
@@ -188,10 +200,16 @@ export function createApprovalService(options: {
       }
       const row = versionRow.value;
       const scriptName = row ? scriptNameOf(row.manifest) : undefined;
+      const scriptRow = row ? repo.getScript(row.script_id) : undefined;
+      if (scriptRow?.isErr()) {
+        return err(sandbox(scriptRow.error));
+      }
+      const persona = scriptRow?.isOk() ? scriptRow.value?.persona_id : undefined;
       return ok({
         outcome: input.decision,
         ...(scriptName !== undefined ? { scriptName } : {}),
-        ...(row ? { version: row.version } : {}),
+        ...(row ? { version: row.version, versionId: row.id, threadId: row.thread_id ?? '' } : {}),
+        ...(persona !== undefined ? { personaId: persona } : {}),
       });
     },
 

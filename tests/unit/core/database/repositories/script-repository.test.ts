@@ -367,6 +367,38 @@ describe('ScriptRepository', () => {
     });
   });
 
+  describe('recordTestResult', () => {
+    const stateOf = (id: string): ScriptVersionRow => repo.getVersion(id)._unsafeUnwrap()!;
+
+    it('moves a draft to tested and writes the report', () => {
+      const v = makeVersion();
+      expect(repo.recordTestResult(v.id, { report: '{"a":1}', to: 'tested' })._unsafeUnwrap()).toBe(
+        true,
+      );
+      expect(stateOf(v.id)).toMatchObject({ state: 'tested', dry_run_report: '{"a":1}' });
+    });
+
+    it('moves a tested version to draft and keeps the old report', () => {
+      const v = makeVersion();
+      repo.recordTestResult(v.id, { report: 'old', to: 'tested' });
+      expect(repo.recordTestResult(v.id, { report: null, to: 'draft' })._unsafeUnwrap()).toBe(true);
+      expect(stateOf(v.id)).toMatchObject({ state: 'draft', dry_run_report: 'old' });
+    });
+
+    it('changes nothing in any other state', () => {
+      for (const state of ['awaiting-approval', 'approved', 'rejected', 'retired'] as const) {
+        const v = makeVersion();
+        db.prepare(
+          `UPDATE script_versions SET state = ?, dry_run_report = 'keep' WHERE id = ?`,
+        ).run(state, v.id);
+        expect(repo.recordTestResult(v.id, { report: 'new', to: 'tested' })._unsafeUnwrap()).toBe(
+          false,
+        );
+        expect(stateOf(v.id)).toMatchObject({ state, dry_run_report: 'keep' });
+      }
+    });
+  });
+
   describe('cascade', () => {
     it('deleting the persona removes scripts, versions, approvals and runs', () => {
       const { version } = makeAwaiting();

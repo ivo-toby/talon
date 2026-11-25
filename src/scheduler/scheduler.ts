@@ -155,7 +155,7 @@ export class Scheduler {
         'scheduler: skipping schedule with null thread_id',
       );
       // Still advance / disable so we do not loop on it forever.
-    } else if (this.scriptName(schedule) !== undefined) {
+    } else if (this.scriptName(schedule) !== undefined && this.shouldDispatchScript(schedule)) {
       this.dispatchScript(schedule, schedule.thread_id);
     } else {
       let rawPayload: Record<string, unknown> = {};
@@ -287,6 +287,28 @@ export class Scheduler {
       // not a script payload
     }
     return undefined;
+  }
+
+  /**
+   * With no runner (the feature is off) a payload that also has a prompt keeps
+   * its old behavior: the prompt is enqueued and `script` is ignored.
+   */
+  private shouldDispatchScript(schedule: ScheduleRow): boolean {
+    if (this.scriptRunner) {
+      return true;
+    }
+    const payload = JSON.parse(schedule.payload) as Record<string, unknown>;
+    const usablePrompt =
+      (typeof payload.prompt === 'string' && payload.prompt !== '') ||
+      (typeof payload.promptFile === 'string' && payload.promptFile !== '');
+    if (usablePrompt) {
+      this.logger.warn(
+        { scheduleId: schedule.id, personaId: schedule.persona_id },
+        'scheduler: scripts are off, so the "script" field of this schedule is ignored',
+      );
+      return false;
+    }
+    return true;
   }
 
   /**

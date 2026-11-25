@@ -316,6 +316,36 @@ export class ScriptRepository extends BaseRepository {
     }
   }
 
+  /**
+   * Ends a test in one transaction. Moves the version to `to` only if it is
+   * `draft` or `tested`; writes `report` only if that move happened and `to` is
+   * `tested`. Returns false, changing nothing, if the state was something else.
+   */
+  recordTestResult(
+    versionId: string,
+    result: { report: string | null; to: 'tested' | 'draft' },
+  ): Result<boolean, DbError> {
+    return runLedgerTransaction(this, () => {
+      try {
+        const info = this.db
+          .prepare(
+            `UPDATE script_versions SET state = ?, updated_at = ?
+             WHERE id = ? AND state IN ('draft', 'tested')`,
+          )
+          .run(result.to, this.now(), versionId);
+        if (info.changes === 0) {
+          return ok(false);
+        }
+        if (result.to === 'tested' && result.report !== null) {
+          this.setDryRunReportStmt.run(result.report, this.now(), versionId);
+        }
+        return ok(true);
+      } catch (cause) {
+        return err(this.fail('record test result', cause));
+      }
+    });
+  }
+
   setDryRunReport(id: string, json: string): Result<void, DbError> {
     try {
       this.setDryRunReportStmt.run(json, this.now(), id);

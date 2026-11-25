@@ -575,11 +575,21 @@ describe('runScheduled', () => {
     expect(failed).toMatchObject({ ok: false, errorCode: 'SCRIPT_FAILED' });
     expect(s.service.lastScheduledRunFailed('p1', 'mail-intake')).toBe(true);
     play(s.backend, [], { ok: true, result: 1 });
-    vi.spyOn(s.repo, 'finishRun').mockImplementationOnce(() => {
+    const spy = vi.spyOn(s.repo, 'finishRun').mockImplementationOnce(() => {
       throw new Error('db exploded');
     });
-    const thrown = await s.service.runScheduled(s.live);
-    expect(thrown._unsafeUnwrapErr().scriptCode).toBe('SANDBOX');
+    s.audits.length = 0;
+    const survived = (await s.service.runScheduled(s.live))._unsafeUnwrap();
+    expect(survived).not.toBe('skipped');
+    spy.mockRestore();
+    // the row was finished by the fallback, and the run was audited once
+    const row = s.db
+      .prepare(
+        `SELECT ok, error_code, ended_at FROM script_runs WHERE trigger = 'schedule' ORDER BY started_at DESC, rowid DESC LIMIT 1`,
+      )
+      .get();
+    expect(row).toEqual({ ok: 0, error_code: 'SANDBOX', ended_at: expect.any(Number) });
+    expect(s.audits.filter((a) => a.action === 'script.run')).toHaveLength(1);
     expect(s.providers).toHaveLength(3);
     for (const p of s.providers) expect(p.close).toHaveBeenCalledTimes(1);
     // the active slot was released after the exception
@@ -662,5 +672,131 @@ describe('notifyFailure, recovery', () => {
     expect(s.service.recoverStaleRuns()._unsafeUnwrap()).toBe(1);
     expect(s.service.recoverStaleRuns()._unsafeUnwrap()).toBe(0);
     expect(s.service.lastScheduledRunFailed('p1', 'mail-intake')).toBe(true);
+  });
+});
+
+describe('an exception in a live run', () => {
+  it('finishes the row and audits the run when createProvider throws', async () => {
+    const s = setup();
+    await s.toApproved();
+    s.audits.length = 0;
+    s.createProvider.mockImplementationOnce(() => Promise.reject(new Error('boom')));
+    const r = await s.service.runScheduled(s.live);
+    expect(r._unsafeUnwrapErr().scriptCode).toBe('SANDBOX');
+    const row = s.db
+      .prepare(`SELECT ok, error_code, ended_at FROM script_runs WHERE trigger = 'schedule'`)
+      .get();
+    expect(row).toEqual({ ok: 0, error_code: 'SANDBOX', ended_at: expect.any(Number) });
+    const runs = s.audits.filter((a) => a.action === 'script.run');
+    expect(runs).toHaveLength(1);
+    expect(runs[0].details).toMatchObject({ ok: false, errorCode: 'SANDBOX' });
+  });
+
+  it('audits a run that could not get a provider', async () => {
+    const s = setup();
+    await s.toApproved();
+    s.audits.length = 0;
+    s.createProvider.mockImplementationOnce(() =>
+      Promise.resolve(err(new ScriptError('SANDBOX', 'x'))),
+    );
+    await s.service.runScheduled(s.live);
+    expect(s.audits.find((a) => a.action === 'script.run')?.details).toMatchObject({
+      ok: false,
+      errorCode: 'SANDBOX',
+    });
+  });
+
+  it('audits the writes before the row is finished, and one failing audit does not stop the rest', async () => {
+    const order: string[] = [];
+    let failFirst = true;
+    const s = setup({
+      audit: (e) => {
+        order.push(String(e.action));
+        if (e.action === 'script.write' && failFirst) {
+          failFirst = false;
+          throw new Error('audit down');
+        }
+      },
+    });
+    await s.toApproved();
+    order.length = 0;
+    const finish = s.repo.finishRun.bind(s.repo);
+    vi.spyOn(s.repo, 'finishRun').mockImplementation((...a) => {
+      order.push('finish');
+      return finish(...a);
+    });
+    play(s.backend, [SCRIPT_CALLS[1], SCRIPT_CALLS[1]], { ok: true, result: 1 });
+    await s.service.runScheduled(s.live);
+    expect(order).toEqual(['script.write', 'script.write', 'finish', 'script.run']);
+  });
+});
+
+describe('a test that overlaps other changes', () => {
+  async function gatedTest() {
+    const s = setup();
+    play(s.backend, SCRIPT_CALLS, { ok: true, result: { sent: 1 } });
+    const v = s.service.save({ personaId: 'p1', threadId: 'th1', files: files() })._unsafeUnwrap();
+    (await s.service.test({ personaId: 'p1', versionId: v.versionId }))._unsafeUnwrap();
+    const before = s.repo.getVersion(v.versionId)._unsafeUnwrap()!.dry_run_report;
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    let reached = false;
+    s.createProvider.mockImplementation(() =>
+      Promise.resolve(
+        ok({
+          describe: (n: string) => (classes[n] ? { toolClass: classes[n] } : undefined),
+          call: async () => {
+            reached = true;
+            await gate;
+            return ok({ rows: 2 });
+          },
+          close: () => Promise.resolve(),
+        } as RunProvider),
+      ),
+    );
+    play(s.backend, SCRIPT_CALLS, { ok: true, result: { sent: 1 } });
+    const running = s.service.test({ personaId: 'p1', versionId: v.versionId });
+    await vi.waitFor(() => expect(reached).toBe(true));
+    return { s, v, before, release, running };
+  }
+
+  it('does not touch a version that was approved during the test', async () => {
+    const { s, v, before, release, running } = await gatedTest();
+    s.db.prepare(`UPDATE script_versions SET state = 'approved' WHERE id = ?`).run(v.versionId);
+    release();
+    const r = await running;
+    expect(r._unsafeUnwrapErr().scriptCode).toBe('INVALID_ARGUMENT');
+    expect(r._unsafeUnwrapErr().message).toContain('changed during the test');
+    const row = s.repo.getVersion(v.versionId)._unsafeUnwrap()!;
+    expect(row.state).toBe('approved');
+    expect(row.dry_run_report).toBe(before);
+  });
+
+  it('refuses a second test and an approval request while one runs', async () => {
+    const { s, v, release, running } = await gatedTest();
+    const second = await s.service.test({ personaId: 'p1', versionId: v.versionId });
+    expect(second._unsafeUnwrapErr().message).toContain('being tested');
+    const req = await s.service.requestApproval({
+      personaId: 'p1',
+      versionId: v.versionId,
+      channelName: 'tg',
+      externalThreadId: 'c',
+    });
+    expect(req._unsafeUnwrapErr().message).toContain('being tested');
+    expect(s.sent).toHaveLength(0);
+    release();
+    expect((await running).isOk()).toBe(true);
+    // the version is free again
+    play(s.backend, SCRIPT_CALLS, { ok: true, result: { sent: 1 } });
+    s.createProvider.mockImplementation(() =>
+      Promise.resolve(
+        ok({
+          describe: (n: string) => (classes[n] ? { toolClass: classes[n] } : undefined),
+          call: () => Promise.resolve(ok({})),
+          close: () => Promise.resolve(),
+        } as RunProvider),
+      ),
+    );
+    expect((await s.service.test({ personaId: 'p1', versionId: v.versionId })).isOk()).toBe(true);
   });
 });

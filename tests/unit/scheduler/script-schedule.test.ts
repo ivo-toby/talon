@@ -121,6 +121,38 @@ describe('Scheduler script schedules', () => {
     expect(enqueue).not.toHaveBeenCalled();
   });
 
+  it('with a runner, script together with prompt stays an error with no enqueue', async () => {
+    await fire({ label: 'l', script: 'mail-intake', prompt: 'hi' });
+    expect(enqueue).not.toHaveBeenCalled();
+  });
+
+  it('with no runner, script plus a usable prompt behaves as before and warns', async () => {
+    scheduler.setScriptRunner(undefined);
+    const id = await fire({ label: 'l', script: 'mail-intake', prompt: 'do it' });
+    expect(enqueue).toHaveBeenCalledTimes(1);
+    expect(enqueue.mock.calls[0][2]).toMatchObject({ content: 'do it', personaId });
+    expect(log.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ scheduleId: id }),
+      expect.stringContaining('"script" field'),
+    );
+    expect(log.error).not.toHaveBeenCalled();
+    expect(row(id).next_run_at).toBeGreaterThan(Date.now());
+  });
+
+  it('with no runner, script plus a promptFile enqueues the resolved prompt', async () => {
+    scheduler.setScriptRunner(undefined);
+    const loader = { resolveTaskPrompt: vi.fn(() => Promise.resolve(ok('from file'))) };
+    scheduler = new Scheduler(
+      repo,
+      { enqueue } as unknown as QueueManager,
+      loader as unknown as PersonaLoader,
+      { tickIntervalMs: 50 },
+      log,
+    );
+    await fire({ label: 'l', script: 'mail-intake', promptFile: 'daily' });
+    expect(enqueue.mock.calls[0][2]).toMatchObject({ content: 'from file' });
+  });
+
   it('skips a schedule without a thread', async () => {
     const id = seedDueSchedule(db, personaId, null, {
       type: 'interval',

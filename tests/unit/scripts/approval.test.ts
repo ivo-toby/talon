@@ -124,7 +124,16 @@ describe('approval service', () => {
     it('approves, returns name and version, and accepts lowercase', () => {
       const code = ask();
       const r = decide(code.toLowerCase())._unsafeUnwrap();
-      expect(r).toEqual({ outcome: 'approved', scriptName: 'daily', version: 1 });
+      expect(r).toEqual({
+        outcome: 'approved',
+        scriptName: 'daily',
+        version: 1,
+        versionId,
+        personaId: repo
+          .getScript(repo.getVersion(versionId)._unsafeUnwrap()!.script_id)
+          ._unsafeUnwrap()!.persona_id,
+        threadId: '',
+      });
       expect(repo.getVersion(versionId)._unsafeUnwrap()?.state).toBe('approved');
     });
 

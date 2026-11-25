@@ -8,7 +8,7 @@
  * only inside the `send` call.
  */
 
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { err, ok, type Result } from 'neverthrow';
 import type { Logger } from 'pino';
 import type { InboundEvent } from '../channels/channel-types.js';
@@ -37,6 +37,7 @@ import {
   type RunContext,
   type RunProvider,
   type ScriptErrorCode,
+  type CallRecord,
   type ScriptRunReport,
   type VersionState,
 } from './types.js';
@@ -131,11 +132,6 @@ const sandbox = (cause?: unknown): ScriptError =>
     cause instanceof Error ? cause : cause === undefined ? undefined : new Error('non-error cause'),
   );
 
-/** Same hashing as the approval service uses for stored codes. */
-function hashCode(code: string): string {
-  return createHash('sha256').update(code.toUpperCase()).digest('hex');
-}
-
 function cleanName(name: string | undefined): string {
   return (name ?? '').replace(/[^a-z0-9-]/g, '').slice(0, NAME_MAX);
 }
@@ -151,6 +147,8 @@ export function createScriptService(deps: ScriptServiceDeps): ScriptService {
   const now = deps.now ?? ((): number => Date.now());
   const logger = deps.logger ?? createLogger({ level: 'info', pretty: false });
   const active = new Set<string>();
+  /** Version ids with a `test` in flight. */
+  const testing = new Set<string>();
 
   const runDeps: RunDeps = {
     broker: deps.broker,
@@ -176,10 +174,23 @@ export function createScriptService(deps: ScriptServiceDeps): ScriptService {
     }
   }
 
-  function finishRun(runId: string, runOk: boolean, errorCode: string | null, calls: number): void {
-    const done = repo.finishRun(runId, runOk, errorCode, calls, now());
-    if (done.isErr()) {
-      logger.error({ runId }, 'could not finish a script run row');
+  /** Never throws. Returns true if the row was finished. */
+  function finishRun(
+    runId: string,
+    runOk: boolean,
+    errorCode: string | null,
+    calls: number,
+  ): boolean {
+    try {
+      const done = repo.finishRun(runId, runOk, errorCode, calls, now());
+      if (done.isErr()) {
+        logger.error({ runId }, 'could not finish a script run row');
+        return false;
+      }
+      return true;
+    } catch (error) {
+      logger.error({ err: error, runId }, 'could not finish a script run row');
+      return false;
     }
   }
 
@@ -199,13 +210,17 @@ export function createScriptService(deps: ScriptServiceDeps): ScriptService {
     return ok({ version: loaded.value, row: row.value });
   }
 
-  function setState(
+  /** Ends a test: the one state write of `test`. */
+  function recordTest(
     versionId: string,
-    from: readonly VersionState[],
-    to: VersionState,
+    report: string | null,
+    to: 'tested' | 'draft',
   ): Result<void, ScriptError> {
-    const moved = repo.setVersionState(versionId, from, to);
-    if (moved.isErr()) return err(sandbox(moved.error));
+    const recorded = repo.recordTestResult(versionId, { report, to });
+    if (recorded.isErr()) return err(sandbox(recorded.error));
+    if (!recorded.value) {
+      return err(new ScriptError('INVALID_ARGUMENT', 'the version changed during the test'));
+    }
     return ok(undefined);
   }
 
@@ -241,52 +256,68 @@ export function createScriptService(deps: ScriptServiceDeps): ScriptService {
         new ScriptError('INVALID_ARGUMENT', 'only a draft or tested version can be tested'),
       );
     }
-    const verified = store.verify(version);
-    if (verified.isErr()) return err(verified.error);
-
-    const context: RunContext = {
-      personaId: input.personaId,
-      threadId: version.threadId,
-      scriptRunId: randomUUID(),
-      scriptName: version.manifest.name,
-      channels: version.manifest.channels,
-      versionDir: version.dir,
-    };
-    const created = await deps.createProvider(context, version.manifest);
-    if (created.isErr()) return err(created.error);
-    const provider = created.value;
-
+    if (testing.has(version.versionId)) {
+      return err(new ScriptError('INVALID_ARGUMENT', 'the version is being tested'));
+    }
+    testing.add(version.versionId);
+    const rows = new Set<string>();
+    let provider: RunProvider | undefined;
     try {
+      const verified = store.verify(version);
+      if (verified.isErr()) return err(verified.error);
+
+      const context: RunContext = {
+        personaId: input.personaId,
+        threadId: version.threadId,
+        scriptRunId: randomUUID(),
+        scriptName: version.manifest.name,
+        channels: version.manifest.channels,
+        versionDir: version.dir,
+      };
+      const created = await deps.createProvider(context, version.manifest);
+      if (created.isErr()) return err(created.error);
+      const usable = created.value;
+      provider = usable;
+
       const cases = store.readUnitCases(version);
       if (cases.isErr()) return err(cases.error);
 
-      const unitRun = startRun(version.versionId, 'unit', 'test');
+      const begin = (mode: string, trigger: 'test' | 'dry-run'): Result<string, ScriptError> => {
+        const row = startRun(version.versionId, mode, trigger);
+        if (row.isOk()) rows.add(row.value);
+        return row;
+      };
+      const end = (id: string, runOk: boolean, code: string | null, calls: number): void => {
+        if (finishRun(id, runOk, code, calls)) rows.delete(id);
+      };
+
+      const unitRun = begin('unit', 'test');
       if (unitRun.isErr()) return err(unitRun.error);
       const unit = await runUnitCases(runDeps, version, input.personaId, cases.value, (name) =>
-        provider.describe(name),
+        usable.describe(name),
       );
       if (unit.isErr()) {
-        finishRun(unitRun.value, false, unit.error.scriptCode, 0);
+        end(unitRun.value, false, unit.error.scriptCode, 0);
         return err(unit.error);
       }
       const allPassed = unit.value.every((outcome) => outcome.passed);
-      finishRun(unitRun.value, allPassed, allPassed ? null : 'SCRIPT_FAILED', unit.value.length);
+      end(unitRun.value, allPassed, allPassed ? null : 'SCRIPT_FAILED', unit.value.length);
 
       if (!allPassed) {
-        const moved = setState(version.versionId, ['draft', 'tested'], 'draft');
+        const moved = recordTest(version.versionId, null, 'draft');
         if (moved.isErr()) return err(moved.error);
         return ok({ unit: unit.value, state: 'draft' });
       }
 
-      const dryRow = startRun(version.versionId, 'dry-run', 'dry-run');
+      const dryRow = begin('dry-run', 'dry-run');
       if (dryRow.isErr()) return err(dryRow.error);
-      const dry = await runDryRun(runDeps, version, input.personaId, provider);
+      const dry = await runDryRun(runDeps, version, input.personaId, usable);
       if (dry.isErr()) {
-        finishRun(dryRow.value, false, dry.error.scriptCode, 0);
+        end(dryRow.value, false, dry.error.scriptCode, 0);
         return err(dry.error);
       }
       const { report, didWork } = dry.value;
-      finishRun(
+      end(
         dryRow.value,
         report.ok,
         report.ok ? null : (report.errorCode ?? 'SCRIPT_FAILED'),
@@ -296,20 +327,21 @@ export function createScriptService(deps: ScriptServiceDeps): ScriptService {
       if (report.ok && didWork) {
         const text = JSON.stringify(report);
         if (text.length > MAX_REPORT_CHARS) {
-          setState(version.versionId, ['draft', 'tested'], 'draft');
+          const moved = recordTest(version.versionId, null, 'draft');
+          if (moved.isErr()) return err(moved.error);
           return err(new ScriptError('RESULT_TOO_LARGE', 'the dry-run report is too large'));
         }
-        const stored = repo.setDryRunReport(version.versionId, text);
-        if (stored.isErr()) return err(sandbox(stored.error));
-        const moved = setState(version.versionId, ['draft', 'tested'], 'tested');
+        const moved = recordTest(version.versionId, text, 'tested');
         if (moved.isErr()) return err(moved.error);
         return ok({ unit: unit.value, dryRun: dry.value, state: 'tested' });
       }
-      const moved = setState(version.versionId, ['draft', 'tested'], 'draft');
+      const moved = recordTest(version.versionId, null, 'draft');
       if (moved.isErr()) return err(moved.error);
       return ok({ unit: unit.value, dryRun: dry.value, state: 'draft' });
     } finally {
-      await closeProvider(provider);
+      for (const id of rows) finishRun(id, false, 'SANDBOX', 0);
+      if (provider) await closeProvider(provider);
+      testing.delete(version.versionId);
     }
   }
 
@@ -322,6 +354,9 @@ export function createScriptService(deps: ScriptServiceDeps): ScriptService {
     const owned = loadOwned(input.personaId, input.versionId);
     if (owned.isErr()) return err(owned.error);
     const { version, row } = owned.value;
+    if (testing.has(version.versionId)) {
+      return err(new ScriptError('INVALID_ARGUMENT', 'the version is being tested'));
+    }
     if (version.state !== 'tested' && version.state !== 'awaiting-approval') {
       return err(new ScriptError('INVALID_ARGUMENT', 'version cannot be put up for approval'));
     }
@@ -377,23 +412,6 @@ export function createScriptService(deps: ScriptServiceDeps): ScriptService {
     const command = approval.parseCommand(event.content);
     if (!command) return undefined;
 
-    // Read the approval before it is decided, for the audit entry.
-    let auditInfo: { personaId: string; threadId: string; versionId: string } | undefined;
-    const open = repo.findOpenApproval(hashCode(command.code));
-    if (open.isOk() && open.value) {
-      const row = repo.getVersion(open.value.version_id);
-      if (row.isOk() && row.value) {
-        const script = repo.getScript(row.value.script_id);
-        if (script.isOk() && script.value) {
-          auditInfo = {
-            personaId: script.value.persona_id,
-            threadId: row.value.thread_id ?? '',
-            versionId: row.value.id,
-          };
-        }
-      }
-    }
-
     const decided = approval.decide({
       code: command.code,
       decision: command.decision,
@@ -407,14 +425,14 @@ export function createScriptService(deps: ScriptServiceDeps): ScriptService {
     const outcome = decided.value;
     if (outcome.outcome === 'refused') return 'This code is not valid.';
 
-    if (auditInfo) {
+    if (outcome.versionId !== undefined && outcome.personaId !== undefined) {
       audit({
         action: 'script.approval',
-        personaId: auditInfo.personaId,
-        threadId: auditInfo.threadId,
+        personaId: outcome.personaId,
+        threadId: outcome.threadId ?? '',
         runId: randomUUID(),
         details: {
-          versionId: auditInfo.versionId,
+          versionId: outcome.versionId,
           decision: outcome.outcome,
           channelName: event.channelName,
         },
@@ -455,17 +473,65 @@ export function createScriptService(deps: ScriptServiceDeps): ScriptService {
     }
     active.add(scriptId);
     let provider: RunProvider | undefined;
+    let runId: string | undefined;
+    let finished = false;
+    let runAudited = false;
+    let known: { name: string; version: number } | undefined;
+    const runAudit = (runOk: boolean, errorCode: string | null, calls: number): void => {
+      if (runId === undefined || runAudited) return;
+      runAudited = true;
+      audit({
+        action: 'script.run',
+        personaId: input.personaId,
+        threadId: input.threadId,
+        runId,
+        details: {
+          script: known?.name ?? input.scriptName,
+          version: known?.version ?? null,
+          mode: 'live',
+          ok: runOk,
+          errorCode,
+          calls,
+        },
+      });
+    };
+    /** Write audits first, then the row, then the run audit. */
+    const conclude = (
+      runOk: boolean,
+      errorCode: string | null,
+      calls: readonly CallRecord[],
+    ): void => {
+      if (runId === undefined) return;
+      for (const call of calls) {
+        if (
+          call.toolClass === 'write' &&
+          (call.outcome === 'executed' || call.outcome === 'aborted')
+        ) {
+          audit({
+            action: 'script.write',
+            personaId: input.personaId,
+            threadId: input.threadId,
+            runId,
+            tool: call.name,
+            details: { outcome: call.outcome },
+          });
+        }
+      }
+      finished = finishRun(runId, runOk, errorCode, calls.length);
+      runAudit(runOk, errorCode, calls.length);
+    };
     try {
       const loaded = store.load(approved.value.id);
       if (loaded.isErr()) return err(loaded.error);
       const version = loaded.value;
+      known = { name: version.manifest.name, version: version.version };
       const runRow = startRun(version.versionId, 'live', 'schedule', input.scheduleId);
       if (runRow.isErr()) return err(runRow.error);
-      const runId = runRow.value;
+      runId = runRow.value;
 
       const verified = store.verify(version);
       if (verified.isErr()) {
-        finishRun(runId, false, 'SCRIPT_FAILED', 0);
+        finished = finishRun(runId, false, 'SCRIPT_FAILED', 0);
         audit({
           action: 'script.run.refused',
           personaId: input.personaId,
@@ -489,7 +555,7 @@ export function createScriptService(deps: ScriptServiceDeps): ScriptService {
         manifest,
       );
       if (created.isErr()) {
-        finishRun(runId, false, created.error.scriptCode, 0);
+        conclude(false, created.error.scriptCode, []);
         return err(created.error);
       }
       provider = created.value;
@@ -511,57 +577,18 @@ export function createScriptService(deps: ScriptServiceDeps): ScriptService {
         workspace: SCRIPT_WORKSPACE,
       });
       if (run.isErr()) {
-        finishRun(runId, false, run.error.scriptCode, 0);
-        audit({
-          action: 'script.run',
-          personaId: input.personaId,
-          threadId: input.threadId,
-          runId,
-          details: {
-            script: manifest.name,
-            version: version.version,
-            mode: 'live',
-            ok: false,
-            errorCode: run.error.scriptCode,
-            calls: 0,
-          },
-        });
+        conclude(false, run.error.scriptCode, []);
         return err(run.error);
       }
       const report = run.value;
-      const errorCode = report.ok ? null : (report.errorCode ?? 'SCRIPT_FAILED');
-      finishRun(runId, report.ok, errorCode, report.calls.length);
-      audit({
-        action: 'script.run',
-        personaId: input.personaId,
-        threadId: input.threadId,
-        runId,
-        details: {
-          script: manifest.name,
-          version: version.version,
-          mode: 'live',
-          ok: report.ok,
-          errorCode,
-          calls: report.calls.length,
-        },
-      });
-      for (const call of report.calls) {
-        if (
-          call.toolClass === 'write' &&
-          (call.outcome === 'executed' || call.outcome === 'aborted')
-        ) {
-          audit({
-            action: 'script.write',
-            personaId: input.personaId,
-            threadId: input.threadId,
-            runId,
-            tool: call.name,
-            details: { outcome: call.outcome },
-          });
-        }
-      }
+      conclude(report.ok, report.ok ? null : (report.errorCode ?? 'SCRIPT_FAILED'), report.calls);
       return ok(report);
     } finally {
+      if (runId !== undefined && !finished) {
+        // An exception ended the run before its row was finished.
+        finishRun(runId, false, 'SANDBOX', 0);
+        runAudit(false, 'SANDBOX', 0);
+      }
       if (provider) await closeProvider(provider);
       active.delete(scriptId);
     }
@@ -579,7 +606,7 @@ export function createScriptService(deps: ScriptServiceDeps): ScriptService {
   }
 
   return {
-    save(input) {
+    save(input): Result<StoredVersion, ScriptError> {
       try {
         return store.save(input);
       } catch (error) {
@@ -592,7 +619,7 @@ export function createScriptService(deps: ScriptServiceDeps): ScriptService {
 
     requestApproval: (input) => guard(() => requestApprovalImpl(input)),
 
-    matchesInbound(event) {
+    matchesInbound(event): boolean {
       try {
         return approval.parseCommand(event.content) !== undefined;
       } catch {
@@ -600,7 +627,7 @@ export function createScriptService(deps: ScriptServiceDeps): ScriptService {
       }
     },
 
-    handleInbound(event) {
+    handleInbound(event): Promise<string | undefined> {
       try {
         return Promise.resolve(handleInboundImpl(event));
       } catch (error) {
@@ -611,7 +638,7 @@ export function createScriptService(deps: ScriptServiceDeps): ScriptService {
 
     runScheduled: (input) => guard(() => runScheduledImpl(input)),
 
-    async notifyFailure(input) {
+    async notifyFailure(input): Promise<void> {
       try {
         const code = KNOWN_CODES.has(input.errorCode) ? input.errorCode : 'SCRIPT_FAILED';
         const name = cleanName(input.scriptName);
@@ -627,7 +654,7 @@ export function createScriptService(deps: ScriptServiceDeps): ScriptService {
       }
     },
 
-    hasApproved(personaId, scriptName) {
+    hasApproved(personaId, scriptName): boolean {
       try {
         const script = repo.findScript(personaId, scriptName);
         if (script.isErr() || !script.value) return false;
@@ -638,7 +665,7 @@ export function createScriptService(deps: ScriptServiceDeps): ScriptService {
       }
     },
 
-    lastScheduledRunFailed(personaId, scriptName) {
+    lastScheduledRunFailed(personaId, scriptName): boolean {
       try {
         const script = repo.findScript(personaId, scriptName);
         if (script.isErr() || !script.value) return false;
@@ -649,7 +676,7 @@ export function createScriptService(deps: ScriptServiceDeps): ScriptService {
       }
     },
 
-    recoverStaleRuns() {
+    recoverStaleRuns(): Result<number, ScriptError> {
       try {
         const failed = repo.failOpenRuns(now());
         return failed.isErr() ? err(sandbox(failed.error)) : ok(failed.value);
