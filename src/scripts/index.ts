@@ -9,3 +9,5 @@ export type { HostMessage, ScriptMessage } from './protocol.js';
 export * from './types.js';
 export { createScriptStore } from './store.js';
 export type { ScriptStore, ScriptFile, StoredVersion } from './store.js';
+export { createHostToolProvider } from './providers/host-tools.js';
+export type { HostToolExecutor } from './providers/host-tools.js';
