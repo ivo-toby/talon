@@ -6,7 +6,7 @@
  * one return of `request`.
  */
 
-import { createHash, randomBytes as cryptoRandomBytes, randomUUID } from 'node:crypto';
+import { hash as cryptoHash, randomBytes as cryptoRandomBytes, randomUUID } from 'node:crypto';
 import { ok, err, type Result } from 'neverthrow';
 import type { ScriptRepository } from '../core/database/repositories/script-repository.js';
 import type { Logger } from 'pino';
@@ -24,7 +24,6 @@ const COMMAND_START_RE = /^\/(approve|reject)/i;
 const SCAN_CHARS = 16_000;
 /** Unicode format characters, for example zero-width spaces and the byte order mark. */
 const FORMAT_RE = /\p{Cf}/gu;
-const RUN_RE = /[A-Za-z0-9]+/g;
 /** Only a window of code characters can be a code, so only such a window is hashed. */
 const CODE_WINDOW_RE = /^[A-HJ-NP-Z2-9]{8}$/;
 /** Two short runs with one of these characters between them are also tried as one code. */
@@ -70,9 +69,9 @@ export interface ApprovalService {
    * Expires the open approvals of the chat whose code the message holds, and
    * moves their versions back to `tested`. Returns the versions it cancelled.
    */
-  cancelLeaked(message: ChatMessage): CancelledApproval[];
+  cancelLeaked(message: ChatMessage): CancelOutcome;
   /** The same for a `wrong-chat` command: cancels the approval that its code belongs to. */
-  cancelWrongChat(message: ChatMessage): CancelledApproval[];
+  cancelWrongChat(message: ChatMessage): CancelOutcome;
   /**
    * Counts a claimed message that was not a valid decision toward the attempt
    * limiter of its chat. Returns true, and counts nothing, if the chat is blocked.
@@ -95,6 +94,12 @@ export interface Decision {
   threadId?: string;
 }
 
+/** `failed`: an expire write failed. That code stays guarded in memory, and it is not in `cancelled`. */
+export interface CancelOutcome {
+  cancelled: CancelledApproval[];
+  failed: boolean;
+}
+
 export interface CancelledApproval {
   versionId: string;
   personaId?: string;
@@ -106,38 +111,62 @@ interface OpenCode {
   expiresAt: number;
 }
 
+/** A letter or digit of ASCII. */
+function isAlnum(c: number): boolean {
+  return (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122);
+}
+
+/** A character of the code alphabet, in either case. `I`, `O`, `0` and `1` are not in it. */
+function isCodeChar(c: number): boolean {
+  const upper = c >= 97 && c <= 122 ? c - 32 : c;
+  return (
+    (upper >= 50 && upper <= 57) || (upper >= 65 && upper <= 90 && upper !== 73 && upper !== 79)
+  );
+}
+
 /**
  * The uppercase 8-character strings of a text that can be a code: each window of
- * code characters in a run of letters and digits, and two short runs that a single
- * `-`, `_`, `.` or space joins to 8 characters. Format characters are removed first.
- * A long text is scanned at its first and its last `SCAN_CHARS` characters.
+ * 8 code-alphabet characters in a run of letters and digits, and two short runs
+ * that a single `-`, `_`, `.` or space joins to 8 characters. The text is NFKC
+ * normalized and its format characters are removed first. A long text is scanned
+ * at its first and its last `SCAN_CHARS` characters. One pass, O(1) per position.
  */
-function candidateCodes(text: string): Set<string> {
-  const clean = text.replace(FORMAT_RE, '');
+export function candidateCodes(text: string): Set<string> {
+  const clean = text.normalize('NFKC').replace(FORMAT_RE, '');
   const parts =
     clean.length <= SCAN_CHARS ? [clean] : [clean.slice(0, SCAN_CHARS), clean.slice(-SCAN_CHARS)];
   const found = new Set<string>();
-  const add = (candidate: string): void => {
-    const upper = candidate.toUpperCase();
-    if (CODE_WINDOW_RE.test(upper)) found.add(upper);
-  };
   for (const part of parts) {
-    let previous: { run: string; end: number } | undefined;
-    for (const match of part.matchAll(RUN_RE)) {
-      const run = match[0];
-      const start = match.index;
-      for (let i = 0; i + CODE_LENGTH <= run.length; i++) add(run.slice(i, i + CODE_LENGTH));
+    let alphabet = 0;
+    let runStart = -1;
+    let previous: { start: number; end: number } | undefined;
+    for (let i = 0; i <= part.length; i++) {
+      const c = i < part.length ? part.charCodeAt(i) : -1;
+      if (c >= 0 && isAlnum(c)) {
+        if (runStart < 0) runStart = i;
+        alphabet = isCodeChar(c) ? alphabet + 1 : 0;
+        if (alphabet >= CODE_LENGTH)
+          found.add(part.slice(i - CODE_LENGTH + 1, i + 1).toUpperCase());
+        continue;
+      }
+      alphabet = 0;
+      if (runStart < 0) continue;
+      const run = { start: runStart, end: i };
+      runStart = -1;
       if (
         previous &&
-        start - previous.end === 1 &&
+        run.start - previous.end === 1 &&
         JOIN_CHARS.has(part[previous.end]) &&
-        previous.run.length < CODE_LENGTH &&
-        run.length < CODE_LENGTH &&
-        previous.run.length + run.length === CODE_LENGTH
+        previous.end - previous.start < CODE_LENGTH &&
+        run.end - run.start < CODE_LENGTH &&
+        previous.end - previous.start + run.end - run.start === CODE_LENGTH
       ) {
-        add(previous.run + run);
+        const joined = (
+          part.slice(previous.start, previous.end) + part.slice(run.start, run.end)
+        ).toUpperCase();
+        if (CODE_WINDOW_RE.test(joined)) found.add(joined);
       }
-      previous = { run, end: start + run.length };
+      previous = run;
     }
   }
   return found;
@@ -147,7 +176,7 @@ const chatKey = (channelName: string, externalThreadId: string): string =>
   `${channelName}\0${externalThreadId}`;
 
 function sha256Code(code: string): string {
-  return createHash('sha256').update(code.toUpperCase()).digest('hex');
+  return cryptoHash('sha256', code.toUpperCase(), 'hex');
 }
 
 function scriptNameOf(manifest: string): string | undefined {
@@ -231,14 +260,26 @@ export function createApprovalService(options: {
     return codes;
   }
 
-  /** The open code hashes of the chat that the text holds. */
-  function leakedHashes(text: string, codes: Map<string, OpenCode>): string[] {
-    const found: string[] = [];
-    for (const candidate of candidateCodes(text)) {
-      const hash = hashCode(candidate);
-      if (codes.has(hash)) found.push(hash);
-    }
-    return found;
+  /**
+   * The hashes of the candidate codes of a message. The pipeline passes the same
+   * event object to `matches` and to `handle`, so one message is scanned one time.
+   */
+  const scans = new WeakMap<object, { content: string; hashes: string[] }>();
+
+  function candidateHashes(message: ChatMessage & { content: string }): string[] {
+    const cached = scans.get(message);
+    if (cached && cached.content === message.content) return cached.hashes;
+    const hashes = [...candidateCodes(message.content)].map((candidate) => hashCode(candidate));
+    scans.set(message, { content: message.content, hashes });
+    return hashes;
+  }
+
+  /** The open code hashes of the chat that the message holds. */
+  function leakedHashes(
+    message: ChatMessage & { content: string },
+    codes: Map<string, OpenCode>,
+  ): string[] {
+    return candidateHashes(message).filter((hash) => codes.has(hash));
   }
 
   /** The open approval that a well-formed command of another chat names, or undefined. */
@@ -254,12 +295,14 @@ export function createApprovalService(options: {
   }
 
   /** Expires the versions and moves them back to `tested`. A failed write keeps the codes. */
-  function cancelVersions(versionIds: Iterable<string>, at: number): CancelledApproval[] {
+  function cancelVersions(versionIds: Iterable<string>, at: number): CancelOutcome {
     const cancelled: CancelledApproval[] = [];
+    let failed = false;
     for (const versionId of versionIds) {
       const expired = repo.expireOpenApprovals(versionId, at);
       if (expired.isErr()) {
         logger.error('script approval: an approval could not be expired; its code stays guarded');
+        failed = true;
         continue;
       }
       dropVersion(versionId);
@@ -277,7 +320,7 @@ export function createApprovalService(options: {
         ...(persona !== undefined ? { personaId: persona } : {}),
       });
     }
-    return cancelled;
+    return { cancelled, failed };
   }
 
   const listed = repo.listOpenApprovals(now());
@@ -442,7 +485,9 @@ export function createApprovalService(options: {
         }
         const text = message.content.trim();
         if (COMMAND_RE.test(text)) return 'command';
-        if (leakedHashes(message.content, codes).length > 0) return 'leak';
+        if (leakedHashes(message as ChatMessage & { content: string }, codes).length > 0) {
+          return 'leak';
+        }
         return COMMAND_START_RE.test(text) ? 'malformed' : 'none';
       } catch (error) {
         logger.error(
@@ -453,23 +498,23 @@ export function createApprovalService(options: {
       }
     },
 
-    cancelLeaked(message): CancelledApproval[] {
+    cancelLeaked(message): CancelOutcome {
       const at = now();
       const codes = openCodes(chatKey(message.channelName, message.externalThreadId), at);
-      if (!codes || typeof message.content !== 'string') return [];
+      if (!codes || typeof message.content !== 'string') return { cancelled: [], failed: false };
       const versions = new Set<string>();
-      for (const hash of leakedHashes(message.content, codes)) {
+      for (const hash of leakedHashes(message as ChatMessage & { content: string }, codes)) {
         const code = codes.get(hash);
         if (code) versions.add(code.versionId);
       }
       return cancelVersions(versions, at);
     },
 
-    cancelWrongChat(message): CancelledApproval[] {
+    cancelWrongChat(message): CancelOutcome {
       const at = now();
-      if (typeof message.content !== 'string') return [];
-      const found = wrongChatCode(message.content, at);
-      return found ? cancelVersions([found.code.versionId], at) : [];
+      const found =
+        typeof message.content === 'string' ? wrongChatCode(message.content, at) : undefined;
+      return found ? cancelVersions([found.code.versionId], at) : { cancelled: [], failed: false };
     },
 
     noteAttempt(channelName, externalThreadId): boolean {

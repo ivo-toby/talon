@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { err } from 'neverthrow';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import pino from 'pino';
 import { ScriptRepository } from '../../../src/core/database/repositories/script-repository.js';
@@ -317,6 +317,8 @@ describe('approval service', () => {
         [`ABCDE.FGH`, 'leak'],
         [`ABCD\u200bEFGH`, 'leak'],
         [`AB\ufeffCD\u2060EF\u200dGH`, 'leak'],
+        ['ＡＢＣＤＥＦＧＨ', 'leak'],
+        ['\u{1D400}\u{1D401}\u{1D402}\u{1D403}\u{1D404}\u{1D405}\u{1D406}\u{1D407}', 'leak'],
         ['ABCD--EFGH', 'none'],
         ['ABCD  EFGH', 'none'],
         ['ABCD/EFGH', 'none'],
@@ -370,13 +372,43 @@ describe('approval service', () => {
       const other = makeVersion();
       seed = 8;
       const keep = ask(other);
-      const cancelled = svc.cancelWrongChat(msg(`/approve ${code}`, 'other'));
+      const { cancelled, failed } = svc.cancelWrongChat(msg(`/approve ${code}`, 'other'));
+      expect(failed).toBe(false);
       expect(cancelled.map((c) => c.versionId)).toEqual([versionId]);
       expect(repo.getVersion(versionId)._unsafeUnwrap()?.state).toBe('tested');
       expect(svc.classify(msg(`/approve ${code}`, 'other'))).toBe('none');
       expect(svc.classify(msg(`/approve ${code}`))).toBe('command');
       expect(decide(code)._unsafeUnwrap().outcome).toBe('refused');
       expect(decide(keep)._unsafeUnwrap().outcome).toBe('approved');
+    });
+
+    it('hashes each candidate one time for one message, also over classify and cancel', () => {
+      ask();
+      const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+      const worst = Array.from(randomBytes(32_000), (b) => alphabet[b & 31]).join('');
+      const event = msg(worst);
+      hashes = 0;
+      const started = performance.now();
+      expect(svc.classify(event)).toBe('none');
+      const ms = performance.now() - started;
+      const onePass = hashes;
+      expect(onePass).toBeGreaterThan(31_000);
+      expect(onePass).toBeLessThanOrEqual(32_000);
+      expect(svc.classify(event)).toBe('none');
+      expect(svc.cancelLeaked(event)).toEqual({ cancelled: [], failed: false });
+      expect(hashes).toBe(onePass);
+      // A measure for the report; the bound is loose so that a slow CI machine passes.
+      console.log(`worst-case classify of 32,000 characters: ${ms.toFixed(1)} ms`);
+      expect(ms).toBeLessThan(2000);
+    });
+
+    it('hashes almost nothing for 32,000 characters of lowercase prose', () => {
+      ask();
+      const prose = 'the quick brown fox jumps over a lazy dog while it is still light outside. ';
+      const text = prose.repeat(Math.ceil(32_000 / prose.length)).slice(0, 32_000);
+      hashes = 0;
+      expect(svc.classify(msg(text))).toBe('none');
+      expect(hashes).toBeLessThanOrEqual(5);
     });
 
     it('scans the first and the last 16,000 characters of a long message', () => {
@@ -429,7 +461,7 @@ describe('approval service', () => {
       const other = makeVersion();
       seed = 8;
       const keep = ask(other);
-      const cancelled = svc.cancelLeaked(msg(`approve ${code}`));
+      const { cancelled } = svc.cancelLeaked(msg(`approve ${code}`));
       expect(cancelled.map((c) => c.versionId)).toEqual([versionId]);
       expect(repo.getVersion(versionId)._unsafeUnwrap()?.state).toBe('tested');
       expect(repo.getVersion(other)._unsafeUnwrap()?.state).toBe('awaiting-approval');
@@ -466,13 +498,13 @@ describe('approval service', () => {
       expect(svc.expireVersion(versionId)._unsafeUnwrapErr().scriptCode).toBe('SANDBOX');
       const msg = { channelName: 'tg', externalThreadId: 't1', content: `approve ${code}` };
       expect(svc.classify(msg)).toBe('leak');
-      expect(svc.cancelLeaked(msg)).toEqual([]);
+      expect(svc.cancelLeaked(msg)).toEqual({ cancelled: [], failed: true });
       expect(svc.classify(msg)).toBe('leak');
       const elsewhere = { channelName: 'tg', externalThreadId: 'o', content: `/approve ${code}` };
-      expect(svc.cancelWrongChat(elsewhere)).toEqual([]);
+      expect(svc.cancelWrongChat(elsewhere)).toEqual({ cancelled: [], failed: true });
       expect(svc.classify(elsewhere)).toBe('wrong-chat');
       repo.expireOpenApprovals = expire;
-      expect(svc.cancelLeaked(msg).map((c) => c.versionId)).toEqual([versionId]);
+      expect(svc.cancelLeaked({ ...msg }).cancelled.map((c) => c.versionId)).toEqual([versionId]);
       expect(svc.classify(msg)).toBe('none');
     });
   });

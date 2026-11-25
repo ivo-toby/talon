@@ -19,7 +19,7 @@ import type {
 } from '../core/database/repositories/script-repository.js';
 import { createLogger } from '../core/logging/index.js';
 import { ExecutionBrokerError, type ExecutionBroker } from '../execution-broker/index.js';
-import type { ApprovalService } from './approval.js';
+import type { ApprovalService, CancelOutcome } from './approval.js';
 import { SCRIPT_PROFILE, SCRIPT_WORKSPACE } from './config.js';
 import { runScript } from './runner.js';
 import type { ScriptStore, ScriptFile, StoredVersion } from './store.js';
@@ -577,12 +577,13 @@ export function createScriptService(deps: ScriptServiceDeps): ScriptService {
       : { reply: `Rejected:${label}` };
   }
 
-  function auditCancelled(
+  function cancelReply(
     event: InboundEvent,
-    cancelled: Array<{ versionId: string; personaId?: string; threadId?: string }>,
+    outcome: CancelOutcome,
     reason: 'leak' | 'wrong-chat',
-  ): void {
-    for (const item of cancelled) {
+    reply: string,
+  ): { reply?: string } {
+    for (const item of outcome.cancelled) {
       audit({
         action: 'script.approval.expired',
         personaId: item.personaId ?? '',
@@ -591,6 +592,12 @@ export function createScriptService(deps: ScriptServiceDeps): ScriptService {
         details: { versionId: item.versionId, reason, channelName: event.channelName },
       });
     }
+    // Nothing was cancelled, or a write failed: the code stays guarded, but do not claim a cancel.
+    const done = outcome.cancelled.length > 0 && !outcome.failed;
+    return attemptReply(
+      event,
+      done ? reply : 'This code cannot be used here. Ask for a new approval.',
+    );
   }
 
   /** A reply for a claimed message that was no valid decision. A blocked chat gets none. */
@@ -605,15 +612,17 @@ export function createScriptService(deps: ScriptServiceDeps): ScriptService {
         return decideCommand(event);
       case 'leak':
         // The code is cancelled also in a blocked chat: it was seen outside a command.
-        auditCancelled(event, approval.cancelLeaked(event), 'leak');
-        return attemptReply(
+        return cancelReply(
           event,
+          approval.cancelLeaked(event),
+          'leak',
           'The code was not in a valid command, so I cancelled it. Ask for a new approval.',
         );
       case 'wrong-chat':
-        auditCancelled(event, approval.cancelWrongChat(event), 'wrong-chat');
-        return attemptReply(
+        return cancelReply(
           event,
+          approval.cancelWrongChat(event),
+          'wrong-chat',
           'This code belongs to another chat, so I cancelled it. Ask for a new approval.',
         );
       case 'malformed':

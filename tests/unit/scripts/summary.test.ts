@@ -78,6 +78,30 @@ describe('buildApprovalSummary', () => {
     expect(summary(report([write(many)]))._unsafeUnwrapErr().scriptCode).toBe('RESULT_TOO_LARGE');
   });
 
+  it('collapses padding in a string value before the cut', () => {
+    const text = build(report([write({ to: ' '.repeat(200) + 'evil@x', cc: '\u200b\n\t a  b ' })]));
+    expect(text).toContain('1. w {"to":"evil@x","cc":"a b"}');
+  });
+
+  it('is an error when a write tool or channel name is longer than 60 characters', () => {
+    const long = 'w.' + 'x'.repeat(59);
+    for (const manifest of [
+      { tools: [long], channels: [], dryRunInput: null },
+      { tools: [], channels: [long], dryRunInput: null },
+    ]) {
+      expect(
+        summary(report([]), { manifest, toolClass: () => 'write' })._unsafeUnwrapErr().scriptCode,
+      ).toBe('RESULT_TOO_LARGE');
+    }
+    const sixty = 'w.' + 'x'.repeat(58);
+    const text = build(report([]), {
+      manifest: { tools: [sixty], channels: [sixty], dryRunInput: null },
+      toolClass: () => 'write',
+    });
+    expect(text).toContain(`May write with: ${sixty}\n`);
+    expect(text).toContain(`Channels: ${sixty}\n`);
+  });
+
   it('orders nested values, so a short value inside an object stays visible', () => {
     const text = build(report([write({ message: { body: 'b'.repeat(700), to: 'x@y' } })]));
     const line = text.split('\n').find((l) => l.startsWith('1. '))!;
@@ -273,7 +297,7 @@ describe('buildApprovalSummary', () => {
           'talon.channel_send',
         ),
         write({ channelId: 'ops', content: 'hi' }, 'talon.channel_send'),
-        write({ channelId: 'o p\u00a0s', content: 'hi', externalChatId: 42 }, 'talon.channel_send'),
+        write({ channelId: ' ops\t', content: 'hi', externalChatId: 42 }, 'talon.channel_send'),
       ]),
     );
     const lines = text.split('\n').filter((l) => /^\d+\. /.test(l));
@@ -288,7 +312,7 @@ describe('buildApprovalSummary', () => {
       summary(report([write({ content: 'hi', ...input }, 'talon.channel_send')]));
     const padded = send({ channelId: 'ops', externalChatId: '\uFEFF'.repeat(100) + '-100666' });
     expect(padded._unsafeUnwrap()).toContain('1. talon.channel_send to ops/-100666: hi');
-    const spaced = send({ channelId: 'ops', externalChatId: ' '.repeat(100) + '-100\u2028666\t' });
+    const spaced = send({ channelId: 'ops', externalChatId: ' '.repeat(100) + '-100\u200b666\t' });
     expect(spaced._unsafeUnwrap()).toContain('to ops/-100666: hi');
     const fine = send({ channelId: 'ops', externalChatId: 'y'.repeat(80) });
     expect(fine._unsafeUnwrap()).toContain(`to ops/${'y'.repeat(80)}: hi`);
@@ -298,6 +322,10 @@ describe('buildApprovalSummary', () => {
       { channelId: 'ops', externalChatId: { id: 1 } },
       { channelId: ['ops'] },
       { channelId: 'ops', externalChatId: '\u200b\u200b' },
+      { channelId: 'ops', externalChatId: '-100 666' },
+      { channelId: 'ops', externalChatId: '-100\u00a0666' },
+      { channelId: 'ops', externalChatId: '-100\u2028666' },
+      { channelId: 'o\nps' },
       {},
     ]) {
       expect(send(input)._unsafeUnwrapErr().scriptCode).toBe('RESULT_TOO_LARGE');

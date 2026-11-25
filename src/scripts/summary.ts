@@ -15,6 +15,12 @@ const RECIPIENT_MAX = 80;
 const SHORT_STRING = 80;
 const STRING_MAX = 120;
 const MAX_DEPTH = 32;
+/** A run of whitespace, control and format characters in a string value of a write. */
+const BLANK_RUN = new RegExp(
+  // eslint-disable-next-line no-control-regex
+  '[\\s\\p{Cf}\\u0000-\\u001F\\u007F-\\u009F]+',
+  'gu',
+);
 const CHANNEL_SEND = 'talon.channel_send';
 const JUDGE = 'model.judge';
 
@@ -51,6 +57,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+/** One space for each run of whitespace, control and format characters, and no blank ends. */
+function flatten(text: string): string {
+  return text.replace(BLANK_RUN, ' ').trim();
+}
+
 function isScalar(value: unknown): boolean {
   return value === null || typeof value !== 'object';
 }
@@ -60,7 +71,7 @@ function isShortScalar(value: unknown): boolean {
     value === null ||
     typeof value === 'number' ||
     typeof value === 'boolean' ||
-    (typeof value === 'string' && value.length < SHORT_STRING)
+    (typeof value === 'string' && flatten(value).length < SHORT_STRING)
   );
 }
 
@@ -72,7 +83,9 @@ function isShortScalar(value: unknown): boolean {
 function orderedJson(value: unknown, depth = 0): string | undefined {
   if (depth > MAX_DEPTH) throw new Error('too deep');
   if (typeof value === 'string') {
-    return JSON.stringify(value.length > STRING_MAX ? `${value.slice(0, STRING_MAX - 1)}…` : value);
+    // Padding cannot push the visible part of a value past the cut.
+    const flat = flatten(value);
+    return JSON.stringify(flat.length > STRING_MAX ? `${flat.slice(0, STRING_MAX - 1)}…` : flat);
   }
   if (Array.isArray(value)) {
     return `[${value.map((item) => orderedJson(item, depth + 1) ?? 'null').join(',')}]`;
@@ -98,17 +111,24 @@ function asText(value: unknown): string {
   return typeof value === 'string' ? value : inputJson(value);
 }
 
-// Format characters, whitespace and control characters: none of them can be part of an ID.
-const NOT_IN_ID = new RegExp(
+const FORMAT = /\p{Cf}/gu;
+// Whitespace and control characters. A recipient that still holds one is refused.
+const BLANK_OR_CONTROL = new RegExp(
   // eslint-disable-next-line no-control-regex
-  '[\\p{Cf}\\s\\u0000-\\u001F\\u007F-\\u009F\\u00A0\\u2028\\u2029]',
-  'gu',
+  '[\\s\\u0000-\\u001F\\u007F-\\u009F]',
+  'u',
 );
 
-/** A recipient part, in full, or undefined if it cannot be shown in full. */
+/**
+ * A recipient part, in full, or undefined if it cannot be shown as it is sent.
+ * The ends are trimmed (as the live handler does) and format characters are
+ * removed. Nothing inside the value is removed: a space or control character
+ * that remains makes it undefined.
+ */
 function recipient(value: unknown): string | undefined {
   if (typeof value !== 'string' && typeof value !== 'number') return undefined;
-  const text = String(value).replace(NOT_IN_ID, '');
+  const text = String(value).replace(FORMAT, '').trim();
+  if (BLANK_OR_CONTROL.test(text)) return undefined;
   return text.length > 0 && text.length <= RECIPIENT_MAX ? text : undefined;
 }
 
@@ -135,8 +155,10 @@ function writeLine(call: CallRecord): string | undefined {
   return text.length > INPUT_MAX ? undefined : `${name} ${text}`;
 }
 
-function listed(names: string[], max: number): string {
-  return names.map((name) => clean(name, max)).join(', ');
+/** The names, each in full, or undefined if a name is longer than `max` after cleaning. */
+function listed(names: string[], max: number): string | undefined {
+  const shown = names.map((name) => clean(name, Number.POSITIVE_INFINITY));
+  return shown.some((name) => name.length > max) ? undefined : shown.join(', ');
 }
 
 function sameJson(a: unknown, b: unknown): boolean {
@@ -227,18 +249,23 @@ export function buildApprovalSummary(input: ApprovalSummaryInput): Result<string
       new ScriptError('RESULT_TOO_LARGE', 'the script lists too many write tools or channels'),
     );
   }
+  const writeList = listed(writeTools, READ_TOOL_MAX);
+  const channelList = listed(manifest.channels, NAME_MAX);
+  if (writeList === undefined || channelList === undefined) {
+    return err(
+      new ScriptError('RESULT_TOO_LARGE', 'a write tool or channel name is too long to show'),
+    );
+  }
   const head = [
     `Script "${clean(input.name, NAME_MAX)}" v${input.version} asks for approval.`,
     `About: ${clean(input.description, DESCRIPTION_MAX)}`,
-    writeTools.length === 0
-      ? 'May write with: nothing'
-      : `May write with: ${listed(writeTools, READ_TOOL_MAX)}`,
+    writeTools.length === 0 ? 'May write with: nothing' : `May write with: ${writeList}`,
   ];
   if (manifest.tools.includes(JUDGE)) {
     head.push('May use the model: yes');
   }
   if (manifest.channels.length > 0) {
-    head.push(`Channels: ${listed(manifest.channels, NAME_MAX)}`);
+    head.push(`Channels: ${channelList}`);
   }
   if (manifest.liveInput !== undefined && !sameJson(manifest.liveInput, manifest.dryRunInput)) {
     head.push('The scheduled input differs from the dry-run input.');

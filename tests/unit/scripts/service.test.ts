@@ -525,6 +525,21 @@ describe('approval', () => {
     expect(s.stateOf(v.versionId)).toBe('tested');
   });
 
+  it('does not claim a cancel when the expire write fails, and the code stays guarded', async () => {
+    const s = setup();
+    const v = await s.toAwaiting();
+    const code = s.codeOf();
+    s.repo.expireOpenApprovals = () => err(new Error('down') as never);
+    const fallback = { reply: 'This code cannot be used here. Ask for a new approval.' };
+    expect(await s.service.handleInbound(s.event(`approve ${code}`))).toEqual(fallback);
+    expect(await s.service.handleInbound(s.event(`/approve ${code}`, 'thread-reply'))).toEqual(
+      fallback,
+    );
+    expect(s.audits.some((a) => a.action === 'script.approval.expired')).toBe(false);
+    expect(s.stateOf(v.versionId)).toBe('awaiting-approval');
+    expect(s.service.matchesInbound(s.event(`approve ${code}`))).toBe(true);
+  });
+
   it('counts malformed, leaked and wrong-chat messages toward the limiter', async () => {
     const s = setup();
     await s.toAwaiting();
