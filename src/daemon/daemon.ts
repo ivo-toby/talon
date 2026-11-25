@@ -570,7 +570,18 @@ export class TalondDaemon {
     // coordinator, normalizer, retention timer and vision limits captured them
     // at bootstrap. Keep the running values so rebuilt connectors cannot select
     // or fetch under limits the coordinator would then reject.
-    const newConfig: TalondConfig = { ...configResult.value, images: oldConfig.images };
+    // The script runtime is fixed for the life of the process too: the broker
+    // allowlist, the scripts root and the limits were captured at bootstrap.
+    const newConfig: TalondConfig = {
+      ...configResult.value,
+      images: oldConfig.images,
+      scripts: oldConfig.scripts,
+    };
+    if (JSON.stringify(oldConfig.scripts) !== JSON.stringify(configResult.value.scripts)) {
+      this.logger.warn(
+        'daemon: reload — scripts config changed; restart required to apply (running values kept)',
+      );
+    }
     if (JSON.stringify(oldConfig.images) !== JSON.stringify(configResult.value.images)) {
       this.logger.warn(
         'daemon: reload — images config changed; restart required to apply (running limits kept)',

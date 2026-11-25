@@ -2,7 +2,7 @@ import { statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { err, ok } from 'neverthrow';
 import type { Result } from 'neverthrow';
-import { SCRIPT_IMAGE_DIGEST_RE } from '../core/config/config-schema.js';
+import { SCRIPT_IMAGE_DIGEST_RE } from '../core/config/script-image.js';
 import type { ScriptsConfig } from '../core/config/config-schema.js';
 import {
   createDockerBackend,

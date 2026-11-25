@@ -10,6 +10,7 @@
  */
 
 import { z } from 'zod';
+import { SCRIPT_IMAGE_DIGEST_RE } from './script-image.js';
 import { isUnsafeCodexSandboxToken } from '../../subagents/codex-sandbox-protocol.js';
 import {
   INFERENCE_PROVIDERS,
@@ -604,8 +605,7 @@ export const ImagesConfigSchema = z.object({
 // Scripts
 // ---------------------------------------------------------------------------
 
-/** Digest-pinned worker image: `<name>@sha256:<64 lowercase hex>`. */
-export const SCRIPT_IMAGE_DIGEST_RE = /^[a-z0-9][a-z0-9._/:-]*@sha256:[0-9a-f]{64}$/;
+export { SCRIPT_IMAGE_DIGEST_RE };
 
 /** Model-written scripts that run in a hardened Docker container. Off by default. */
 export const ScriptsConfigSchema = z.object({

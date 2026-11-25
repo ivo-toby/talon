@@ -133,6 +133,8 @@ import { ImageStore } from '../images/image-store.js';
 import { ImageIngestionCoordinator } from '../images/image-ingestion.js';
 import { ImageService } from '../images/image-service.js';
 import { ImageLifecycleManager } from '../images/image-lifecycle.js';
+import { buildScriptRuntime, createChannelSender } from '../scripts/daemon-wiring.js';
+import type { ScriptService } from '../scripts/service.js';
 import {
   DaemonImageContextSource,
   ImageLookupAccessAdapter,
@@ -749,7 +751,7 @@ export async function bootstrap(
   const voiceRuntimeConfig = { current: config };
   const voiceGeneration = { value: 0 };
   const daemonContextRef: {
-    current?: Pick<DaemonContext, 'loadedSkills'>;
+    current?: Pick<DaemonContext, 'loadedSkills' | 'config'>;
   } = {};
   if (config.voice?.enabled) {
     const voicePersonaName = config.voice.persona ?? config.personas[0]?.name;
@@ -1238,6 +1240,51 @@ export async function bootstrap(
   });
   backgroundAgentManager?.setHostToolsBridge(hostToolsBridge);
   partialCtx.hostToolsBridge = hostToolsBridge;
+
+  // 18. Talon scripts (off by default). The `scripts` section is fixed for the
+  // life of the process: the broker allowlist and the scripts root are built
+  // here one time. With the section off nothing below runs and the pipeline
+  // and the scheduler behave exactly as before.
+  let scriptService: ScriptService | null = null;
+  if (config.scripts?.enabled === true) {
+    const scriptRuntime = buildScriptRuntime({
+      config: config.scripts,
+      db,
+      personaRepo: repos.persona,
+      threadRepo: repos.thread,
+      channelRepo: repos.channel,
+      channelRegistry,
+      auditLogger,
+      provider: {
+        hostTools: hostToolsBridge,
+        personaLoader,
+        skillResolver,
+        loadedSkills: () => daemonContextRef.current?.loadedSkills ?? loadedSkills.value,
+        config: () => daemonContextRef.current?.config ?? config,
+        tokenStore: oauthTokenStore,
+      },
+      logger,
+    });
+    if (scriptRuntime.isErr()) {
+      await cleanupBootstrapFailure(db, observability, logger);
+      return err(
+        new DaemonError(`Failed to start the script runtime: ${scriptRuntime.error.message}`),
+      );
+    }
+    scriptService = scriptRuntime.value;
+    const service = scriptService;
+    messagePipeline.setInboundCommandHandler(
+      {
+        matches: (event) => service.matchesInbound(event),
+        handle: (event) => service.handleInbound(event),
+      },
+      createChannelSender(channelRegistry),
+    );
+    scheduler.setScriptRunner(service);
+    logger.info('bootstrap: script runtime ready');
+  }
+  (partialCtx as { scriptService?: ScriptService | null }).scriptService = scriptService;
+
   const ctx = partialCtx as DaemonContext;
   daemonContextRef.current = ctx;
 
