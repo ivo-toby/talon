@@ -15,3 +15,4 @@ export { createMcpProvider } from './providers/mcp.js';
 export type { McpClientLike, McpToolLike } from './providers/mcp.js';
 export { createJudgeProvider, createOpenAiCompatibleJudgeModel } from './providers/judge.js';
 export type { JudgeModel } from './providers/judge.js';
+export { createCompositeProvider } from './providers/composite.js';
