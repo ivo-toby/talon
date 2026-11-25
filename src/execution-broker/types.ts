@@ -134,8 +134,13 @@ export interface BackendCapabilities {
 
 export interface ContainerBackend {
   capabilities(): BackendCapabilities;
-  createContainer(spec: ContainerSpec): Promise<Result<{ containerId: string }, ExecutionBrokerError>>;
-  exec(containerId: string, request: BackendExecRequest): Promise<Result<RawExecOutput, ExecutionBrokerError>>;
+  createContainer(
+    spec: ContainerSpec,
+  ): Promise<Result<{ containerId: string }, ExecutionBrokerError>>;
+  exec(
+    containerId: string,
+    request: BackendExecRequest,
+  ): Promise<Result<RawExecOutput, ExecutionBrokerError>>;
   execStream(
     containerId: string,
     request: BackendStreamExecRequest,

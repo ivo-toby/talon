@@ -142,27 +142,35 @@ export class InMemoryContainerBackend implements ContainerBackend {
     let stdinEnded = false;
     let finished = false;
 
-    const handled = this.execStreamHandler({
-      containerId,
-      argv: request.argv,
-      cwd: request.cwd,
-      signal: request.signal,
-      emitStdout: (text) => {
-        if (!finished) {
-          request.onStdout(text);
-        }
-      },
-      onStdin: (listener) => {
-        stdinListeners.push(listener);
-      },
-      onStdinEnd: (listener) => {
-        if (stdinEnded) {
-          listener();
-        } else {
-          endListeners.push(listener);
-        }
-      },
-    });
+    let handled: Promise<{ exitCode: number; stderr: string }>;
+    try {
+      handled = this.execStreamHandler({
+        containerId,
+        argv: request.argv,
+        cwd: request.cwd,
+        signal: request.signal,
+        emitStdout: (text) => {
+          if (!finished) {
+            request.onStdout(text);
+          }
+        },
+        onStdin: (listener) => {
+          stdinListeners.push(listener);
+        },
+        onStdinEnd: (listener) => {
+          if (stdinEnded) {
+            listener();
+          } else {
+            endListeners.push(listener);
+          }
+        },
+      });
+    } catch (error) {
+      const cause = error instanceof Error ? error : new Error('unknown exec failure');
+      return Promise.resolve(
+        err(new ExecutionBrokerError('BACKEND_FAILURE', 'in-memory exec handler failed', cause)),
+      );
+    }
     const done = handled.then(
       (output): Result<{ exitCode: number; stderr: string }, ExecutionBrokerError> => {
         finished = true;
@@ -172,7 +180,9 @@ export class InMemoryContainerBackend implements ContainerBackend {
         finished = true;
         // Constraint: handler messages must not leak into broker error messages.
         const cause = error instanceof Error ? error : new Error('unknown exec failure');
-        return err(new ExecutionBrokerError('BACKEND_FAILURE', 'in-memory exec handler failed', cause));
+        return err(
+          new ExecutionBrokerError('BACKEND_FAILURE', 'in-memory exec handler failed', cause),
+        );
       },
     );
 

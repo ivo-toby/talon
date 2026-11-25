@@ -51,7 +51,11 @@ describe('InMemoryContainerBackend', () => {
   it('runs the default exec handler and records the call', async () => {
     const backend = new InMemoryContainerBackend();
     const { containerId } = (await backend.createContainer(spec))._unsafeUnwrap();
-    const output = await backend.exec(containerId, { argv: ['ls'], cwd: '/epic-wiki', signal: signal() });
+    const output = await backend.exec(containerId, {
+      argv: ['ls'],
+      cwd: '/epic-wiki',
+      signal: signal(),
+    });
     expect(output._unsafeUnwrap()).toEqual({ exitCode: 0, stdout: '', stderr: '' });
     expect(backend.execCalls).toEqual([{ containerId, argv: ['ls'], cwd: '/epic-wiki' }]);
   });
@@ -70,7 +74,11 @@ describe('InMemoryContainerBackend', () => {
       cwd: '/epic-wiki/pages',
       signal: controller.signal,
     });
-    expect(output._unsafeUnwrap()).toEqual({ exitCode: 3, stdout: 'echo hi', stderr: '/epic-wiki/pages' });
+    expect(output._unsafeUnwrap()).toEqual({
+      exitCode: 3,
+      stdout: 'echo hi',
+      stderr: '/epic-wiki/pages',
+    });
     expect(seen).toBe(controller.signal);
   });
 
@@ -80,7 +88,9 @@ describe('InMemoryContainerBackend', () => {
     backend.setExecHandler(async () => {
       throw new Error('LEAKY_DETAIL');
     });
-    const error = (await backend.exec(containerId, { argv: ['ls'], cwd: '/', signal: signal() }))._unsafeUnwrapErr();
+    const error = (
+      await backend.exec(containerId, { argv: ['ls'], cwd: '/', signal: signal() })
+    )._unsafeUnwrapErr();
     expect(error.brokerCode).toBe('BACKEND_FAILURE');
     expect(error.message).not.toContain('LEAKY_DETAIL');
     expect(error.cause).toBeInstanceOf(Error);
@@ -88,7 +98,9 @@ describe('InMemoryContainerBackend', () => {
 
   it('rejects exec on an unknown container without recording it', async () => {
     const backend = new InMemoryContainerBackend();
-    const error = (await backend.exec('mem-9', { argv: ['ls'], cwd: '/', signal: signal() }))._unsafeUnwrapErr();
+    const error = (
+      await backend.exec('mem-9', { argv: ['ls'], cwd: '/', signal: signal() })
+    )._unsafeUnwrapErr();
     expect(error.brokerCode).toBe('BACKEND_FAILURE');
     expect(backend.execCalls).toEqual([]);
   });
@@ -148,6 +160,23 @@ describe('InMemoryContainerBackend', () => {
       });
       expect(result._unsafeUnwrapErr().brokerCode).toBe('BACKEND_FAILURE');
       expect(backend.execCalls).toEqual([]);
+    });
+
+    it('gives BACKEND_FAILURE when the handler throws synchronously', async () => {
+      const backend = new InMemoryContainerBackend();
+      const { containerId } = (await backend.createContainer(spec))._unsafeUnwrap();
+      backend.setExecStreamHandler(() => {
+        throw new Error('secret detail');
+      });
+      const result = await backend.execStream(containerId, {
+        argv: ['x'],
+        cwd: '/epic-wiki',
+        signal: signal(),
+        onStdout: () => undefined,
+      });
+      const error = result._unsafeUnwrapErr();
+      expect(error.brokerCode).toBe('BACKEND_FAILURE');
+      expect(error.message).not.toContain('secret');
     });
 
     it('gives BACKEND_FAILURE in done when the handler rejects', async () => {

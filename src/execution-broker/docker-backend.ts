@@ -92,12 +92,84 @@ function asRecord(value: unknown): Result<Record<string, unknown>, ExecutionBrok
   return ok(value as Record<string, unknown>);
 }
 
-function readStringField(record: Record<string, unknown>, field: string): Result<string, ExecutionBrokerError> {
+function readStringField(
+  record: Record<string, unknown>,
+  field: string,
+): Result<string, ExecutionBrokerError> {
   const value = record[field];
   if (typeof value !== 'string' || value.length === 0) {
     return err(backendFailure(`docker engine response is missing ${field}`));
   }
   return ok(value);
+}
+
+/** Creates an exec and returns its validated ID. Shared by `exec` and `execStream`. */
+async function createExec(
+  client: DockerEngineClient,
+  containerId: string,
+  request: BackendExecRequest,
+  attachStdin: boolean,
+): Promise<Result<string, ExecutionBrokerError>> {
+  const execCreated = await client.request({
+    method: 'POST',
+    path: `/containers/${containerId}/exec`,
+    body: {
+      Cmd: [...request.argv],
+      WorkingDir: request.cwd,
+      ...(attachStdin ? { AttachStdin: true } : {}),
+      AttachStdout: true,
+      AttachStderr: true,
+      Tty: false,
+    },
+    signal: request.signal,
+  });
+  if (execCreated.isErr()) {
+    return err(backendFailure('docker exec create request failed'));
+  }
+  if (execCreated.value.status !== 201) {
+    return err(backendFailure('docker exec create was rejected'));
+  }
+
+  const parsed = asRecord(parseJsonBody(execCreated.value.body).unwrapOr(null));
+  if (parsed.isErr()) {
+    return err(parsed.error);
+  }
+  const idResult = readStringField(parsed.value, 'Id');
+  if (idResult.isErr()) {
+    return err(idResult.error);
+  }
+  if (validateContainerId(idResult.value).isErr()) {
+    return err(backendFailure('docker engine returned an unusable exec id'));
+  }
+  return ok(idResult.value);
+}
+
+/** Reads the exit code of a finished exec. Shared by `exec` and `execStream`. */
+async function readExecExitCode(
+  client: DockerEngineClient,
+  execId: string,
+  signal: AbortSignal,
+): Promise<Result<number, ExecutionBrokerError>> {
+  const inspected = await client.request({ method: 'GET', path: `/exec/${execId}/json`, signal });
+  if (inspected.isErr()) {
+    return err(backendFailure('docker exec inspect request failed'));
+  }
+  if (inspected.value.status !== 200) {
+    return err(backendFailure('docker exec inspect was rejected'));
+  }
+
+  const inspectRecord = asRecord(parseJsonBody(inspected.value.body).unwrapOr(null));
+  if (inspectRecord.isErr()) {
+    return err(inspectRecord.error);
+  }
+  const { ExitCode: exitCode, Running: running } = inspectRecord.value;
+  if (running === true) {
+    return err(backendFailure('docker exec still running after its stream ended'));
+  }
+  if (typeof exitCode !== 'number' || !Number.isInteger(exitCode)) {
+    return err(backendFailure('docker exec inspect is missing an integer exit code'));
+  }
+  return ok(exitCode);
 }
 
 export function createDockerBackend(
@@ -114,11 +186,15 @@ export function createDockerBackend(
       return { diskQuotaEnforced: config.diskQuotaEnforced };
     },
 
-    async createContainer(spec: ContainerSpec): Promise<Result<{ containerId: string }, ExecutionBrokerError>> {
+    async createContainer(
+      spec: ContainerSpec,
+    ): Promise<Result<{ containerId: string }, ExecutionBrokerError>> {
       // A ':' or a relative path would let a path string add or change bind options.
       const { hostPath, mountTarget } = spec.workspace;
       if (!BIND_PATH_RE.test(hostPath) || !BIND_PATH_RE.test(mountTarget)) {
-        return err(invalidArgument('workspace paths must be absolute and must not contain a colon'));
+        return err(
+          invalidArgument('workspace paths must be absolute and must not contain a colon'),
+        );
       }
 
       const body = {
@@ -131,7 +207,9 @@ export function createDockerBackend(
           ReadonlyRootfs: true,
           CapDrop: ['ALL'],
           SecurityOpt: ['no-new-privileges'],
-          Binds: [`${spec.workspace.hostPath}:${spec.workspace.mountTarget}:${spec.workspace.mode}`],
+          Binds: [
+            `${spec.workspace.hostPath}:${spec.workspace.mountTarget}:${spec.workspace.mode}`,
+          ],
           Memory: config.memoryBytes,
           PidsLimit: config.pidsLimit,
           NanoCpus: config.nanoCpus,
@@ -161,54 +239,37 @@ export function createDockerBackend(
         return err(backendFailure('docker engine returned an unusable container id'));
       }
 
-      const started = await client.request({ method: 'POST', path: `/containers/${containerId}/start` });
+      const started = await client.request({
+        method: 'POST',
+        path: `/containers/${containerId}/start`,
+      });
       const startFailed = started.isErr() || started.value.status !== 204;
       if (startFailed) {
         // Best-effort cleanup so a half-created container does not linger.
-        await client.request({ method: 'DELETE', path: `/containers/${containerId}?force=true&v=true` });
+        await client.request({
+          method: 'DELETE',
+          path: `/containers/${containerId}?force=true&v=true`,
+        });
         return err(backendFailure('docker container start was rejected'));
       }
 
       return ok({ containerId });
     },
 
-    async exec(containerId: string, request: BackendExecRequest): Promise<Result<RawExecOutput, ExecutionBrokerError>> {
+    async exec(
+      containerId: string,
+      request: BackendExecRequest,
+    ): Promise<Result<RawExecOutput, ExecutionBrokerError>> {
       const idCheck = validateContainerId(containerId);
       if (idCheck.isErr()) {
         return err(idCheck.error);
       }
 
-      const execCreated = await client.request({
-        method: 'POST',
-        path: `/containers/${containerId}/exec`,
-        body: {
-          Cmd: [...request.argv],
-          WorkingDir: request.cwd,
-          AttachStdout: true,
-          AttachStderr: true,
-          Tty: false,
-        },
-        signal: request.signal,
-      });
-      if (execCreated.isErr()) {
-        return err(backendFailure('docker exec create request failed'));
+      const created = await createExec(client, containerId, request, false);
+      if (created.isErr()) {
+        return err(created.error);
       }
-      if (execCreated.value.status !== 201) {
-        return err(backendFailure('docker exec create was rejected'));
-      }
-
-      const parsed = asRecord(parseJsonBody(execCreated.value.body).unwrapOr(null));
-      if (parsed.isErr()) {
-        return err(parsed.error);
-      }
-      const idResult = readStringField(parsed.value, 'Id');
-      if (idResult.isErr()) {
-        return err(idResult.error);
-      }
-      const execId = idResult.value;
-      if (validateContainerId(execId).isErr()) {
-        return err(backendFailure('docker engine returned an unusable exec id'));
-      }
+      const execId = created.value;
 
       const started = await client.request({
         method: 'POST',
@@ -228,31 +289,16 @@ export function createDockerBackend(
         return err(demuxed.error);
       }
 
-      const inspected = await client.request({
-        method: 'GET',
-        path: `/exec/${execId}/json`,
-        signal: request.signal,
+      const exitCode = await readExecExitCode(client, execId, request.signal);
+      if (exitCode.isErr()) {
+        return err(exitCode.error);
+      }
+
+      return ok({
+        exitCode: exitCode.value,
+        stdout: demuxed.value.stdout,
+        stderr: demuxed.value.stderr,
       });
-      if (inspected.isErr()) {
-        return err(backendFailure('docker exec inspect request failed'));
-      }
-      if (inspected.value.status !== 200) {
-        return err(backendFailure('docker exec inspect was rejected'));
-      }
-
-      const inspectRecord = asRecord(parseJsonBody(inspected.value.body).unwrapOr(null));
-      if (inspectRecord.isErr()) {
-        return err(inspectRecord.error);
-      }
-      const { ExitCode: exitCode, Running: running } = inspectRecord.value;
-      if (running === true) {
-        return err(backendFailure('docker exec still running after its stream ended'));
-      }
-      if (typeof exitCode !== 'number' || !Number.isInteger(exitCode)) {
-        return err(backendFailure('docker exec inspect is missing an integer exit code'));
-      }
-
-      return ok({ exitCode, stdout: demuxed.value.stdout, stderr: demuxed.value.stderr });
     },
 
     async execStream(
@@ -264,37 +310,11 @@ export function createDockerBackend(
         return err(idCheck.error);
       }
 
-      const execCreated = await client.request({
-        method: 'POST',
-        path: `/containers/${containerId}/exec`,
-        body: {
-          Cmd: [...request.argv],
-          WorkingDir: request.cwd,
-          AttachStdin: true,
-          AttachStdout: true,
-          AttachStderr: true,
-          Tty: false,
-        },
-        signal: request.signal,
-      });
-      if (execCreated.isErr()) {
-        return err(backendFailure('docker exec create request failed'));
+      const created = await createExec(client, containerId, request, true);
+      if (created.isErr()) {
+        return err(created.error);
       }
-      if (execCreated.value.status !== 201) {
-        return err(backendFailure('docker exec create was rejected'));
-      }
-      const parsed = asRecord(parseJsonBody(execCreated.value.body).unwrapOr(null));
-      if (parsed.isErr()) {
-        return err(parsed.error);
-      }
-      const idResult = readStringField(parsed.value, 'Id');
-      if (idResult.isErr()) {
-        return err(idResult.error);
-      }
-      const execId = idResult.value;
-      if (validateContainerId(execId).isErr()) {
-        return err(backendFailure('docker engine returned an unusable exec id'));
-      }
+      const execId = created.value;
 
       const opened = await client.openStream({
         method: 'POST',
@@ -309,14 +329,21 @@ export function createDockerBackend(
       const demuxer = createDockerDemuxer();
 
       let ended = false;
+      let closed = false;
       let stdinEnded = false;
       let stderr = '';
-      let resolveDone!: (result: Result<{ exitCode: number; stderr: string }, ExecutionBrokerError>) => void;
-      const done = new Promise<Result<{ exitCode: number; stderr: string }, ExecutionBrokerError>>((resolve) => {
-        resolveDone = resolve;
-      });
+      let resolveDone!: (
+        result: Result<{ exitCode: number; stderr: string }, ExecutionBrokerError>,
+      ) => void;
+      const done = new Promise<Result<{ exitCode: number; stderr: string }, ExecutionBrokerError>>(
+        (resolve) => {
+          resolveDone = resolve;
+        },
+      );
 
-      const finish = (result: Result<{ exitCode: number; stderr: string }, ExecutionBrokerError>): void => {
+      const finish = (
+        result: Result<{ exitCode: number; stderr: string }, ExecutionBrokerError>,
+      ): void => {
         if (ended) {
           return;
         }
@@ -328,8 +355,8 @@ export function createDockerBackend(
         if (ended) {
           return;
         }
-        duplex.destroy();
         finish(err(error));
+        duplex.destroy();
       };
       const onAbort = (): void => {
         duplex.destroy();
@@ -338,41 +365,28 @@ export function createDockerBackend(
       const deliver = (frames: { stream: 'stdout' | 'stderr'; text: string }[]): void => {
         for (const frame of frames) {
           if (frame.stream === 'stdout') {
-            request.onStdout(frame.text);
+            try {
+              request.onStdout(frame.text);
+            } catch {
+              fail(backendFailure('stdout consumer failed'));
+              return;
+            }
           } else if (stderr.length < STREAM_STDERR_CAP) {
             stderr += frame.text.slice(0, STREAM_STDERR_CAP - stderr.length);
           }
         }
       };
 
-      const readExitCode = async (): Promise<Result<{ exitCode: number; stderr: string }, ExecutionBrokerError>> => {
-        const inspected = await client.request({
-          method: 'GET',
-          path: `/exec/${execId}/json`,
-          signal: request.signal,
-        });
-        if (inspected.isErr()) {
-          return err(backendFailure('docker exec inspect request failed'));
-        }
-        if (inspected.value.status !== 200) {
-          return err(backendFailure('docker exec inspect was rejected'));
-        }
-        const record = asRecord(parseJsonBody(inspected.value.body).unwrapOr(null));
-        if (record.isErr()) {
-          return err(record.error);
-        }
-        const { ExitCode: exitCode, Running: running } = record.value;
-        if (running === true) {
-          return err(backendFailure('docker exec still running after its stream ended'));
-        }
-        if (typeof exitCode !== 'number' || !Number.isInteger(exitCode)) {
-          return err(backendFailure('docker exec inspect is missing an integer exit code'));
-        }
-        return ok({ exitCode, stderr });
-      };
+      const readExitCode = async (): Promise<
+        Result<{ exitCode: number; stderr: string }, ExecutionBrokerError>
+      > =>
+        (await readExecExitCode(client, execId, request.signal)).map((exitCode) => ({
+          exitCode,
+          stderr,
+        }));
 
       duplex.onData((chunk) => {
-        if (ended) {
+        if (ended || closed) {
           return;
         }
         const frames = demuxer.push(chunk);
@@ -384,9 +398,10 @@ export function createDockerBackend(
       });
 
       duplex.onClose((error) => {
-        if (ended) {
+        if (ended || closed) {
           return;
         }
+        closed = true;
         if (error) {
           finish(err(backendFailure('docker exec stream failed')));
           return;

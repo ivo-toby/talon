@@ -66,19 +66,26 @@ function fakeClient(
       },
       openStream:
         openStream ??
-        (() => Promise.resolve(err(new ExecutionBrokerError('BACKEND_FAILURE', 'openStream not scripted')))),
+        (() =>
+          Promise.resolve(
+            err(new ExecutionBrokerError('BACKEND_FAILURE', 'openStream not scripted')),
+          )),
     },
   };
 }
 
 const happyScript: Script = (request) => {
-  if (request.method === 'POST' && request.path.startsWith('/containers/create')) return json(201, { Id: 'c1' });
-  if (request.method === 'POST' && request.path === '/containers/c1/start') return ok({ status: 204, body: Buffer.alloc(0) });
-  if (request.method === 'POST' && request.path === '/containers/c1/exec') return json(201, { Id: 'e1' });
+  if (request.method === 'POST' && request.path.startsWith('/containers/create'))
+    return json(201, { Id: 'c1' });
+  if (request.method === 'POST' && request.path === '/containers/c1/start')
+    return ok({ status: 204, body: Buffer.alloc(0) });
+  if (request.method === 'POST' && request.path === '/containers/c1/exec')
+    return json(201, { Id: 'e1' });
   if (request.method === 'POST' && request.path === '/exec/e1/start') {
     return ok({ status: 200, body: Buffer.concat([frame(1, 'out'), frame(2, 'err')]) });
   }
-  if (request.method === 'GET' && request.path === '/exec/e1/json') return json(200, { ExitCode: 3, Running: false });
+  if (request.method === 'GET' && request.path === '/exec/e1/json')
+    return json(200, { ExitCode: 3, Running: false });
   if (request.method === 'DELETE') return ok({ status: 204, body: Buffer.alloc(0) });
   return ok({ status: 500, body: Buffer.alloc(0) });
 };
@@ -96,17 +103,29 @@ describe('createDockerBackend', () => {
 
   it('rejects a root user and non-positive limits', () => {
     const { client } = fakeClient(happyScript);
-    expect(createDockerBackend(client, { ...config, user: '0:0' })._unsafeUnwrapErr().brokerCode).toBe('INVALID_ARGUMENT');
-    expect(createDockerBackend(client, { ...config, user: 'root' })._unsafeUnwrapErr().brokerCode).toBe('INVALID_ARGUMENT');
-    expect(createDockerBackend(client, { ...config, memoryBytes: 0 })._unsafeUnwrapErr().brokerCode).toBe('INVALID_ARGUMENT');
-    expect(createDockerBackend(client, { ...config, pidsLimit: -1 })._unsafeUnwrapErr().brokerCode).toBe('INVALID_ARGUMENT');
+    expect(
+      createDockerBackend(client, { ...config, user: '0:0' })._unsafeUnwrapErr().brokerCode,
+    ).toBe('INVALID_ARGUMENT');
+    expect(
+      createDockerBackend(client, { ...config, user: 'root' })._unsafeUnwrapErr().brokerCode,
+    ).toBe('INVALID_ARGUMENT');
+    expect(
+      createDockerBackend(client, { ...config, memoryBytes: 0 })._unsafeUnwrapErr().brokerCode,
+    ).toBe('INVALID_ARGUMENT');
+    expect(
+      createDockerBackend(client, { ...config, pidsLimit: -1 })._unsafeUnwrapErr().brokerCode,
+    ).toBe('INVALID_ARGUMENT');
   });
 
   it('reports the configured disk quota capability', () => {
     const { client } = fakeClient(happyScript);
-    expect(createDockerBackend(client, config)._unsafeUnwrap().capabilities()).toEqual({ diskQuotaEnforced: false });
+    expect(createDockerBackend(client, config)._unsafeUnwrap().capabilities()).toEqual({
+      diskQuotaEnforced: false,
+    });
     expect(
-      createDockerBackend(client, { ...config, diskQuotaEnforced: true })._unsafeUnwrap().capabilities(),
+      createDockerBackend(client, { ...config, diskQuotaEnforced: true })
+        ._unsafeUnwrap()
+        .capabilities(),
     ).toEqual({ diskQuotaEnforced: true });
   });
 });
@@ -165,7 +184,9 @@ describe('DockerContainerBackend.createContainer', () => {
 
   it('returns BACKEND_FAILURE when create is rejected and does not start anything', async () => {
     const { client, calls } = fakeClient((request) =>
-      request.path.startsWith('/containers/create') ? json(500, { message: 'boom' }) : happyScript(request),
+      request.path.startsWith('/containers/create')
+        ? json(500, { message: 'boom' })
+        : happyScript(request),
     );
     const backend = createDockerBackend(client, config)._unsafeUnwrap();
     const error = (await backend.createContainer(spec))._unsafeUnwrapErr();
@@ -176,7 +197,9 @@ describe('DockerContainerBackend.createContainer', () => {
 
   it('force-removes the created container when start fails', async () => {
     const { client, calls } = fakeClient((request) =>
-      request.path === '/containers/c1/start' ? json(500, { message: 'cannot start' }) : happyScript(request),
+      request.path === '/containers/c1/start'
+        ? json(500, { message: 'cannot start' })
+        : happyScript(request),
     );
     const backend = createDockerBackend(client, config)._unsafeUnwrap();
     const error = (await backend.createContainer(spec))._unsafeUnwrapErr();
@@ -187,9 +210,13 @@ describe('DockerContainerBackend.createContainer', () => {
   });
 
   it('returns BACKEND_FAILURE when the transport fails', async () => {
-    const { client } = fakeClient(() => err(new ExecutionBrokerError('BACKEND_FAILURE', 'transport')));
+    const { client } = fakeClient(() =>
+      err(new ExecutionBrokerError('BACKEND_FAILURE', 'transport')),
+    );
     const backend = createDockerBackend(client, config)._unsafeUnwrap();
-    expect((await backend.createContainer(spec))._unsafeUnwrapErr().brokerCode).toBe('BACKEND_FAILURE');
+    expect((await backend.createContainer(spec))._unsafeUnwrapErr().brokerCode).toBe(
+      'BACKEND_FAILURE',
+    );
   });
 });
 
@@ -228,17 +255,23 @@ describe('DockerContainerBackend.exec', () => {
 
   it('fails when the exec is still running after the stream ended', async () => {
     const { client } = fakeClient((request) =>
-      request.path === '/exec/e1/json' ? json(200, { ExitCode: 0, Running: true }) : happyScript(request),
+      request.path === '/exec/e1/json'
+        ? json(200, { ExitCode: 0, Running: true })
+        : happyScript(request),
     );
     const backend = createDockerBackend(client, config)._unsafeUnwrap();
-    const error = (await backend.exec('c1', { argv: ['true'], cwd: '/epic-wiki', signal: signal() }))._unsafeUnwrapErr();
+    const error = (
+      await backend.exec('c1', { argv: ['true'], cwd: '/epic-wiki', signal: signal() })
+    )._unsafeUnwrapErr();
     expect(error.brokerCode).toBe('BACKEND_FAILURE');
   });
 
   it('fails on a non-201 exec create, a non-200 exec start, and a malformed inspect, without echoing argv', async () => {
     for (const failing of ['/containers/c1/exec', '/exec/e1/start', '/exec/e1/json']) {
       const { client } = fakeClient((request) =>
-        request.path === failing ? ok({ status: 500, body: Buffer.from('argv-secret') }) : happyScript(request),
+        request.path === failing
+          ? ok({ status: 500, body: Buffer.from('argv-secret') })
+          : happyScript(request),
       );
       const backend = createDockerBackend(client, config)._unsafeUnwrap();
       const error = (
@@ -248,19 +281,27 @@ describe('DockerContainerBackend.exec', () => {
       expect(error.message).not.toContain('argv-secret');
     }
     const { client } = fakeClient((request) =>
-      request.path === '/exec/e1/json' ? ok({ status: 200, body: Buffer.from('not json') }) : happyScript(request),
+      request.path === '/exec/e1/json'
+        ? ok({ status: 200, body: Buffer.from('not json') })
+        : happyScript(request),
     );
     const backend = createDockerBackend(client, config)._unsafeUnwrap();
     expect(
-      (await backend.exec('c1', { argv: ['true'], cwd: '/epic-wiki', signal: signal() }))._unsafeUnwrapErr().brokerCode,
+      (
+        await backend.exec('c1', { argv: ['true'], cwd: '/epic-wiki', signal: signal() })
+      )._unsafeUnwrapErr().brokerCode,
     ).toBe('BACKEND_FAILURE');
   });
 
   it('returns BACKEND_FAILURE when the transport fails', async () => {
-    const { client } = fakeClient(() => err(new ExecutionBrokerError('BACKEND_FAILURE', 'transport')));
+    const { client } = fakeClient(() =>
+      err(new ExecutionBrokerError('BACKEND_FAILURE', 'transport')),
+    );
     const backend = createDockerBackend(client, config)._unsafeUnwrap();
     expect(
-      (await backend.exec('c1', { argv: ['true'], cwd: '/epic-wiki', signal: signal() }))._unsafeUnwrapErr().brokerCode,
+      (
+        await backend.exec('c1', { argv: ['true'], cwd: '/epic-wiki', signal: signal() })
+      )._unsafeUnwrapErr().brokerCode,
     ).toBe('BACKEND_FAILURE');
   });
 });
@@ -285,17 +326,23 @@ describe('DockerContainerBackend.removeContainer', () => {
   it('returns BACKEND_FAILURE for other statuses and transport errors', async () => {
     const failing = fakeClient(() => ok({ status: 500, body: Buffer.alloc(0) }));
     const backend = createDockerBackend(failing.client, config)._unsafeUnwrap();
-    expect((await backend.removeContainer('c1'))._unsafeUnwrapErr().brokerCode).toBe('BACKEND_FAILURE');
+    expect((await backend.removeContainer('c1'))._unsafeUnwrapErr().brokerCode).toBe(
+      'BACKEND_FAILURE',
+    );
 
     const broken = fakeClient(() => err(new ExecutionBrokerError('BACKEND_FAILURE', 'transport')));
     const other = createDockerBackend(broken.client, config)._unsafeUnwrap();
-    expect((await other.removeContainer('c1'))._unsafeUnwrapErr().brokerCode).toBe('BACKEND_FAILURE');
+    expect((await other.removeContainer('c1'))._unsafeUnwrapErr().brokerCode).toBe(
+      'BACKEND_FAILURE',
+    );
   });
 
   it('rejects a container ID that is not safe to place in a URL path', async () => {
     const { client, calls } = fakeClient(happyScript);
     const backend = createDockerBackend(client, config)._unsafeUnwrap();
-    expect((await backend.removeContainer('../images/x'))._unsafeUnwrapErr().brokerCode).toBe('INVALID_ARGUMENT');
+    expect((await backend.removeContainer('../images/x'))._unsafeUnwrapErr().brokerCode).toBe(
+      'INVALID_ARGUMENT',
+    );
     expect(calls).toHaveLength(0);
   });
 });
@@ -341,17 +388,34 @@ function streamHarness(): {
     streamCalls.push(request);
     return Promise.resolve(ok(duplex));
   });
-  return { duplex, calls, streamCalls, backend: createDockerBackend(client, config)._unsafeUnwrap() };
+  return {
+    duplex,
+    calls,
+    streamCalls,
+    backend: createDockerBackend(client, config)._unsafeUnwrap(),
+  };
+}
+
+function open(): { argv: string[]; cwd: string; signal: AbortSignal; onStdout: () => void } {
+  return { argv: ['x'], cwd: '/epic-wiki', signal: signal(), onStdout: () => undefined };
 }
 
 describe('DockerContainerBackend.execStream', () => {
   it('creates an exec with stdin attached and starts it over openStream', async () => {
     const { backend, calls, streamCalls } = streamHarness();
     const session = (
-      await backend.execStream('c1', { argv: ['cat'], cwd: '/epic-wiki', signal: signal(), onStdout: () => undefined })
+      await backend.execStream('c1', {
+        argv: ['cat'],
+        cwd: '/epic-wiki',
+        signal: signal(),
+        onStdout: () => undefined,
+      })
     )._unsafeUnwrap();
     expect(session).toBeDefined();
-    const body = calls.find((c) => c.path === '/containers/c1/exec')?.body as Record<string, unknown>;
+    const body = calls.find((c) => c.path === '/containers/c1/exec')?.body as Record<
+      string,
+      unknown
+    >;
     expect(body).toMatchObject({
       Cmd: ['cat'],
       WorkingDir: '/epic-wiki',
@@ -388,7 +452,12 @@ describe('DockerContainerBackend.execStream', () => {
   it('writes stdin as UTF-8 bytes, half-closes input, and ignores writes after the end', async () => {
     const { backend, duplex } = streamHarness();
     const session = (
-      await backend.execStream('c1', { argv: ['x'], cwd: '/epic-wiki', signal: signal(), onStdout: () => undefined })
+      await backend.execStream('c1', {
+        argv: ['x'],
+        cwd: '/epic-wiki',
+        signal: signal(),
+        onStdout: () => undefined,
+      })
     )._unsafeUnwrap();
     session.writeStdin('héllo\n');
     session.endStdin();
@@ -403,7 +472,12 @@ describe('DockerContainerBackend.execStream', () => {
   it('caps stderr at 65_536 characters, keeping the first ones', async () => {
     const { backend, duplex } = streamHarness();
     const session = (
-      await backend.execStream('c1', { argv: ['x'], cwd: '/epic-wiki', signal: signal(), onStdout: () => undefined })
+      await backend.execStream('c1', {
+        argv: ['x'],
+        cwd: '/epic-wiki',
+        signal: signal(),
+        onStdout: () => undefined,
+      })
     )._unsafeUnwrap();
     duplex.emitData(frame(2, 'a'.repeat(65_000)));
     duplex.emitData(frame(2, 'b'.repeat(2_000)));
@@ -416,7 +490,12 @@ describe('DockerContainerBackend.execStream', () => {
   it('gives BACKEND_FAILURE in done when the stream closes with an error', async () => {
     const { backend, duplex } = streamHarness();
     const session = (
-      await backend.execStream('c1', { argv: ['x'], cwd: '/epic-wiki', signal: signal(), onStdout: () => undefined })
+      await backend.execStream('c1', {
+        argv: ['x'],
+        cwd: '/epic-wiki',
+        signal: signal(),
+        onStdout: () => undefined,
+      })
     )._unsafeUnwrap();
     duplex.close(new ExecutionBrokerError('BACKEND_FAILURE', 'socket reset'));
     expect((await session.done)._unsafeUnwrapErr().brokerCode).toBe('BACKEND_FAILURE');
@@ -425,7 +504,12 @@ describe('DockerContainerBackend.execStream', () => {
   it('destroys the duplex and fails done on a malformed frame', async () => {
     const { backend, duplex } = streamHarness();
     const session = (
-      await backend.execStream('c1', { argv: ['x'], cwd: '/epic-wiki', signal: signal(), onStdout: () => undefined })
+      await backend.execStream('c1', {
+        argv: ['x'],
+        cwd: '/epic-wiki',
+        signal: signal(),
+        onStdout: () => undefined,
+      })
     )._unsafeUnwrap();
     const bad = Buffer.alloc(8);
     bad[0] = 9;
@@ -450,15 +534,72 @@ describe('DockerContainerBackend.execStream', () => {
   it('destroys the duplex when the signal aborts', async () => {
     const { backend, duplex } = streamHarness();
     const controller = new AbortController();
-    await backend.execStream('c1', {
-      argv: ['x'],
-      cwd: '/epic-wiki',
-      signal: controller.signal,
-      onStdout: () => undefined,
-    });
+    const session = (
+      await backend.execStream('c1', { ...open(), signal: controller.signal })
+    )._unsafeUnwrap();
     expect(duplex.destroyed).toBe(false);
     controller.abort();
     expect(duplex.destroyed).toBe(true);
+    duplex.close(new ExecutionBrokerError('BACKEND_FAILURE', 'aborted'));
+    expect((await session.done)._unsafeUnwrapErr().brokerCode).toBe('BACKEND_FAILURE');
+  });
+
+  it('resolves done one time when close fires twice', async () => {
+    const { backend, duplex, calls } = streamHarness();
+    const session = (await backend.execStream('c1', open()))._unsafeUnwrap();
+    duplex.close();
+    duplex.close();
+    expect((await session.done)._unsafeUnwrap().exitCode).toBe(3);
+    expect(calls.filter((c) => c.path === '/exec/e1/json')).toHaveLength(1);
+  });
+
+  it('keeps the demux error when close follows a demux failure', async () => {
+    const { backend, duplex, calls } = streamHarness();
+    const session = (await backend.execStream('c1', open()))._unsafeUnwrap();
+    const bad = Buffer.alloc(8);
+    bad[0] = 9;
+    duplex.emitData(bad);
+    duplex.close();
+    expect((await session.done)._unsafeUnwrapErr().message).toContain('stream');
+    expect(calls.some((c) => c.path === '/exec/e1/json')).toBe(false);
+  });
+
+  it('fails done and destroys the duplex when the stdout consumer throws', async () => {
+    const { backend, duplex } = streamHarness();
+    const session = (
+      await backend.execStream('c1', {
+        ...open(),
+        onStdout: () => {
+          throw new Error('consumer bug');
+        },
+      })
+    )._unsafeUnwrap();
+    expect(() => duplex.emitData(frame(1, 'x'))).not.toThrow();
+    const error = (await session.done)._unsafeUnwrapErr();
+    expect(error.brokerCode).toBe('BACKEND_FAILURE');
+    expect(error.message).not.toContain('bug');
+    expect(duplex.destroyed).toBe(true);
+  });
+
+  it('fails done when exec inspect fails, is rejected or reports a running exec', async () => {
+    const variants: Script[] = [
+      (r) =>
+        r.path === '/exec/e1/json'
+          ? err(new ExecutionBrokerError('BACKEND_FAILURE', 'x'))
+          : happyScript(r),
+      (r) =>
+        r.path === '/exec/e1/json' ? ok({ status: 500, body: Buffer.alloc(0) }) : happyScript(r),
+      (r) =>
+        r.path === '/exec/e1/json' ? json(200, { ExitCode: 0, Running: true }) : happyScript(r),
+    ];
+    for (const script of variants) {
+      const duplex = new FakeDuplex();
+      const { client } = fakeClient(script, () => Promise.resolve(ok(duplex)));
+      const backend = createDockerBackend(client, config)._unsafeUnwrap();
+      const session = (await backend.execStream('c1', open()))._unsafeUnwrap();
+      duplex.close();
+      expect((await session.done)._unsafeUnwrapErr().brokerCode).toBe('BACKEND_FAILURE');
+    }
   });
 
   it('returns BACKEND_FAILURE when openStream fails', async () => {
