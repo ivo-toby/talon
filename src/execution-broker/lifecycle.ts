@@ -143,12 +143,11 @@ export class ExecutionBroker {
   }
 
   async execute(input: unknown): Promise<Result<ExecutionResult, ExecutionBrokerError>> {
-    const admitted = await this.admit(input);
-    if (admitted.isErr()) {
-      return err(admitted.error);
-    }
-    const { leaseId, state, pending, containerId, argv, cwd, timeoutMs } = admitted.value;
-    return await this.runExec(leaseId, state, pending, containerId, argv, cwd, timeoutMs);
+    return await this.admit(
+      input,
+      ({ leaseId, state, pending, containerId, argv, cwd, timeoutMs }) =>
+        this.runExec(leaseId, state, pending, containerId, argv, cwd, timeoutMs),
+    );
   }
 
   /**
@@ -162,11 +161,18 @@ export class ExecutionBroker {
     input: unknown,
     handlers: { onStdout(text: string): void },
   ): Promise<Result<StreamExecution, ExecutionBrokerError>> {
-    const admitted = await this.admit(input);
-    if (admitted.isErr()) {
-      return err(admitted.error);
-    }
-    const { leaseId, state, pending, containerId, argv, cwd, timeoutMs } = admitted.value;
+    return await this.admit(input, (admitted) => this.startStream(admitted, handlers));
+  }
+
+  /**
+   * Arms the latch and calls backend.execStream. Runs synchronously up to the
+   * backend call (admit invokes it with no await in between), so a revoke can
+   * never land between slot reservation and the armed latch.
+   */
+  private async startStream(
+    { leaseId, state, pending, containerId, argv, cwd, timeoutMs }: Admitted,
+    handlers: { onStdout(text: string): void },
+  ): Promise<Result<StreamExecution, ExecutionBrokerError>> {
     let endLease!: (r: Result<ExecutionResult, ExecutionBrokerError>) => Promise<void>;
     const result = new Promise<Result<ExecutionResult, ExecutionBrokerError>>((resolve) => {
       endLease = this.armExec(leaseId, state, pending, timeoutMs, resolve).endLease;
@@ -221,6 +227,10 @@ export class ExecutionBroker {
     }
     const session = started.value;
     void session.done.then((done) => {
+      if (pending.controller.signal.aborted) {
+        // Whoever aborted this exec owns the outcome, even over an ok exit.
+        return;
+      }
       if (done.isOk()) {
         const cap = state.profile.outputCapChars;
         const { exitCode, stderr } = done.value;
@@ -235,9 +245,6 @@ export class ExecutionBroker {
             cancelled: false,
           }),
         );
-        return;
-      }
-      if (pending.controller.signal.aborted) {
         return;
       }
       void endLease(backendFailure(done.error));
@@ -260,10 +267,14 @@ export class ExecutionBroker {
   /**
    * Validation and admission shared by execute and executeStream: parse, lease
    * binding, argv bounds, timeout bound, cwd, concurrency, then the slot
-   * reservation and single-flight container creation. Returns the reserved
-   * slot and the container to run in.
+   * reservation and single-flight container creation. Then `run` is called
+   * synchronously, with no await between the last admission step and the
+   * call, so `run` arms the settle latch before a revoke or timeout can land.
    */
-  private async admit(input: unknown): Promise<Result<Admitted, ExecutionBrokerError>> {
+  private async admit<T>(
+    input: unknown,
+    run: (admitted: Admitted) => Promise<Result<T, ExecutionBrokerError>>,
+  ): Promise<Result<T, ExecutionBrokerError>> {
     const parsed = parseExecuteInput(input);
     if (parsed.isErr()) {
       return err(parsed.error);
@@ -357,7 +368,7 @@ export class ExecutionBroker {
       state.creating = null;
       containerId = created.value.containerId;
     }
-    return ok({
+    return await run({
       leaseId,
       state,
       pending,
@@ -516,6 +527,11 @@ export class ExecutionBroker {
           cwd,
           signal: pending.controller.signal,
         });
+        if (pending.controller.signal.aborted) {
+          // Whoever aborted this exec (timeout, revoke, or a terminal sibling)
+          // owns the outcome, even over an ok exit or a backend error.
+          return;
+        }
         if (result.isOk()) {
           const cap = state.profile.outputCapChars;
           const { exitCode, stdout, stderr } = result.value;
@@ -530,12 +546,6 @@ export class ExecutionBroker {
               cancelled: false,
             }),
           );
-          return;
-        }
-        if (pending.controller.signal.aborted) {
-          // Constraint: whoever aborted this exec (timeout, revoke, or a
-          // terminal sibling) owns the outcome. A real backend fails its exec
-          // when aborted; that error must not outrun the timeout result.
           return;
         }
         void endLease(

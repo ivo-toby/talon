@@ -1,9 +1,19 @@
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { err, ok } from 'neverthrow';
+import type { Result } from 'neverthrow';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ExecutionBroker, InMemoryContainerBackend } from '../../../src/execution-broker/index.js';
-import type { OperatorAllowlist, ProfileConfig } from '../../../src/execution-broker/index.js';
+import {
+  ExecutionBroker,
+  ExecutionBrokerError,
+  InMemoryContainerBackend,
+} from '../../../src/execution-broker/index.js';
+import type {
+  BackendExecSession,
+  OperatorAllowlist,
+  ProfileConfig,
+} from '../../../src/execution-broker/index.js';
 
 const tempRoots: string[] = [];
 
@@ -256,19 +266,43 @@ describe('executeStream', () => {
     expect(received).toEqual([]);
   });
 
-  it('does not call onStdout after result has resolved', async () => {
-    const { backend, broker, input } = await leased();
+  it('does not call onStdout once a revoke has ended the exec, even if the backend still emits', async () => {
+    const { backend, broker, input, leaseId } = await leased();
     let emit!: (text: string) => void;
-    backend.setExecStreamHandler(async (call) => {
+    backend.setExecStreamHandler((call) => {
       emit = call.emitStdout;
-      return { exitCode: 0, stderr: '' };
+      return new Promise(() => {});
     });
     const chunks: string[] = [];
     const stream = (
       await broker.executeStream(input, { onStdout: (t) => chunks.push(t) })
     )._unsafeUnwrap();
+    emit('early');
+    (await broker.revoke(leaseId))._unsafeUnwrap();
     await stream.result;
+
     emit('late');
+
+    expect(chunks).toEqual(['early']);
+  });
+
+  it('does not call onStdout after a time-out, even if the backend still emits', async () => {
+    vi.useFakeTimers();
+    const { backend, broker, input } = await leased();
+    let emit!: (text: string) => void;
+    backend.setExecStreamHandler((call) => {
+      emit = call.emitStdout;
+      return new Promise(() => {});
+    });
+    const chunks: string[] = [];
+    const stream = (
+      await broker.executeStream(input, { onStdout: (t) => chunks.push(t) })
+    )._unsafeUnwrap();
+    await vi.advanceTimersByTimeAsync(5_001);
+    await stream.result;
+
+    emit('late');
+
     expect(chunks).toEqual([]);
   });
 
@@ -307,5 +341,147 @@ describe('executeStream', () => {
     expect((await broker.executeStream(input, noop))._unsafeUnwrapErr().brokerCode).toBe(
       'LEASE_REVOKED',
     );
+  });
+
+  it('lets the handler-failure outcome win over an ok exit that arrives during cleanup', async () => {
+    const { backend, broker, input } = await leased();
+    const original = backend.removeContainer.bind(backend);
+    backend.removeContainer = async (id: string) => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 30));
+      return original(id);
+    };
+    backend.setExecStreamHandler((call) => {
+      return new Promise((resolve) => {
+        call.onStdin((t) => {
+          call.emitStdout(t);
+          resolve({ exitCode: 0, stderr: '' });
+        });
+      });
+    });
+    const stream = (
+      await broker.executeStream(input, {
+        onStdout: () => {
+          throw new Error('boom');
+        },
+      })
+    )._unsafeUnwrap();
+
+    stream.writeStdin('x');
+
+    expect((await stream.result)._unsafeUnwrapErr().brokerCode).toBe('BACKEND_FAILURE');
+  });
+});
+
+describe('abort in the admit window', () => {
+  it('a revoke right after a stream call on a warm lease resolves cancelled, not timed out', async () => {
+    const { backend, broker, input, leaseId } = await leased();
+    backend.setExecHandler(async () => ({ exitCode: 0, stdout: '', stderr: '' }));
+    (await broker.execute(input))._unsafeUnwrap();
+    backend.setExecStreamHandler(() => new Promise(() => {}));
+
+    const started = broker.executeStream(input, noop);
+    const revoked = broker.revoke(leaseId);
+    const stream = (await started)._unsafeUnwrap();
+    await revoked;
+
+    expect((await stream.result)._unsafeUnwrap()).toMatchObject({
+      cancelled: true,
+      timedOut: false,
+    });
+  });
+
+  it('a revoke right after a buffered execute on a warm lease resolves cancelled, not timed out', async () => {
+    const { backend, broker, input, leaseId } = await leased();
+    backend.setExecHandler(async () => ({ exitCode: 0, stdout: '', stderr: '' }));
+    (await broker.execute(input))._unsafeUnwrap();
+    backend.setExecHandler(() => new Promise(() => {}));
+
+    const started = broker.execute(input);
+    const revoked = broker.revoke(leaseId);
+
+    expect((await started)._unsafeUnwrap()).toMatchObject({ cancelled: true, timedOut: false });
+    await revoked;
+  });
+});
+
+describe('abort while the backend is starting the stream', () => {
+  function gateStart(backend: InMemoryContainerBackend) {
+    const entered = deferred<void>();
+    const gate = deferred<Result<BackendExecSession, ExecutionBrokerError>>();
+    backend.execStream = () => {
+      entered.resolve();
+      return gate.promise;
+    };
+    return { entered, gate };
+  }
+
+  function recordingSession() {
+    const calls: string[] = [];
+    const session: BackendExecSession = {
+      writeStdin: (t) => calls.push(`write:${t}`),
+      endStdin: () => calls.push('end'),
+      done: new Promise(() => {}),
+    };
+    return { calls, session };
+  }
+
+  async function freshLeaseCanExecute(backend: InMemoryContainerBackend, broker: ExecutionBroker) {
+    const created = await broker.createLease({
+      taskId: 'task-2',
+      parentPersonaId: 'wcm',
+      personaId: 'wcm',
+      profile: 'wiki-maintenance',
+      workspace: 'epic-wiki',
+    });
+    backend.setExecHandler(async () => ({ exitCode: 0, stdout: '', stderr: '' }));
+    const executed = await broker.execute({
+      leaseId: created._unsafeUnwrap().leaseId,
+      taskId: 'task-2',
+      personaId: 'wcm',
+      argv: ['true'],
+      cwd: 'pages',
+      timeoutMs: 5_000,
+    });
+    expect(executed.isOk()).toBe(true);
+  }
+
+  it('revoke while pending, then the session arrives ok: cancelled, no stdin reaches it, slot released', async () => {
+    const { backend, broker, input, leaseId } = await leased();
+    const { entered, gate } = gateStart(backend);
+    const { calls, session } = recordingSession();
+
+    const started = broker.executeStream(input, noop);
+    await entered.promise;
+    (await broker.revoke(leaseId))._unsafeUnwrap();
+    gate.resolve(ok(session));
+    const stream = (await started)._unsafeUnwrap();
+    stream.writeStdin('late');
+    stream.endStdin();
+
+    expect((await stream.result)._unsafeUnwrap()).toMatchObject({
+      cancelled: true,
+      timedOut: false,
+    });
+    expect(calls).toEqual([]);
+    await freshLeaseCanExecute(backend, broker);
+  });
+
+  it('time-out while pending, then the start fails: timedOut result, slot released', async () => {
+    vi.useFakeTimers();
+    const { backend, broker, input } = await leased();
+    const { entered, gate } = gateStart(backend);
+
+    const started = broker.executeStream(input, noop);
+    await entered.promise;
+    await vi.advanceTimersByTimeAsync(5_001);
+    gate.resolve(err(new ExecutionBrokerError('BACKEND_FAILURE', 'aborted')));
+    const stream = (await started)._unsafeUnwrap();
+    stream.writeStdin('late');
+
+    expect((await stream.result)._unsafeUnwrap()).toMatchObject({
+      timedOut: true,
+      cancelled: false,
+    });
+    await freshLeaseCanExecute(backend, broker);
   });
 });
