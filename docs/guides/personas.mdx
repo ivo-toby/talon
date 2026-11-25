@@ -71,6 +71,7 @@ These are the built-in host-tool labels exposed by the CLI today:
 | `memory.access:thread` | `memory_access` |
 | `net.http:egress` | `net_http` |
 | `channel.send:*` or `channel.send:<channel>` | `channel_send` |
+| `channel.react:*` | `channel_react`: emoji reactions on messages in the current conversation (Telegram, WhatsApp). Not implied by `channel.send` |
 | `schedule.manage:own` | `schedule_manage` |
 | `db.query:own` | `db_query` |
 | `subagent.invoke` | `subagent_invoke` |
@@ -140,6 +141,32 @@ npx talonctl unbind --persona assistant --channel my-telegram
 ```
 
 The first binding on a channel becomes the default binding automatically.
+
+### Binding one conversation
+
+A binding with `thread` routes a single conversation to a persona instead of the whole channel. It wins over the channel's default binding. The typical use is one persona per topic of a Telegram forum group:
+
+```yaml
+bindings:
+  - persona: assistant
+    channel: my-telegram
+    isDefault: true
+  - persona: groceries
+    channel: my-telegram
+    thread: '-1004452318413:42'
+```
+
+```bash
+npx talonctl bind --persona groceries --channel my-telegram --thread '-1004452318413:42'
+npx talonctl unbind --persona groceries --channel my-telegram --thread '-1004452318413:42'
+```
+
+- `thread` is the channel's own thread ID. For Telegram, send `/chatid` in the chat or topic and use the `Talon thread` value. Always quote it in YAML.
+- Thread bindings are applied when talond starts. The thread is created if the conversation has not sent a message yet.
+- Removing the entry returns the conversation to the default persona at the next start.
+- A thread binding is never a channel default, and a conversation can have one persona.
+
+See the [Telegram topic workspaces guide](/docs/guides/telegram-topics) for the full setup.
 
 ## Mounts
 

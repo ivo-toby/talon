@@ -23,6 +23,9 @@ Talon connects to multiple messaging platforms simultaneously. Each channel has 
 - Thread mapping preserves conversation continuity across messages
 - Markdown output auto-converted to each platform's native format
 - Channel-scoped capability labels (`channel.send:<name>`) control which personas can send where
+- Native replies and emoji reactions in both directions on Telegram, WhatsApp Baileys and WhatsApp Business: the agent sees which message was replied to, can answer as a reply (`replyToTrigger`), can react instead of writing (`channel_react` plus `NO_REPLY`), and receives reactions users place on its messages (`inboundReactions`)
+- Telegram topic workspaces: every forum topic is its own conversation (`<chat_id>:<topic_id>`); `requireMention: false` and per-chat or per-topic `chats` overrides control who answers where, a `thread` binding gives a topic its own persona, several bots can share one group, and `/chatid` reveals the IDs
+- `talonctl move-context` moves or copies a conversation's memory and history to another conversation
 - Terminal channel supports `--persona` flag for runtime persona switching, persistent threads via `clientId`, and rendered markdown output with typing indicators
 
 ---
@@ -53,6 +56,7 @@ Default-deny policy engine. Every tool call is checked against the persona's cap
 | Capability               | Controls                                |
 | ------------------------ | --------------------------------------- |
 | `channel.send:<channel>` | Send messages to a specific channel     |
+| `channel.react:*`        | React with an emoji in the current conversation |
 | `schedule.manage`        | Create/modify/delete scheduled tasks    |
 | `memory.access`          | Read/write per-thread structured memory |
 | `net.http`               | Fetch external URLs                     |
@@ -236,6 +240,7 @@ Seven built-in tools exposed to agents over a Unix socket. The daemon mediates a
 | ------------------- | --------------------- | ----------------------------------------------- |
 | `schedule_manage`   | `schedule.manage`     | CRUD + list schedules, supports `promptFile`    |
 | `channel_send`      | `channel.send:<ch>`   | Send messages to channel connectors             |
+| `channel_react`     | `channel.react:*`     | Emoji reactions on messages (Telegram, WhatsApp) |
 | `memory_access`     | `memory.access`       | Read/write/delete per-thread structured memory  |
 | `net_http`          | `net.http`            | Fetch external URLs with domain allowlist       |
 | `db_query`          | `db.query`            | Read-only database queries with 5-layer safety  |
@@ -281,8 +286,9 @@ Seven built-in tools exposed to agents over a Unix socket. The daemon mediates a
 | `list-channels`      | List all configured channels                                  |
 | `list-personas`      | List all configured personas                                  |
 | `list-skills`        | List all skills across personas                               |
-| `bind`               | Bind a persona to a channel                                   |
-| `unbind`             | Remove a persona-channel binding                              |
+| `bind`               | Bind a persona to a channel, or to one conversation with `--thread` |
+| `unbind`             | Remove a persona-channel binding, or one conversation binding with `--thread` |
+| `move-context`       | Move or copy memory and history between conversations         |
 | `remove-channel`     | Remove a channel and its bindings                             |
 | `remove-persona`     | Remove a persona, its directory, and bindings                 |
 | `env-check`          | Audit config for missing `${ENV_VAR}` placeholders            |

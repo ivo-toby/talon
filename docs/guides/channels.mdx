@@ -209,6 +209,12 @@ channels:
 | `webhookPort` | Optional webhook port. Default: `3000` when `appSecret` is set |
 | `webhookHost` | Optional bind host. Default: `0.0.0.0` |
 | `webhookPath` | Optional webhook path. Default: `/webhook` |
+| `replyToTrigger` | When an answer is sent as a contextual reply to the message that triggered it: `groups` (default), `always`, or `never`. The Cloud API has no group chats, so the default never quotes; use `always` to quote every answer |
+| `inboundReactions` | Forward user reactions on Talon's messages to the agent. Default: `true` |
+
+Notes:
+
+- contextual replies and emoji reactions work in both directions; see [Replies, threads and reactions](#replies-threads-and-reactions)
 
 ---
 
