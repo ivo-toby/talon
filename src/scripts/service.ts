@@ -577,27 +577,26 @@ export function createScriptService(deps: ScriptServiceDeps): ScriptService {
       : { reply: `Rejected:${label}` };
   }
 
-  function cancelLeak(event: InboundEvent): { reply?: string } {
-    const cancelled = approval.cancelLeaked(event);
-    if (cancelled.isErr()) {
-      logger.error(
-        { scriptCode: cancelled.error.scriptCode },
-        'a leaked approval code was not cancelled',
-      );
-    } else {
-      for (const item of cancelled.value) {
-        audit({
-          action: 'script.approval.expired',
-          personaId: item.personaId ?? '',
-          threadId: item.threadId ?? '',
-          runId: randomUUID(),
-          details: { versionId: item.versionId, reason: 'leak', channelName: event.channelName },
-        });
-      }
+  function auditCancelled(
+    event: InboundEvent,
+    cancelled: Array<{ versionId: string; personaId?: string; threadId?: string }>,
+    reason: 'leak' | 'wrong-chat',
+  ): void {
+    for (const item of cancelled) {
+      audit({
+        action: 'script.approval.expired',
+        personaId: item.personaId ?? '',
+        threadId: item.threadId ?? '',
+        runId: randomUUID(),
+        details: { versionId: item.versionId, reason, channelName: event.channelName },
+      });
     }
-    return {
-      reply: 'The code was not in a valid command, so I cancelled it. Ask for a new approval.',
-    };
+  }
+
+  /** A reply for a claimed message that was no valid decision. A blocked chat gets none. */
+  function attemptReply(event: InboundEvent, reply: string): { reply?: string } {
+    const isBlocked = approval.noteAttempt(event.channelName, event.externalThreadId);
+    return isBlocked ? {} : { reply };
   }
 
   function handleInboundImpl(event: InboundEvent): { reply?: string } | undefined {
@@ -605,9 +604,20 @@ export function createScriptService(deps: ScriptServiceDeps): ScriptService {
       case 'command':
         return decideCommand(event);
       case 'leak':
-        return cancelLeak(event);
+        // The code is cancelled also in a blocked chat: it was seen outside a command.
+        auditCancelled(event, approval.cancelLeaked(event), 'leak');
+        return attemptReply(
+          event,
+          'The code was not in a valid command, so I cancelled it. Ask for a new approval.',
+        );
+      case 'wrong-chat':
+        auditCancelled(event, approval.cancelWrongChat(event), 'wrong-chat');
+        return attemptReply(
+          event,
+          'This code belongs to another chat, so I cancelled it. Ask for a new approval.',
+        );
       case 'malformed':
-        return { reply: 'Use: /approve CODE or /reject CODE' };
+        return attemptReply(event, 'Use: /approve CODE or /reject CODE');
       case 'none':
         return undefined;
     }
@@ -785,7 +795,10 @@ export function createScriptService(deps: ScriptServiceDeps): ScriptService {
 
     test: (input) => tracked(() => testImpl(input)),
 
-    requestApproval: (input) => guard(() => requestApprovalImpl(input)),
+    requestApproval: (input) =>
+      closed
+        ? Promise.resolve(err(new ScriptError('SANDBOX', 'the script service is closed')))
+        : guard(() => requestApprovalImpl(input)),
 
     matchesInbound(event): boolean {
       try {

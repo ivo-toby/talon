@@ -19,19 +19,27 @@ const MAX_REFUSALS = 5;
 const WINDOW_MS = 10 * 60_000;
 const MAX_KEYS = 1000;
 const COMMAND_RE = /^\/(approve|reject)(@[A-Za-z0-9_]{1,64})?[ \t]+([A-Za-z0-9]{8})[.!]?$/i;
-const COMMAND_WORD_RE = /^\/(approve|reject)(@[A-Za-z0-9_]{1,64})?$/i;
-/** Leak scan bounds: the first characters of a message, and the code-sized tokens in them. */
-const SCAN_CHARS = 8000;
-const SCAN_TOKENS = 400;
+const COMMAND_START_RE = /^\/(approve|reject)/i;
+/** A message longer than this is scanned at both ends, this many characters each. */
+const SCAN_CHARS = 16_000;
+/** Unicode format characters, for example zero-width spaces and the byte order mark. */
+const FORMAT_RE = /\p{Cf}/gu;
+const RUN_RE = /[A-Za-z0-9]+/g;
+/** Only a window of code characters can be a code, so only such a window is hashed. */
+const CODE_WINDOW_RE = /^[A-HJ-NP-Z2-9]{8}$/;
+/** Two short runs with one of these characters between them are also tried as one code. */
+const JOIN_CHARS = new Set(['-', '_', '.', ' ']);
 
 /**
- * What an inbound message is for the approvals of its chat.
- * - `none`: the chat has no open approval, or the message is not about one.
- * - `command`: an `/approve CODE` or `/reject CODE` command.
- * - `leak`: not a command, but the message holds a valid open code of this chat.
+ * What an inbound message is for the open approvals.
+ * - `none`: nothing to claim.
+ * - `command`: an `/approve CODE` or `/reject CODE` command, in a chat with an open approval.
+ * - `leak`: not a command, but the message holds a valid open code of its chat.
  * - `malformed`: not a command and no leak, but it starts with `/approve` or `/reject`.
+ * - `wrong-chat`: a well-formed command, in a chat with no open approval, with the
+ *   valid code of another chat.
  */
-export type InboundKind = 'none' | 'command' | 'leak' | 'malformed';
+export type InboundKind = 'none' | 'command' | 'leak' | 'malformed' | 'wrong-chat';
 
 export interface ChatMessage {
   channelName: string;
@@ -54,16 +62,26 @@ export interface ApprovalService {
   }): Result<Decision, ScriptError>;
   parseCommand(text: string): { decision: 'approved' | 'rejected'; code: string } | undefined;
   /**
-   * Synchronous, never throws. A chat with no open approval costs one map
-   * lookup: no hashing and no database.
+   * Synchronous, never throws. With no open approval anywhere, a message costs
+   * two map lookups: no hashing and no database.
    */
   classify(message: ChatMessage): InboundKind;
   /**
    * Expires the open approvals of the chat whose code the message holds, and
    * moves their versions back to `tested`. Returns the versions it cancelled.
    */
-  cancelLeaked(message: ChatMessage): Result<CancelledApproval[], ScriptError>;
-  /** Expires the open approvals of a version, in the database and in the index. */
+  cancelLeaked(message: ChatMessage): CancelledApproval[];
+  /** The same for a `wrong-chat` command: cancels the approval that its code belongs to. */
+  cancelWrongChat(message: ChatMessage): CancelledApproval[];
+  /**
+   * Counts a claimed message that was not a valid decision toward the attempt
+   * limiter of its chat. Returns true, and counts nothing, if the chat is blocked.
+   */
+  noteAttempt(channelName: string, externalThreadId: string): boolean;
+  /**
+   * Expires the open approvals of a version, in the database and in the index.
+   * If the database write fails, the index keeps the codes (fail closed).
+   */
   expireVersion(versionId: string): Result<void, ScriptError>;
 }
 
@@ -86,6 +104,43 @@ export interface CancelledApproval {
 interface OpenCode {
   versionId: string;
   expiresAt: number;
+}
+
+/**
+ * The uppercase 8-character strings of a text that can be a code: each window of
+ * code characters in a run of letters and digits, and two short runs that a single
+ * `-`, `_`, `.` or space joins to 8 characters. Format characters are removed first.
+ * A long text is scanned at its first and its last `SCAN_CHARS` characters.
+ */
+function candidateCodes(text: string): Set<string> {
+  const clean = text.replace(FORMAT_RE, '');
+  const parts =
+    clean.length <= SCAN_CHARS ? [clean] : [clean.slice(0, SCAN_CHARS), clean.slice(-SCAN_CHARS)];
+  const found = new Set<string>();
+  const add = (candidate: string): void => {
+    const upper = candidate.toUpperCase();
+    if (CODE_WINDOW_RE.test(upper)) found.add(upper);
+  };
+  for (const part of parts) {
+    let previous: { run: string; end: number } | undefined;
+    for (const match of part.matchAll(RUN_RE)) {
+      const run = match[0];
+      const start = match.index;
+      for (let i = 0; i + CODE_LENGTH <= run.length; i++) add(run.slice(i, i + CODE_LENGTH));
+      if (
+        previous &&
+        start - previous.end === 1 &&
+        JOIN_CHARS.has(part[previous.end]) &&
+        previous.run.length < CODE_LENGTH &&
+        run.length < CODE_LENGTH &&
+        previous.run.length + run.length === CODE_LENGTH
+      ) {
+        add(previous.run + run);
+      }
+      previous = { run, end: start + run.length };
+    }
+  }
+  return found;
 }
 
 const chatKey = (channelName: string, externalThreadId: string): string =>
@@ -112,15 +167,22 @@ export function createApprovalService(options: {
   /** Test seam. Default: SHA-256 of the uppercased code, as hex. */
   hashCode?: (code: string) => string;
   logger?: Logger;
-}): ApprovalService {
+}): Result<ApprovalService, ScriptError> {
   const { repo, ttlMinutes } = options;
   const now = options.now ?? ((): number => Date.now());
   const randomBytes = options.randomBytes ?? ((n: number): Buffer => cryptoRandomBytes(n));
   const hashCode = options.hashCode ?? sha256Code;
   const logger = options.logger ?? createLogger({ level: 'info', pretty: false });
 
+  const invalid = (): ScriptError =>
+    new ScriptError('INVALID_ARGUMENT', 'version cannot be put up for approval');
+  const sandbox = (cause: Error): ScriptError =>
+    new ScriptError('SANDBOX', 'approval storage failed', cause);
+
   /** chat key -> code hash -> open approval. Mirrors the undecided, unexpired rows. */
   const index = new Map<string, Map<string, OpenCode>>();
+  /** code hash -> chat key, over all open approvals. */
+  const byHash = new Map<string, string>();
 
   function addOpen(key: string, hash: string, code: OpenCode): void {
     let codes = index.get(key);
@@ -129,9 +191,11 @@ export function createApprovalService(options: {
       index.set(key, codes);
     }
     codes.set(hash, code);
+    byHash.set(hash, key);
   }
 
   function dropHash(key: string, hash: string): void {
+    byHash.delete(hash);
     const codes = index.get(key);
     if (!codes) return;
     codes.delete(hash);
@@ -141,7 +205,10 @@ export function createApprovalService(options: {
   function dropVersion(versionId: string): void {
     for (const [key, codes] of index) {
       for (const [hash, code] of codes) {
-        if (code.versionId === versionId) codes.delete(hash);
+        if (code.versionId === versionId) {
+          codes.delete(hash);
+          byHash.delete(hash);
+        }
       }
       if (codes.size === 0) index.delete(key);
     }
@@ -152,7 +219,10 @@ export function createApprovalService(options: {
     const codes = index.get(key);
     if (!codes) return undefined;
     for (const [hash, code] of codes) {
-      if (code.expiresAt <= at) codes.delete(hash);
+      if (code.expiresAt <= at) {
+        codes.delete(hash);
+        byHash.delete(hash);
+      }
     }
     if (codes.size === 0) {
       index.delete(key);
@@ -163,29 +233,62 @@ export function createApprovalService(options: {
 
   /** The open code hashes of the chat that the text holds. */
   function leakedHashes(text: string, codes: Map<string, OpenCode>): string[] {
-    const found = new Set<string>();
-    let tokens = 0;
-    for (const token of text.slice(0, SCAN_CHARS).split(/[^A-Za-z0-9]/)) {
-      if (token.length !== CODE_LENGTH) continue;
-      if (++tokens > SCAN_TOKENS) break;
-      const hash = hashCode(token.toUpperCase());
-      if (codes.has(hash)) found.add(hash);
+    const found: string[] = [];
+    for (const candidate of candidateCodes(text)) {
+      const hash = hashCode(candidate);
+      if (codes.has(hash)) found.push(hash);
     }
-    return [...found];
+    return found;
   }
 
-  {
-    const listed = repo.listOpenApprovals(now());
-    if (listed.isErr()) {
-      logger.error('scripts: the open approvals could not be read; their codes are not guarded');
-    } else {
-      for (const row of listed.value) {
-        addOpen(chatKey(row.channel_name, row.external_thread_id), row.code_hash, {
-          versionId: row.version_id,
-          expiresAt: row.expires_at,
-        });
+  /** The open approval that a well-formed command of another chat names, or undefined. */
+  function wrongChatCode(text: string, at: number): { key: string; code: OpenCode } | undefined {
+    if (byHash.size === 0) return undefined;
+    const match = COMMAND_RE.exec(text.trim());
+    if (!match) return undefined;
+    const hash = hashCode(match[3].toUpperCase());
+    const key = byHash.get(hash);
+    if (key === undefined) return undefined;
+    const code = openCodes(key, at)?.get(hash);
+    return code ? { key, code } : undefined;
+  }
+
+  /** Expires the versions and moves them back to `tested`. A failed write keeps the codes. */
+  function cancelVersions(versionIds: Iterable<string>, at: number): CancelledApproval[] {
+    const cancelled: CancelledApproval[] = [];
+    for (const versionId of versionIds) {
+      const expired = repo.expireOpenApprovals(versionId, at);
+      if (expired.isErr()) {
+        logger.error('script approval: an approval could not be expired; its code stays guarded');
+        continue;
       }
+      dropVersion(versionId);
+      const back = repo.setVersionState(versionId, ['awaiting-approval'], 'tested');
+      if (back.isErr()) {
+        logger.error('script approval: a cancelled version could not move back to tested');
+      }
+      const row = repo.getVersion(versionId);
+      const version = row.isOk() ? row.value : null;
+      const script = version ? repo.getScript(version.script_id) : undefined;
+      const persona = script?.isOk() ? script.value?.persona_id : undefined;
+      cancelled.push({
+        versionId,
+        ...(version ? { threadId: version.thread_id ?? '' } : {}),
+        ...(persona !== undefined ? { personaId: persona } : {}),
+      });
     }
+    return cancelled;
+  }
+
+  const listed = repo.listOpenApprovals(now());
+  if (listed.isErr()) {
+    return err(sandbox(listed.error));
+  }
+  for (const row of listed.value) {
+    addOpen(chatKey(row.channel_name, row.external_thread_id), row.code_hash, {
+      versionId: row.version_id,
+      expiresAt: row.expires_at,
+    });
   }
 
   /** key -> timestamps of the most recent refusals (at most MAX_REFUSALS). */
@@ -221,12 +324,7 @@ export function createApprovalService(options: {
     return code;
   }
 
-  const invalid = (): ScriptError =>
-    new ScriptError('INVALID_ARGUMENT', 'version cannot be put up for approval');
-  const sandbox = (cause: Error): ScriptError =>
-    new ScriptError('SANDBOX', 'approval storage failed', cause);
-
-  return {
+  return ok({
     request(input): Result<{ code: string }, ScriptError> {
       const at = now();
       const found = repo.getVersion(input.versionId);
@@ -335,15 +433,17 @@ export function createApprovalService(options: {
 
     classify(message): InboundKind {
       try {
+        if (typeof message.content !== 'string') return 'none';
         const key = chatKey(message.channelName, message.externalThreadId);
-        if (!index.has(key)) return 'none';
-        const codes = openCodes(key, now());
-        if (!codes || typeof message.content !== 'string') return 'none';
+        const at = now();
+        const codes = index.has(key) ? openCodes(key, at) : undefined;
+        if (!codes) {
+          return wrongChatCode(message.content, at) ? 'wrong-chat' : 'none';
+        }
         const text = message.content.trim();
         if (COMMAND_RE.test(text)) return 'command';
         if (leakedHashes(message.content, codes).length > 0) return 'leak';
-        const first = text.split(/\s+/, 1)[0] ?? '';
-        return COMMAND_WORD_RE.test(first) ? 'malformed' : 'none';
+        return COMMAND_START_RE.test(text) ? 'malformed' : 'none';
       } catch (error) {
         logger.error(
           { errName: error instanceof Error ? error.name : 'unknown' },
@@ -353,40 +453,41 @@ export function createApprovalService(options: {
       }
     },
 
-    cancelLeaked(message): Result<CancelledApproval[], ScriptError> {
+    cancelLeaked(message): CancelledApproval[] {
       const at = now();
-      const key = chatKey(message.channelName, message.externalThreadId);
-      const codes = openCodes(key, at);
-      if (!codes || typeof message.content !== 'string') return ok([]);
+      const codes = openCodes(chatKey(message.channelName, message.externalThreadId), at);
+      if (!codes || typeof message.content !== 'string') return [];
       const versions = new Set<string>();
       for (const hash of leakedHashes(message.content, codes)) {
         const code = codes.get(hash);
         if (code) versions.add(code.versionId);
       }
-      const cancelled: CancelledApproval[] = [];
-      for (const versionId of versions) {
-        const expired = repo.expireOpenApprovals(versionId, at);
-        if (expired.isErr()) return err(sandbox(expired.error));
-        dropVersion(versionId);
-        const back = repo.setVersionState(versionId, ['awaiting-approval'], 'tested');
-        if (back.isErr()) return err(sandbox(back.error));
-        const row = repo.getVersion(versionId);
-        const version = row.isOk() ? row.value : null;
-        const script = version ? repo.getScript(version.script_id) : undefined;
-        const persona = script?.isOk() ? script.value?.persona_id : undefined;
-        cancelled.push({
-          versionId,
-          ...(version ? { threadId: version.thread_id ?? '' } : {}),
-          ...(persona !== undefined ? { personaId: persona } : {}),
-        });
-      }
-      return ok(cancelled);
+      return cancelVersions(versions, at);
+    },
+
+    cancelWrongChat(message): CancelledApproval[] {
+      const at = now();
+      if (typeof message.content !== 'string') return [];
+      const found = wrongChatCode(message.content, at);
+      return found ? cancelVersions([found.code.versionId], at) : [];
+    },
+
+    noteAttempt(channelName, externalThreadId): boolean {
+      const at = now();
+      const key = chatKey(channelName, externalThreadId);
+      if (blocked(key, at)) return true;
+      recordRefusal(key, at);
+      return false;
     },
 
     expireVersion(versionId): Result<void, ScriptError> {
       const expired = repo.expireOpenApprovals(versionId, now());
+      if (expired.isErr()) {
+        logger.error('script approval: an approval could not be expired; its code stays guarded');
+        return err(sandbox(expired.error));
+      }
       dropVersion(versionId);
-      return expired.isErr() ? err(sandbox(expired.error)) : ok(undefined);
+      return ok(undefined);
     },
 
     parseCommand(text): { decision: 'approved' | 'rejected'; code: string } | undefined {
@@ -399,5 +500,5 @@ export function createApprovalService(options: {
         code: match[3].toUpperCase(),
       };
     },
-  };
+  });
 }

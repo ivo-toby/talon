@@ -6,6 +6,7 @@ import { err, ok } from 'neverthrow';
 import pino from 'pino';
 import { ScriptsConfigSchema } from '../../../src/core/config/config-schema.js';
 import { PersonaRepository } from '../../../src/core/database/repositories/persona-repository.js';
+import { ScriptRepository } from '../../../src/core/database/repositories/script-repository.js';
 import {
   buildScriptRuntime,
   createChannelSender,
@@ -185,6 +186,17 @@ describe('buildScriptRuntime', () => {
     expect(service.hasApproved('p1', 'nothing')).toBe(false);
     // no open approval anywhere: nothing is claimed
     expect(service.matchesInbound({ content: '/approve ABCDEFGH' } as never)).toBe(false);
+  });
+
+  it('fails when the open approvals cannot be read', () => {
+    const d = deps();
+    const spy = vi
+      .spyOn(ScriptRepository.prototype, 'listOpenApprovals')
+      .mockReturnValue(err(new Error('down') as never));
+    const result = buildScriptRuntime(d);
+    spy.mockRestore();
+    expect(result._unsafeUnwrapErr().scriptCode).toBe('SANDBOX');
+    expect(result._unsafeUnwrapErr().message).toContain('open approvals');
   });
 
   it('fails when there is no persona to grant', () => {

@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
+import { err } from 'neverthrow';
 import { createHash } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import pino from 'pino';
@@ -69,7 +70,7 @@ describe('approval service', () => {
       logger: pino({ level: 'silent' }),
       now: () => clock,
       randomBytes: (n) => Buffer.from(Array.from({ length: n }, (_, i) => seed + i)),
-    });
+    })._unsafeUnwrap();
     versionId = makeVersion();
   });
 
@@ -282,7 +283,7 @@ describe('approval service', () => {
           hashes++;
           return createHash('sha256').update(code.toUpperCase()).digest('hex');
         },
-      });
+      })._unsafeUnwrap();
     });
     const quoted = (code: string): string =>
       `Thanks.\n\n${'> On Monday Talon wrote a long message\n'.repeat(120)}> /approve ${code}\n> /reject ${code}\n`;
@@ -304,6 +305,21 @@ describe('approval service', () => {
         ['/approve', 'malformed'],
         ['/reject@my_bot not a code', 'malformed'],
         ['/approve ZZZ', 'malformed'],
+        ['/approvefoo', 'malformed'],
+        ['/REJECT now please', 'malformed'],
+        [`/approve${code}`, 'leak'],
+        [`/reject${code}`, 'leak'],
+        [`X${code}`, 'leak'],
+        [`${code}1`, 'leak'],
+        [`ABCD-EFGH`, 'leak'],
+        [`abcd efgh`, 'leak'],
+        [`ABC_DEFGH`, 'leak'],
+        [`ABCDE.FGH`, 'leak'],
+        [`ABCD\u200bEFGH`, 'leak'],
+        [`AB\ufeffCD\u2060EF\u200dGH`, 'leak'],
+        ['ABCD--EFGH', 'none'],
+        ['ABCD  EFGH', 'none'],
+        ['ABCD/EFGH', 'none'],
         ['hello there', 'none'],
         ['approve ZZZZZZZZ', 'none'],
         [42, 'none'],
@@ -313,13 +329,12 @@ describe('approval service', () => {
       }
     });
 
-    it('returns none with no hashing in a chat with no open approval', () => {
-      const code = ask();
+    it('hashes nothing when no approval is open anywhere', () => {
       hashes = 0;
       for (const content of [
-        `/approve ${code}`,
-        `approve ${code}`,
-        quoted(code),
+        '/approve ABCDEFGH',
+        'approve ABCDEFGH',
+        quoted('ABCDEFGH'),
         '/approve',
         'hello',
       ]) {
@@ -328,12 +343,49 @@ describe('approval service', () => {
       expect(hashes).toBe(0);
     });
 
-    it('scans only the first 8,000 characters and 400 code-sized tokens', () => {
+    it('checks only a well-formed command in a chat with no open approval', () => {
       const code = ask();
-      expect(svc.classify(msg(`${'x'.repeat(7995)} ${code}`))).toBe('none');
-      expect(svc.classify(msg(`${'x'.repeat(7990)} ${code}`))).toBe('leak');
-      expect(svc.classify(msg(`${'ZZZZZZZZ '.repeat(400)}${code}`))).toBe('none');
-      expect(svc.classify(msg(`${'ZZZZZZZZ '.repeat(399)}${code}`))).toBe('leak');
+      hashes = 0;
+      for (const content of [
+        `approve ${code}`,
+        quoted(code),
+        '/approve',
+        `/approve${code}`,
+        'hi',
+      ]) {
+        expect(svc.classify(msg(content, 'other'))).toBe('none');
+      }
+      expect(hashes).toBe(0);
+      expect(svc.classify(msg('/approve ZZZZZZZZ', 'other'))).toBe('none');
+      expect(hashes).toBe(1);
+      expect(svc.classify(msg(`/approve ${code}`, 'other'))).toBe('wrong-chat');
+      expect(svc.classify(msg(`/Reject@my_bot ${code.toLowerCase()}.`, 'other'))).toBe(
+        'wrong-chat',
+      );
+      expect(hashes).toBe(3);
+    });
+
+    it('cancelWrongChat expires the code, and the right chat refuses it later', () => {
+      const code = ask();
+      const other = makeVersion();
+      seed = 8;
+      const keep = ask(other);
+      const cancelled = svc.cancelWrongChat(msg(`/approve ${code}`, 'other'));
+      expect(cancelled.map((c) => c.versionId)).toEqual([versionId]);
+      expect(repo.getVersion(versionId)._unsafeUnwrap()?.state).toBe('tested');
+      expect(svc.classify(msg(`/approve ${code}`, 'other'))).toBe('none');
+      expect(svc.classify(msg(`/approve ${code}`))).toBe('command');
+      expect(decide(code)._unsafeUnwrap().outcome).toBe('refused');
+      expect(decide(keep)._unsafeUnwrap().outcome).toBe('approved');
+    });
+
+    it('scans the first and the last 16,000 characters of a long message', () => {
+      const code = ask();
+      const pad = (n: number): string => 'x'.repeat(n);
+      expect(svc.classify(msg(`${code} ${pad(40_000)}`))).toBe('leak');
+      expect(svc.classify(msg(`${pad(40_000)} ${code}`))).toBe('leak');
+      expect(svc.classify(msg(`${pad(20_000)} ${code} ${pad(20_000)}`))).toBe('none');
+      expect(svc.classify(msg(`${'ZZZZZZZZ '.repeat(1000)}${code}`))).toBe('leak');
     });
 
     it('prunes an expired code, then the chat is none', () => {
@@ -358,17 +410,17 @@ describe('approval service', () => {
         ttlMinutes: 30,
         logger: pino({ level: 'silent' }),
         now: () => clock,
-      });
+      })._unsafeUnwrap();
       expect(fresh.classify(msg(`approve ${code}`))).toBe('leak');
       expect(fresh.classify(msg(`/approve ${code}`))).toBe('command');
-      expect(fresh.classify(msg(`/approve ${code}`, 'other'))).toBe('none');
+      expect(fresh.classify(msg(`/approve ${code}`, 'other'))).toBe('wrong-chat');
       clock += 31 * MIN;
       const later = createApprovalService({
         repo,
         ttlMinutes: 30,
         logger: pino({ level: 'silent' }),
         now: () => clock,
-      });
+      })._unsafeUnwrap();
       expect(later.classify(msg(`approve ${code}`))).toBe('none');
     });
 
@@ -377,7 +429,7 @@ describe('approval service', () => {
       const other = makeVersion();
       seed = 8;
       const keep = ask(other);
-      const cancelled = svc.cancelLeaked(msg(`approve ${code}`))._unsafeUnwrap();
+      const cancelled = svc.cancelLeaked(msg(`approve ${code}`));
       expect(cancelled.map((c) => c.versionId)).toEqual([versionId]);
       expect(repo.getVersion(versionId)._unsafeUnwrap()?.state).toBe('tested');
       expect(repo.getVersion(other)._unsafeUnwrap()?.state).toBe('awaiting-approval');
@@ -395,6 +447,45 @@ describe('approval service', () => {
     });
   });
 
+  describe('fail closed', () => {
+    it('does not start when the open approvals cannot be read', () => {
+      const failing = new ScriptRepository(db);
+      failing.listOpenApprovals = () => err(new Error('down') as never);
+      const r = createApprovalService({
+        repo: failing,
+        ttlMinutes: 30,
+        logger: pino({ level: 'silent' }),
+      });
+      expect(r._unsafeUnwrapErr().scriptCode).toBe('SANDBOX');
+    });
+
+    it('keeps the code in the index when the expire write fails', () => {
+      const code = ask();
+      const expire = repo.expireOpenApprovals.bind(repo);
+      repo.expireOpenApprovals = () => err(new Error('down') as never);
+      expect(svc.expireVersion(versionId)._unsafeUnwrapErr().scriptCode).toBe('SANDBOX');
+      const msg = { channelName: 'tg', externalThreadId: 't1', content: `approve ${code}` };
+      expect(svc.classify(msg)).toBe('leak');
+      expect(svc.cancelLeaked(msg)).toEqual([]);
+      expect(svc.classify(msg)).toBe('leak');
+      const elsewhere = { channelName: 'tg', externalThreadId: 'o', content: `/approve ${code}` };
+      expect(svc.cancelWrongChat(elsewhere)).toEqual([]);
+      expect(svc.classify(elsewhere)).toBe('wrong-chat');
+      repo.expireOpenApprovals = expire;
+      expect(svc.cancelLeaked(msg).map((c) => c.versionId)).toEqual([versionId]);
+      expect(svc.classify(msg)).toBe('none');
+    });
+  });
+
+  describe('noteAttempt', () => {
+    it('counts toward the limiter and reports a blocked chat', () => {
+      for (let i = 0; i < 5; i++) expect(svc.noteAttempt('tg', 't1')).toBe(false);
+      expect(svc.noteAttempt('tg', 't1')).toBe(true);
+      expect(decide('ZZZZZZZZ')._unsafeUnwrap().outcome).toBe('blocked');
+      expect(svc.noteAttempt('tg', 't2')).toBe(false);
+    });
+  });
+
   describe('decide after the commit', () => {
     it('keeps the outcome when the script row cannot be read', () => {
       const code = ask();
@@ -406,7 +497,7 @@ describe('approval service', () => {
         ttlMinutes: 30,
         logger: pino({ level: 'silent' }),
         now: () => clock,
-      });
+      })._unsafeUnwrap();
       const r = s2
         .decide({ code, decision: 'rejected', channelName: 'tg', externalThreadId: 't1' })
         ._unsafeUnwrap();

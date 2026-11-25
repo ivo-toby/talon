@@ -145,12 +145,15 @@ export function buildScriptRuntime(deps: ScriptRuntimeDeps): Result<ScriptServic
   const repo = new ScriptRepository(deps.db);
   const store = createScriptStore({ root, repo, logger });
   const approval = createApprovalService({ repo, ttlMinutes: config.approvalTtlMinutes, logger });
+  if (approval.isErr()) {
+    return err(new ScriptError('SANDBOX', 'the open approvals could not be read', approval.error));
+  }
   const send = createChannelSender(deps.channelRegistry);
 
   const service = createScriptService({
     store,
     repo,
-    approval,
+    approval: approval.value,
     broker: broker.value,
     config,
     createProvider: createDaemonProviderFactory({ ...deps.provider, logger }),

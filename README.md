@@ -3199,7 +3199,13 @@ This release contains the runtime, the approval flow and the schedule link. The 
 
 The code is valid for `approvalTtlMinutes` and works one time, only in the chat that got the message. In a group chat, each member can approve. After five wrong codes in ten minutes, Talon refuses each code from that chat for ten minutes and does not answer.
 
-The command is not case-sensitive, can carry a bot name (`/approve@my_bot <code>`) and can end with `.` or `!`. While a chat has an open approval, Talon checks each message of that chat, also a long one or one with an attachment. A message that holds the code but is not a valid command never reaches the agent: Talon cancels the code and the version goes back to `tested`. A message that starts with `/approve` or `/reject` but is not a valid command gets a short usage answer.
+The command is not case-sensitive, can carry a bot name (`/approve@my_bot <code>`) and can end with `.` or `!`. Talon claims these messages before an agent sees them:
+
+- In the chat that got the approval message: each message that holds the code but is not a valid command. This includes a long message or one with an attachment. Talon also finds the code when it is part of a longer word, split by `-`, `_`, `.` or one space, or hidden with zero-width characters. Talon cancels the code and the version goes back to `tested`.
+- In another chat: a well-formed `/approve <code>` or `/reject <code>` with a valid code. Talon cancels the code. Free text in another chat is not checked.
+- In the chat that got the approval message: a message that starts with `/approve` or `/reject` but is not a valid command. Talon answers with the correct form.
+
+Each of these messages counts as a wrong attempt. In a chat that the attempt limit holds, Talon claims such a message and does not answer. If Talon cannot read the open approvals at start, Talon does not start.
 
 Before each scheduled run, Talon makes sure that the files on disk still match the approved hash. If a file changed, the run does not start.
 

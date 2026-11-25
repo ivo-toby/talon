@@ -186,7 +186,11 @@ describe.skipIf(!enabled)('script flow against a real Docker daemon', () => {
     service = createScriptService({
       store: createScriptStore({ root, repo, logger }),
       repo,
-      approval: createApprovalService({ repo, ttlMinutes: config.approvalTtlMinutes, logger }),
+      approval: createApprovalService({
+        repo,
+        ttlMinutes: config.approvalTtlMinutes,
+        logger,
+      })._unsafeUnwrap(),
       broker: buildScriptBroker(config, [PERSONA])._unsafeUnwrap(),
       config,
       createProvider: () => Promise.resolve(ok(provider())),
@@ -252,8 +256,10 @@ describe.skipIf(!enabled)('script flow against a real Docker daemon', () => {
     expect(service.matchesInbound(inbound(`/approve ${code}`))).toBe(true);
     expect(service.matchesInbound(inbound('hello'))).toBe(false);
 
-    // The other chat has no open approval: nothing is claimed there.
-    expect(await service.handleInbound(inbound(`/approve ${code}`, 'other-chat'))).toBeUndefined();
+    // Free text in a chat with no open approval is not scanned.
+    expect(service.matchesInbound(inbound(`approve ${code}`, 'other-chat'))).toBe(false);
+    // A well-formed command there would cancel the code (wrong chat), so it is only classified.
+    expect(service.matchesInbound(inbound(`/approve ${code}`, 'other-chat'))).toBe(true);
     expect(service.hasApproved(PERSONA, 'mail-intake')).toBe(false);
 
     expect(await service.handleInbound(inbound(`/approve ${code.toLowerCase()}`))).toEqual({

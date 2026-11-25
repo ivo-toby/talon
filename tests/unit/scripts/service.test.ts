@@ -138,7 +138,7 @@ function setup(over: Partial<ScriptServiceDeps> = {}) {
     now,
     randomBytes: () => Buffer.from(Array.from({ length: 8 }, () => codeSeed++ % 32)),
     logger,
-  });
+  })._unsafeUnwrap();
   const providers: Array<{ close: ReturnType<typeof vi.fn>; calls: Call[] }> = [];
   const providerCalls: Call[] = [];
   const createProvider = vi.fn((_ctx: unknown, _manifest: unknown) => {
@@ -505,13 +505,39 @@ describe('approval', () => {
     expect(s.db.prepare(`SELECT COUNT(*) AS n FROM script_approvals`).get()).toEqual({ n: 0 });
   });
 
-  it('claims nothing in a chat with no open approval', async () => {
+  it('cancels a valid code sent as a command in a chat with no open approval', async () => {
     const s = setup();
     const v = await s.toAwaiting();
-    const reply = await s.service.handleInbound(s.event(`/approve ${s.codeOf()}`, 'other-chat'));
-    expect(reply).toBeUndefined();
-    expect(s.service.matchesInbound(s.event(`/approve ${s.codeOf()}`, 'other-chat'))).toBe(false);
-    expect(s.stateOf(v.versionId)).toBe('awaiting-approval');
+    const code = s.codeOf();
+    expect(s.service.matchesInbound(s.event(`approve ${code}`, 'thread-reply'))).toBe(false);
+    expect(s.service.matchesInbound(s.event(`/approve ${code}`, 'thread-reply'))).toBe(true);
+    expect(await s.service.handleInbound(s.event(`/approve ${code}`, 'thread-reply'))).toEqual({
+      reply: 'This code belongs to another chat, so I cancelled it. Ask for a new approval.',
+    });
+    expect(s.stateOf(v.versionId)).toBe('tested');
+    expect(s.audits.find((a) => a.action === 'script.approval.expired')).toMatchObject({
+      personaId: 'p1',
+      details: { versionId: v.versionId, reason: 'wrong-chat', channelName: 'tg' },
+    });
+    // the right chat no longer has the code: nothing is approved
+    expect(await s.service.handleInbound(s.event(`/approve ${code}`))).toBeUndefined();
+    expect(s.stateOf(v.versionId)).toBe('tested');
+  });
+
+  it('counts malformed, leaked and wrong-chat messages toward the limiter', async () => {
+    const s = setup();
+    await s.toAwaiting();
+    for (let i = 0; i < 5; i++) {
+      expect((await s.service.handleInbound(s.event('/approve')))?.reply).toBe(
+        'Use: /approve CODE or /reject CODE',
+      );
+    }
+    // blocked: still consumed, no reply, and a leaked code is still cancelled
+    expect(await s.service.handleInbound(s.event('/approve'))).toEqual({});
+    const leaked = `approve ${s.codeOf()}`;
+    expect(s.service.matchesInbound(s.event(leaked))).toBe(true);
+    expect(await s.service.handleInbound(s.event(leaked))).toEqual({});
+    expect(s.service.matchesInbound(s.event(leaked))).toBe(false);
   });
 
   it('refuses /approve with the code of another chat and keeps the state', async () => {
@@ -862,6 +888,8 @@ describe('shutdown', () => {
     expect(later._unsafeUnwrapErr().scriptCode).toBe('SANDBOX');
     const test = await s.service.test({ personaId: 'p1', versionId: 'x' });
     expect(test._unsafeUnwrapErr().scriptCode).toBe('SANDBOX');
+    const req = await s.service.requestApproval({ personaId: 'p1', versionId: 'x' });
+    expect(req._unsafeUnwrapErr().scriptCode).toBe('SANDBOX');
     await expect(s.service.shutdown()).resolves.toBeUndefined();
   });
 
