@@ -97,6 +97,8 @@ export interface InsertScriptRunInput {
 /** Repository for stored scripts, their versions, approvals and runs. */
 export class ScriptRepository extends BaseRepository {
   private readonly findScriptStmt: Database.Statement;
+  private readonly getScriptStmt: Database.Statement;
+  private readonly failOpenRunsStmt: Database.Statement;
   private readonly insertScriptStmt: Database.Statement;
   private readonly maxVersionStmt: Database.Statement;
   private readonly insertVersionStmt: Database.Statement;
@@ -120,6 +122,10 @@ export class ScriptRepository extends BaseRepository {
     super(db);
 
     this.findScriptStmt = db.prepare(`SELECT * FROM scripts WHERE persona_id = ? AND name = ?`);
+    this.getScriptStmt = db.prepare(`SELECT * FROM scripts WHERE id = ?`);
+    this.failOpenRunsStmt = db.prepare(
+      `UPDATE script_runs SET ended_at = ?, ok = 0, error_code = 'SANDBOX' WHERE ended_at IS NULL`,
+    );
     this.insertScriptStmt = db.prepare(
       `INSERT INTO scripts (id, persona_id, name, created_at) VALUES (?, ?, ?, ?)`,
     );
@@ -216,6 +222,23 @@ export class ScriptRepository extends BaseRepository {
       return ok((this.findScriptStmt.get(personaId, name) as ScriptRow | undefined) ?? null);
     } catch (cause) {
       return err(this.fail('find script', cause));
+    }
+  }
+
+  getScript(id: string): Result<ScriptRow | null, DbError> {
+    try {
+      return ok((this.getScriptStmt.get(id) as ScriptRow | undefined) ?? null);
+    } catch (cause) {
+      return err(this.fail('get script', cause));
+    }
+  }
+
+  /** Marks every unfinished run as failed (SANDBOX); returns how many changed. */
+  failOpenRuns(now: number): Result<number, DbError> {
+    try {
+      return ok(this.failOpenRunsStmt.run(now).changes);
+    } catch (cause) {
+      return err(this.fail('fail open script runs', cause));
     }
   }
 

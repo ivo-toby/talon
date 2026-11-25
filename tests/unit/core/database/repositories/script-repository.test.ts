@@ -329,6 +329,44 @@ describe('ScriptRepository', () => {
     });
   });
 
+  describe('getScript and failOpenRuns', () => {
+    it('getScript returns the row or null', () => {
+      expect(repo.getScript(script.id)._unsafeUnwrap()?.persona_id).toBe(personaId);
+      expect(repo.getScript('missing')._unsafeUnwrap()).toBeNull();
+    });
+
+    it('failOpenRuns finishes only unfinished runs', () => {
+      const v = makeVersion();
+      const open = uuid();
+      const done = uuid();
+      repo.insertRun({
+        id: open,
+        versionId: v.id,
+        mode: 'live',
+        trigger: 'schedule',
+        startedAt: 1,
+      });
+      repo.insertRun({
+        id: done,
+        versionId: v.id,
+        mode: 'live',
+        trigger: 'schedule',
+        startedAt: 1,
+      });
+      repo.finishRun(done, true, null, 2, 5);
+      expect(repo.failOpenRuns(9)._unsafeUnwrap()).toBe(1);
+      const row = db.prepare(`SELECT * FROM script_runs WHERE id = ?`).get(open) as {
+        ok: number;
+        error_code: string;
+        ended_at: number;
+      };
+      expect(row).toMatchObject({ ok: 0, error_code: 'SANDBOX', ended_at: 9 });
+      const kept = db.prepare(`SELECT ok, ended_at FROM script_runs WHERE id = ?`).get(done);
+      expect(kept).toEqual({ ok: 1, ended_at: 5 });
+      expect(repo.failOpenRuns(10)._unsafeUnwrap()).toBe(0);
+    });
+  });
+
   describe('cascade', () => {
     it('deleting the persona removes scripts, versions, approvals and runs', () => {
       const { version } = makeAwaiting();
