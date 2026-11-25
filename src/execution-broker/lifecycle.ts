@@ -10,10 +10,12 @@ import { ExecutionBrokerError } from './errors.js';
 import { LeaseStore } from './lease.js';
 import { resolveWorkspaceCwd } from './path-validation.js';
 import type {
+  BackendExecSession,
   ContainerBackend,
   ExecutionResult,
   OperatorAllowlist,
   ProfileConfig,
+  StreamExecution,
   WorkspaceConfig,
 } from './types.js';
 
@@ -28,6 +30,20 @@ interface PendingExec {
   settle: (r: Result<ExecutionResult, ExecutionBrokerError>) => void;
   settled: boolean;
   timer: ReturnType<typeof setTimeout> | undefined;
+}
+
+type EndLease = (result: Result<ExecutionResult, ExecutionBrokerError>) => Promise<void>;
+
+/** A request that passed validation and holds a reserved slot and a container. */
+interface Admitted {
+  leaseId: string;
+  state: LeaseState;
+  pending: PendingExec;
+  containerId: string;
+  argv: string[];
+  /** Container-side absolute path. */
+  cwd: string;
+  timeoutMs: number;
 }
 
 /**
@@ -78,9 +94,7 @@ export class ExecutionBroker {
    * active-lease bound, opaque lease ID. No backend call and no await, so the
    * method is deliberately not async (require-await).
    */
-  createLease(
-    input: unknown,
-  ): Promise<Result<{ leaseId: string }, ExecutionBrokerError>> {
+  createLease(input: unknown): Promise<Result<{ leaseId: string }, ExecutionBrokerError>> {
     const parsed = parseCreateLeaseInput(input);
     if (parsed.isErr()) {
       return Promise.resolve(err(parsed.error));
@@ -128,9 +142,128 @@ export class ExecutionBroker {
     return Promise.resolve(ok({ leaseId }));
   }
 
-  async execute(
+  async execute(input: unknown): Promise<Result<ExecutionResult, ExecutionBrokerError>> {
+    const admitted = await this.admit(input);
+    if (admitted.isErr()) {
+      return err(admitted.error);
+    }
+    const { leaseId, state, pending, containerId, argv, cwd, timeoutMs } = admitted.value;
+    return await this.runExec(leaseId, state, pending, containerId, argv, cwd, timeoutMs);
+  }
+
+  /**
+   * Same rules as execute, for a long-lived exec whose stdin and stdout the
+   * caller drives. Validation, admission and the settle-once latch are shared
+   * with execute (admit / armExec). Resolves with err for every admission error
+   * and for a backend that refuses to start the stream; everything after the
+   * session exists is reported through StreamExecution.result.
+   */
+  async executeStream(
     input: unknown,
-  ): Promise<Result<ExecutionResult, ExecutionBrokerError>> {
+    handlers: { onStdout(text: string): void },
+  ): Promise<Result<StreamExecution, ExecutionBrokerError>> {
+    const admitted = await this.admit(input);
+    if (admitted.isErr()) {
+      return err(admitted.error);
+    }
+    const { leaseId, state, pending, containerId, argv, cwd, timeoutMs } = admitted.value;
+    let endLease!: (r: Result<ExecutionResult, ExecutionBrokerError>) => Promise<void>;
+    const result = new Promise<Result<ExecutionResult, ExecutionBrokerError>>((resolve) => {
+      endLease = this.armExec(leaseId, state, pending, timeoutMs, resolve).endLease;
+    });
+    const backendFailure = (cause?: Error): Result<ExecutionResult, ExecutionBrokerError> =>
+      err(new ExecutionBrokerError('BACKEND_FAILURE', 'the container exec backend failed', cause));
+    // Whoever aborted the exec owns the outcome, and no output follows it.
+    const live = (): boolean => !pending.settled && !pending.controller.signal.aborted;
+
+    let started: Result<BackendExecSession, ExecutionBrokerError>;
+    try {
+      started = await this.opts.backend.execStream(containerId, {
+        argv,
+        cwd,
+        signal: pending.controller.signal,
+        onStdout: (text: string): void => {
+          if (!live()) {
+            return;
+          }
+          try {
+            handlers.onStdout(text);
+          } catch {
+            // Constraint: a handler failure must not crash the broker or echo its message.
+            pending.controller.abort();
+            void endLease(
+              err(new ExecutionBrokerError('BACKEND_FAILURE', 'the stdout handler failed')),
+            );
+          }
+        },
+      });
+    } catch (error) {
+      started = err(
+        new ExecutionBrokerError(
+          'BACKEND_FAILURE',
+          'the container exec backend failed',
+          error instanceof Error ? error : undefined,
+        ),
+      );
+    }
+    if (started.isErr()) {
+      if (pending.controller.signal.aborted) {
+        // A timeout or revoke owns the outcome; it is already on `result`.
+        return ok({ writeStdin: (): void => undefined, endStdin: (): void => undefined, result });
+      }
+      const failure = new ExecutionBrokerError(
+        'BACKEND_FAILURE',
+        'the container exec backend failed',
+        started.error,
+      );
+      await endLease(err(failure));
+      return err(failure);
+    }
+    const session = started.value;
+    void session.done.then((done) => {
+      if (done.isOk()) {
+        const cap = state.profile.outputCapChars;
+        const { exitCode, stderr } = done.value;
+        pending.settle(
+          ok({
+            exitCode,
+            stdout: '',
+            stderr: stderr.slice(0, cap),
+            stdoutTruncated: false,
+            stderrTruncated: stderr.length > cap,
+            timedOut: false,
+            cancelled: false,
+          }),
+        );
+        return;
+      }
+      if (pending.controller.signal.aborted) {
+        return;
+      }
+      void endLease(backendFailure(done.error));
+    });
+    return ok({
+      writeStdin: (text: string): void => {
+        if (live()) {
+          session.writeStdin(text);
+        }
+      },
+      endStdin: (): void => {
+        if (live()) {
+          session.endStdin();
+        }
+      },
+      result,
+    });
+  }
+
+  /**
+   * Validation and admission shared by execute and executeStream: parse, lease
+   * binding, argv bounds, timeout bound, cwd, concurrency, then the slot
+   * reservation and single-flight container creation. Returns the reserved
+   * slot and the container to run in.
+   */
+  private async admit(input: unknown): Promise<Result<Admitted, ExecutionBrokerError>> {
     const parsed = parseExecuteInput(input);
     if (parsed.isErr()) {
       return err(parsed.error);
@@ -143,18 +276,13 @@ export class ExecutionBroker {
     const binding = record.value.binding;
     if (taskId !== binding.taskId || personaId !== binding.personaId) {
       return err(
-        new ExecutionBrokerError(
-          'LEASE_MISMATCH',
-          'the caller does not match the lease binding',
-        ),
+        new ExecutionBrokerError('LEASE_MISMATCH', 'the caller does not match the lease binding'),
       );
     }
     const state = this.leases.get(leaseId);
     if (state === undefined) {
       // Defensive: the private map mirrors the store; a gap means no usable lease.
-      return err(
-        new ExecutionBrokerError('LEASE_NOT_FOUND', 'no lease for this request'),
-      );
+      return err(new ExecutionBrokerError('LEASE_NOT_FOUND', 'no lease for this request'));
     }
     const argvBounds = checkArgvBounds(argv, state.profile);
     if (argvBounds.isErr()) {
@@ -229,15 +357,15 @@ export class ExecutionBroker {
       state.creating = null;
       containerId = created.value.containerId;
     }
-    return await this.runExec(
+    return ok({
       leaseId,
       state,
       pending,
       containerId,
       argv,
-      containerCwd.value,
+      cwd: containerCwd.value,
       timeoutMs,
-    );
+    });
   }
 
   async revoke(leaseId: string): Promise<Result<void, ExecutionBrokerError>> {
@@ -284,11 +412,88 @@ export class ExecutionBroker {
   }
 
   /**
-   * The single backend.exec call site behind a settle-once latch. Three
-   * outcomes race into `settle`: exec ok, exec err (terminal lease), and the
-   * timeout timer (terminal lease). Terminal cleanup runs before settle so a
-   * caller that awaits the result sees an already-removed container and a
-   * revoked lease. A non-zero exit code is a normal ok result.
+   * The settle-once latch and the timeout timer for one reserved slot, shared
+   * by runExec and executeStream. Outcomes race into `settle`: the backend
+   * result, a terminal failure (endLease) and the timeout timer. Terminal
+   * cleanup runs before settle so a caller that awaits the result sees an
+   * already-removed container and a revoked lease.
+   */
+  private armExec(
+    leaseId: string,
+    state: LeaseState,
+    pending: PendingExec,
+    timeoutMs: number,
+    resolve: (r: Result<ExecutionResult, ExecutionBrokerError>) => void,
+  ): { settle: PendingExec['settle']; endLease: EndLease } {
+    const settle = (r: Result<ExecutionResult, ExecutionBrokerError>): void => {
+      if (pending.settled) {
+        return;
+      }
+      pending.settled = true;
+      if (pending.timer !== undefined) {
+        clearTimeout(pending.timer);
+        pending.timer = undefined;
+      }
+      state.inFlight.delete(pending);
+      resolve(r);
+    };
+    pending.settle = settle;
+
+    // Terminal cleanup: cancel every OTHER in-flight exec on this lease,
+    // then take and clear the shared container ID before the await so racing
+    // terminal paths cannot remove it twice, revoke the lease, and settle.
+    // An err removal is tolerated: the lease is terminal either way.
+    const endLease: EndLease = async (result) => {
+      // Cancel every other in-flight exec before cleanup. settle() removes
+      // from the set, so iterate a snapshot and skip the current pending.
+      for (const sibling of [...state.inFlight]) {
+        if (sibling === pending) {
+          continue;
+        }
+        sibling.controller.abort();
+        sibling.settle(
+          ok({
+            exitCode: null,
+            stdout: '',
+            stderr: '',
+            stdoutTruncated: false,
+            stderrTruncated: false,
+            timedOut: false,
+            cancelled: true,
+          }),
+        );
+      }
+      const container = state.containerId;
+      state.containerId = null;
+      if (container !== null) {
+        await this.opts.backend.removeContainer(container);
+      }
+      this.store.revoke(leaseId);
+      this.leases.delete(leaseId);
+      settle(result);
+    };
+
+    pending.timer = setTimeout(() => {
+      pending.controller.abort();
+      void endLease(
+        ok({
+          exitCode: null,
+          stdout: '',
+          stderr: '',
+          stdoutTruncated: false,
+          stderrTruncated: false,
+          timedOut: true,
+          cancelled: false,
+        }),
+      );
+    }, timeoutMs);
+    return { settle, endLease };
+  }
+
+  /**
+   * The single backend.exec call site. The exec result, the exec error and
+   * the timeout race through the armExec latch. A non-zero exit code is a
+   * normal ok result.
    *
    * Deliberately not async (require-await): the promise is built by hand so
    * the latch can resolve it exactly once from any of the racing paths.
@@ -303,71 +508,7 @@ export class ExecutionBroker {
     timeoutMs: number,
   ): Promise<Result<ExecutionResult, ExecutionBrokerError>> {
     return new Promise<Result<ExecutionResult, ExecutionBrokerError>>((resolve) => {
-      const settle = (r: Result<ExecutionResult, ExecutionBrokerError>): void => {
-        if (pending.settled) {
-          return;
-        }
-        pending.settled = true;
-        if (pending.timer !== undefined) {
-          clearTimeout(pending.timer);
-          pending.timer = undefined;
-        }
-        state.inFlight.delete(pending);
-        resolve(r);
-      };
-      pending.settle = settle;
-
-      // Terminal cleanup: cancel every OTHER in-flight exec on this lease,
-      // then take and clear the shared container ID before the await so racing
-      // terminal paths cannot remove it twice, revoke the lease, and settle.
-      // An err removal is tolerated: the lease is terminal either way.
-      const endLease = async (
-        result: Result<ExecutionResult, ExecutionBrokerError>,
-      ): Promise<void> => {
-        // Cancel every other in-flight exec before cleanup. settle() removes
-        // from the set, so iterate a snapshot and skip the current pending.
-        for (const sibling of [...state.inFlight]) {
-          if (sibling === pending) {
-            continue;
-          }
-          sibling.controller.abort();
-          sibling.settle(
-            ok({
-              exitCode: null,
-              stdout: '',
-              stderr: '',
-              stdoutTruncated: false,
-              stderrTruncated: false,
-              timedOut: false,
-              cancelled: true,
-            }),
-          );
-        }
-        const container = state.containerId;
-        state.containerId = null;
-        if (container !== null) {
-          await this.opts.backend.removeContainer(container);
-        }
-        this.store.revoke(leaseId);
-        this.leases.delete(leaseId);
-        settle(result);
-      };
-
-      const timer = setTimeout(() => {
-        pending.controller.abort();
-        void endLease(
-          ok({
-            exitCode: null,
-            stdout: '',
-            stderr: '',
-            stdoutTruncated: false,
-            stderrTruncated: false,
-            timedOut: true,
-            cancelled: false,
-          }),
-        );
-      }, timeoutMs);
-      pending.timer = timer;
+      const { settle, endLease } = this.armExec(leaseId, state, pending, timeoutMs, resolve);
 
       void (async (): Promise<void> => {
         const result = await this.opts.backend.exec(containerId, {

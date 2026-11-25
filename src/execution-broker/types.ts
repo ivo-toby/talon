@@ -98,6 +98,13 @@ export interface ExecutionResult {
   cancelled: boolean;
 }
 
+export interface StreamExecution {
+  writeStdin(text: string): void;
+  endStdin(): void;
+  /** stdout is '' and stdoutTruncated is false: stdout goes to the handler. */
+  result: Promise<Result<ExecutionResult, ExecutionBrokerError>>;
+}
+
 export interface ContainerSpec {
   taskId: string;
   profile: ProfileConfig;
