@@ -1,3 +1,4 @@
+import pino, { type Logger } from 'pino';
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { fileURLToPath } from 'node:url';
 import { createMcpProvider } from '../../../../src/scripts/providers/mcp.js';
@@ -7,6 +8,16 @@ import type { SerializableMcpServer } from '../../../../src/providers/openai-com
 
 const stdio = (extra: Partial<SerializableMcpServer> = {}): SerializableMcpServer =>
   ({ transport: 'stdio', command: 'x', args: [], ...extra }) as SerializableMcpServer;
+
+const silent = pino({ level: 'silent' });
+function captured(): { logger: Logger; lines: Array<Record<string, unknown>> } {
+  const lines: Array<Record<string, unknown>> = [];
+  const logger = pino(
+    { level: 'warn' },
+    { write: (chunk: string) => void lines.push(JSON.parse(chunk) as Record<string, unknown>) },
+  );
+  return { logger, lines };
+}
 
 const live = new AbortController().signal;
 
@@ -26,12 +37,14 @@ async function build(
   servers: Record<string, SerializableMcpServer> = { crm: stdio() },
   toolClasses: Record<string, 'read' | 'write'> = {},
   connectTimeoutMs = 1000,
+  logger: Logger = silent,
 ): Promise<RunProvider> {
   const result = await createMcpProvider({
     servers,
     toolClasses,
     connectTimeoutMs,
     createClient: () => client,
+    logger,
   });
   if (result.isErr()) throw result.error;
   return result.value;
@@ -75,6 +88,32 @@ describe('createMcpProvider', () => {
     expect(result._unsafeUnwrapErr().scriptCode).toBe('UNKNOWN_TOOL');
   });
 
+  it('drops a server whose name contains a dot and warns with the name only', async () => {
+    const { logger, lines } = captured();
+    const t = (readOnly: boolean): McpToolLike => ({
+      execute: vi.fn(),
+      mcp: { annotations: { readOnlyHint: readOnly } },
+    });
+    const provider = await build(
+      fakeClient({ a: {}, 'a.b': { c: t(true) } }),
+      { a: stdio(), 'a.b': stdio() },
+      {},
+      1000,
+      logger,
+    );
+    expect(provider.describe('a.b.c')).toBeUndefined();
+    expect(provider.describe('a.b')).toBeUndefined();
+    expect(lines).toHaveLength(1);
+    expect(lines[0].server).toBe('a.b');
+  });
+
+  it('reaches a dotted tool name of a server without a dot', async () => {
+    const execute = vi.fn().mockResolvedValue('ok');
+    const provider = await build(fakeClient({ a: { 'b.c': { execute } } }), { a: stdio() });
+    expect(provider.describe('a.b.c')).toEqual({ toolClass: 'write' });
+    expect((await provider.call('a.b.c', {}, live))._unsafeUnwrap()).toBe('ok');
+  });
+
   it('applies allowedTools like the existing agent code', async () => {
     const t = (): McpToolLike => ({ execute: vi.fn() });
     const provider = await build(
@@ -93,6 +132,7 @@ describe('createMcpProvider', () => {
       toolClasses: {},
       connectTimeoutMs: 10,
       createClient,
+      logger: silent,
     });
     const provider = result._unsafeUnwrap();
     expect(createClient).not.toHaveBeenCalled();
@@ -145,6 +185,7 @@ describe('createMcpProvider', () => {
       toolClasses: {},
       connectTimeoutMs: 1000,
       createClient: () => client,
+      logger: silent,
     });
     expect(result._unsafeUnwrapErr().scriptCode).toBe('TOOL_FAILED');
     expect(client.disconnect).toHaveBeenCalledTimes(1);
@@ -160,6 +201,7 @@ describe('createMcpProvider', () => {
       toolClasses: {},
       connectTimeoutMs: 20,
       createClient: () => client,
+      logger: silent,
     });
     expect(result._unsafeUnwrapErr().scriptCode).toBe('TOOL_FAILED');
     expect(client.disconnect).toHaveBeenCalledTimes(1);
@@ -170,6 +212,7 @@ describe('createMcpProvider', () => {
       servers: { crm: stdio() },
       toolClasses: {},
       connectTimeoutMs: 20,
+      logger: silent,
       createClient: () => {
         throw new Error('bad');
       },
@@ -196,7 +239,8 @@ describe('createMcpProvider', () => {
       { crm: { a: { execute: vi.fn() } } },
       { disconnect: vi.fn().mockReturnValue(new Promise(() => undefined)) },
     );
-    const provider = await build(client);
+    const { logger, lines } = captured();
+    const provider = await build(client, undefined, {}, 1000, logger);
     let done = false;
     const closing = provider.close().then(() => {
       done = true;
@@ -206,6 +250,9 @@ describe('createMcpProvider', () => {
     await vi.advanceTimersByTimeAsync(2);
     await closing;
     expect(done).toBe(true);
+    expect(lines).toHaveLength(1);
+    expect(lines[0].servers).toEqual(['crm']);
+    expect(String(lines[0].msg)).toContain('stdio server process can still be running');
   });
 });
 
@@ -218,6 +265,7 @@ describe('createMcpProvider with the real MCPClient', () => {
       servers: { fx: { transport: 'stdio', command: process.execPath, args: [fixture] } },
       toolClasses: {},
       connectTimeoutMs: 15_000,
+      logger: silent,
     });
     const provider = result._unsafeUnwrap();
     try {
@@ -232,6 +280,30 @@ describe('createMcpProvider with the real MCPClient', () => {
       expect(failed.scriptCode).toBe('TOOL_FAILED');
     } finally {
       await provider.close();
+    }
+  }, 20_000);
+
+  it('runs two providers with the same servers at the same time', async () => {
+    const fixture = fileURLToPath(
+      new URL('../../../fixtures/scripts/mcp-fixture-server.mjs', import.meta.url),
+    );
+    const make = (): ReturnType<typeof createMcpProvider> =>
+      createMcpProvider({
+        servers: { fx: { transport: 'stdio', command: process.execPath, args: [fixture] } },
+        toolClasses: {},
+        connectTimeoutMs: 15_000,
+        logger: silent,
+      });
+    const [first, second] = await Promise.all([make(), make()]);
+    const providers: RunProvider[] = [];
+    try {
+      providers.push(first._unsafeUnwrap(), second._unsafeUnwrap());
+      for (const provider of providers) {
+        const listed = (await provider.call('fx.list_items', {}, live))._unsafeUnwrap();
+        expect(JSON.stringify(listed)).toContain('apple');
+      }
+    } finally {
+      await Promise.all(providers.map((provider) => provider.close()));
     }
   }, 20_000);
 });

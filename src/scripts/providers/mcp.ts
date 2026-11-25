@@ -1,4 +1,6 @@
+import { randomUUID } from 'node:crypto';
 import { err, ok, type Result } from 'neverthrow';
+import type { Logger } from 'pino';
 import { MCPClient } from '@mastra/mcp';
 import { createLogger } from '../../core/logging/index.js';
 import {
@@ -25,12 +27,11 @@ export interface McpProviderOptions {
   toolClasses: Record<string, 'read' | 'write'>;
   connectTimeoutMs: number;
   createClient?: (servers: unknown) => McpClientLike;
+  logger?: Logger;
 }
 
 const RESERVED_SERVERS = new Set(['talon', 'model']);
 const CLOSE_TIMEOUT_MS = 5_000;
-
-const logger = createLogger({ level: 'info', pretty: false });
 
 /**
  * The one place that knows how a Mastra MCP tool is executed in the installed
@@ -41,9 +42,16 @@ function executeTool(tool: McpToolLike, input: unknown, signal: AbortSignal): Pr
 }
 
 function defaultCreateClient(servers: unknown): McpClientLike {
-  return new MCPClient({
-    servers: servers as ConstructorParameters<typeof MCPClient>[0]['servers'],
-  }) as unknown as McpClientLike;
+  type Servers = ConstructorParameters<typeof MCPClient>[0]['servers'];
+  // Mastra's default log handler writes tool arguments to stderr; a script's
+  // tool input must not be logged, so every server gets a silent handler.
+  const silenced: Servers = {};
+  for (const [name, definition] of Object.entries(servers as Servers)) {
+    silenced[name] = { ...definition, logger: (): void => undefined };
+  }
+  // A unique id per client: without it Mastra keys a global instance map on the
+  // server configuration and refuses a second client with the same one.
+  return new MCPClient({ id: randomUUID(), servers: silenced }) as unknown as McpClientLike;
 }
 
 /** Resolves with the promise result, or `'timeout'` after `ms`. Never rejects on timeout. */
@@ -56,13 +64,22 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | 'timeout'>
 }
 
 /** Disconnects best effort within 5 seconds. Never rejects. */
-async function disconnectBounded(client: McpClientLike): Promise<void> {
+async function disconnectBounded(
+  client: McpClientLike,
+  serverNames: string[],
+  logger: Logger,
+): Promise<void> {
   try {
     const outcome = await withTimeout(client.disconnect(), CLOSE_TIMEOUT_MS);
-    if (outcome === 'timeout') logger.warn('mcp provider: disconnect timed out');
+    if (outcome === 'timeout') {
+      logger.warn(
+        { servers: serverNames },
+        'mcp provider: disconnect timed out; a stdio server process can still be running',
+      );
+    }
   } catch (cause) {
     logger.warn(
-      { err: cause instanceof Error ? cause.name : 'unknown' },
+      { servers: serverNames, err: cause instanceof Error ? cause.name : 'unknown' },
       'mcp provider: disconnect failed',
     );
   }
@@ -104,9 +121,16 @@ function emptyProvider(): RunProvider {
 export async function createMcpProvider(
   options: McpProviderOptions,
 ): Promise<Result<RunProvider, ScriptError>> {
+  const logger = options.logger ?? createLogger({ level: 'info', pretty: false });
   const servers: Record<string, SerializableMcpServer> = {};
   for (const [name, server] of Object.entries(options.servers)) {
-    if (!RESERVED_SERVERS.has(name)) servers[name] = server;
+    if (RESERVED_SERVERS.has(name)) continue;
+    // A script name splits at the first dot, so a dotted server name could shadow another server.
+    if (name.includes('.')) {
+      logger.warn({ server: name }, 'mcp provider: server with a dot in its name is not offered');
+      continue;
+    }
+    servers[name] = server;
   }
   if (Object.keys(servers).length === 0) return ok(emptyProvider());
 
@@ -124,12 +148,12 @@ export async function createMcpProvider(
     client = (options.createClient ?? defaultCreateClient)(toMastraMcpServers(servers));
     const listed = await withTimeout(client.listToolsets(), options.connectTimeoutMs);
     if (listed === 'timeout') {
-      await disconnectBounded(client);
+      await disconnectBounded(client, Object.keys(servers), logger);
       return connectFailed();
     }
-    return ok(buildProvider(client, listed, servers, options.toolClasses));
+    return ok(buildProvider(client, listed, servers, options.toolClasses, logger));
   } catch (cause) {
-    if (client) await disconnectBounded(client);
+    if (client) await disconnectBounded(client, Object.keys(servers), logger);
     return connectFailed(cause);
   }
 }
@@ -139,6 +163,7 @@ function buildProvider(
   toolsets: Record<string, Record<string, McpToolLike>>,
   servers: Record<string, SerializableMcpServer>,
   toolClasses: Record<string, 'read' | 'write'>,
+  logger: Logger,
 ): RunProvider {
   const tools = new Map<string, { tool: McpToolLike; toolClass: ToolClass }>();
   for (const [serverName, serverTools] of Object.entries(toolsets)) {
@@ -205,7 +230,7 @@ function buildProvider(
 
     close(): Promise<void> {
       closed = true;
-      closing ??= disconnectBounded(client);
+      closing ??= disconnectBounded(client, Object.keys(servers), logger);
       return closing;
     },
   };
