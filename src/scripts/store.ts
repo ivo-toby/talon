@@ -11,11 +11,13 @@ import {
 } from 'node:fs';
 import { dirname, isAbsolute, join } from 'node:path';
 import { err, ok, type Result } from 'neverthrow';
+import type { Logger } from 'pino';
 import { z } from 'zod';
 import type {
   ScriptRepository,
   ScriptVersionRow,
 } from '../core/database/repositories/script-repository.js';
+import { createLogger } from '../core/logging/index.js';
 import { ScriptError, type AuthoredManifest, type UnitCase, type VersionState } from './types.js';
 
 export interface ScriptFile {
@@ -119,6 +121,10 @@ function hashEntries(entries: ReadonlyArray<{ path: string; bytes: Buffer }>): s
   return hash.digest('hex');
 }
 
+function hashFileList(files: readonly ScriptFile[]): string {
+  return hashEntries(files.map((f) => ({ path: f.path, bytes: Buffer.from(f.content, 'utf8') })));
+}
+
 function parseJson(text: string): { ok: true; value: unknown } | { ok: false } {
   try {
     return { ok: true, value: JSON.parse(text) as unknown };
@@ -150,7 +156,18 @@ function parseTests(
 ): Result<UnitCase[], ScriptError> {
   const json = parseJson(text);
   const parsed = json.ok ? testsSchema.safeParse(json.value) : undefined;
-  if (!parsed?.success) {
+  // `z.unknown()` makes `input` optional; every case must carry the key.
+  const rawCases =
+    json.ok && typeof json.value === 'object' && json.value !== null
+      ? (json.value as { cases?: unknown }).cases
+      : undefined;
+  const allHaveInput =
+    Array.isArray(rawCases) &&
+    rawCases.every(
+      (c) =>
+        typeof c === 'object' && c !== null && Object.prototype.hasOwnProperty.call(c, 'input'),
+    );
+  if (!parsed?.success || !allHaveInput) {
     return err(fail(code, 'tests.json is not valid'));
   }
   const known = new Set(tools);
@@ -162,8 +179,13 @@ function parseTests(
   return ok(parsed.data.cases as UnitCase[]);
 }
 
-export function createScriptStore(options: { root: string; repo: ScriptRepository }): ScriptStore {
+export function createScriptStore(options: {
+  root: string;
+  repo: ScriptRepository;
+  logger?: Logger;
+}): ScriptStore {
   const { root, repo } = options;
+  const logger = options.logger ?? createLogger({ level: 'info', pretty: false });
 
   function checkRoot(): Result<void, ScriptError> {
     try {
@@ -224,7 +246,7 @@ export function createScriptStore(options: { root: string; repo: ScriptRepositor
     const tooBad = fail('SCRIPT_FAILED', 'script files do not match the approved content');
     const out: Array<{ path: string; bytes: Buffer }> = [];
     const walk = (abs: string, rel: string, depth: number): boolean => {
-      if (depth > 2 || !lstatSync(abs).isDirectory()) {
+      if (!lstatSync(abs).isDirectory()) {
         return false;
       }
       for (const name of readdirSync(abs)) {
@@ -232,6 +254,8 @@ export function createScriptStore(options: { root: string; repo: ScriptRepositor
         const childRel = rel === '' ? name : `${rel}/${name}`;
         const stat = lstatSync(childAbs);
         if (stat.isDirectory()) {
+          // Only `prompts` and `fixtures` at the top level; nothing nested below.
+          if (depth > 0 || (name !== 'prompts' && name !== 'fixtures')) return false;
           if (!walk(childAbs, childRel, depth + 1)) return false;
         } else if (stat.isFile() && PATH_PATTERN.test(childRel)) {
           out.push({ path: childRel, bytes: readFileSync(childAbs) });
@@ -258,9 +282,7 @@ export function createScriptStore(options: { root: string; repo: ScriptRepositor
 
   const store: ScriptStore = {
     hashFiles(files) {
-      return hashEntries(
-        files.map((f) => ({ path: f.path, bytes: Buffer.from(f.content, 'utf8') })),
-      );
+      return hashFileList(files);
     },
 
     save({ personaId, threadId, files }) {
@@ -303,17 +325,17 @@ export function createScriptStore(options: { root: string; repo: ScriptRepositor
 
       const script = repo.upsertScript(personaId, manifest.value.name, randomUUID());
       if (script.isErr()) return err(dbFailed(script.error));
-      const contentHash = hashEntries(
-        files.map((f) => ({ path: f.path, bytes: Buffer.from(f.content, 'utf8') })),
-      );
+      const contentHash = hashFileList(files);
 
       const latest = repo.latestVersion(script.value.id);
       if (latest.isErr()) return err(dbFailed(latest.error));
-      // A retired latest version may have no files (failed write); never hand it back.
+      // A rejected or retired version cannot be tested again (a retired one may
+      // have no files); identical content then becomes a new version.
       if (
         latest.value &&
         latest.value.content_hash === contentHash &&
-        latest.value.state !== 'retired'
+        latest.value.state !== 'retired' &&
+        latest.value.state !== 'rejected'
       ) {
         return toStored(latest.value);
       }
@@ -337,7 +359,13 @@ export function createScriptStore(options: { root: string; repo: ScriptRepositor
           // best effort
         }
         // Never leave a draft row without its files.
-        repo.setVersionState(row.value.id, ['draft'], 'retired');
+        const retired = repo.setVersionState(row.value.id, ['draft'], 'retired');
+        if (retired.isErr() || !retired.value) {
+          logger.error(
+            { versionId: row.value.id },
+            'could not retire a script version after a failed file write',
+          );
+        }
         return err(fail('SANDBOX', 'could not write the script files', cause));
       }
       return toStored(row.value);
@@ -351,14 +379,25 @@ export function createScriptStore(options: { root: string; repo: ScriptRepositor
     },
 
     verify(version) {
-      const dir = safeDir(version);
-      if (dir === undefined) {
-        return err(fail('SCRIPT_FAILED', 'script files do not match the approved content'));
+      const failed = (): ScriptError =>
+        fail('SCRIPT_FAILED', 'script files do not match the approved content');
+      // The hash and the directory come from the database row, not from the caller.
+      const row = repo.getVersion(version.versionId);
+      if (row.isErr() || !row.value || !ID_PATTERN.test(row.value.script_id)) {
+        return err(failed());
+      }
+      const dir = versionDir(row.value.script_id, row.value.version);
+      try {
+        if (!lstatSync(join(root, row.value.script_id)).isDirectory()) {
+          return err(failed());
+        }
+      } catch {
+        return err(failed());
       }
       const tree = readTree(dir);
       if (tree.isErr()) return err(tree.error);
-      if (hashEntries(tree.value) !== version.contentHash) {
-        return err(fail('SCRIPT_FAILED', 'script files do not match the approved content'));
+      if (hashEntries(tree.value) !== row.value.content_hash) {
+        return err(failed());
       }
       return ok(undefined);
     },

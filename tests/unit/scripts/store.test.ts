@@ -6,6 +6,8 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  renameSync,
+  rmdirSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -14,6 +16,9 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type Database from 'better-sqlite3';
+import { err } from 'neverthrow';
+import type { Logger } from 'pino';
+import { DbError } from '../../../src/core/errors/index.js';
 import { PersonaRepository } from '../../../src/core/database/repositories/persona-repository.js';
 import { ScriptRepository } from '../../../src/core/database/repositories/script-repository.js';
 import {
@@ -147,6 +152,22 @@ describe('ScriptStore', () => {
       repo.setVersionState(a.versionId, ['draft'], 'retired');
       const b = save(goodFiles())._unsafeUnwrap();
       expect(b.version).toBe(2);
+    });
+
+    it('creates a new version for identical content when the latest is rejected', () => {
+      const a = save(goodFiles())._unsafeUnwrap();
+      repo.setVersionState(a.versionId, ['draft'], 'rejected');
+      const b = save(goodFiles())._unsafeUnwrap();
+      expect(b.version).toBe(2);
+      expect(b.state).toBe('draft');
+    });
+
+    it('returns the existing version for identical content when it is approved', () => {
+      const a = save(goodFiles())._unsafeUnwrap();
+      repo.setVersionState(a.versionId, ['draft'], 'approved');
+      const b = save(goodFiles())._unsafeUnwrap();
+      expect(b.versionId).toBe(a.versionId);
+      expect(b.state).toBe('approved');
     });
 
     it('rejects a missing required file', () => {
@@ -297,6 +318,28 @@ describe('ScriptStore', () => {
       }
     });
 
+    it('logs the version id and still returns SANDBOX when retiring fails', () => {
+      const logged: unknown[][] = [];
+      const logger = { error: (...a: unknown[]) => logged.push(a) } as unknown as Logger;
+      const s = createScriptStore({ root, repo, logger });
+      const first = s.save({ personaId, threadId: 't', files: goodFiles() })._unsafeUnwrap();
+      if (process.getuid?.() === 0) return;
+      chmodSync(join(root, first.scriptId), 0o555);
+      const real = repo.setVersionState.bind(repo);
+      repo.setVersionState = () => err(new DbError('boom'));
+      try {
+        const r = s.save({ personaId, threadId: 't', files: goodFiles({ 'script.ts': '// 2' }) });
+        expect(r._unsafeUnwrapErr().scriptCode).toBe('SANDBOX');
+        expect(logged).toHaveLength(1);
+        const latest = repo.latestVersion(first.scriptId)._unsafeUnwrap()!;
+        expect(logged[0]![0]).toEqual({ versionId: latest.id });
+        expect(JSON.stringify(logged)).not.toContain(root);
+      } finally {
+        repo.setVersionState = real;
+        chmodSync(join(root, first.scriptId), 0o755);
+      }
+    });
+
     it('returns SANDBOX when the root is missing or relative', () => {
       for (const r of [join(root, 'nope'), 'relative/dir']) {
         const s = createScriptStore({ root: r, repo });
@@ -423,10 +466,48 @@ describe('ScriptStore', () => {
       }
     });
 
-    it('ignores a forged dir and scriptId that try to leave the root', () => {
+    it('uses the stored hash, not the hash the caller passes', () => {
       const v = save(goodFiles())._unsafeUnwrap();
-      expectFailed({ ...v, scriptId: '../..', dir: root });
-      expect(existsSync(v.dir)).toBe(true);
+      writeFileSync(join(v.dir, 'script.ts'), 'tampered');
+      const forged = { ...v, contentHash: store.hashFiles(goodFiles({ 'script.ts': 'tampered' })) };
+      expectFailed(forged);
+    });
+
+    it('uses the stored script id and version for the directory', () => {
+      const v = save(goodFiles())._unsafeUnwrap();
+      expect(store.verify({ ...v, scriptId: '../..', dir: root }).isOk()).toBe(true);
+      expect(store.verify({ ...v, version: 99 }).isOk()).toBe(true);
+    });
+
+    it('fails for an unknown version id', () => {
+      const v = save(goodFiles())._unsafeUnwrap();
+      expectFailed({ ...v, versionId: uuid() });
+    });
+
+    it('fails for an empty extra directory or a nested directory', () => {
+      const v = save(goodFiles())._unsafeUnwrap();
+      mkdirSync(join(v.dir, 'empty'));
+      expectFailed(v);
+      rmdirSync(join(v.dir, 'empty'));
+      mkdirSync(join(v.dir, 'prompts/deep'), { recursive: true });
+      expectFailed(v);
+      rmSync(join(v.dir, 'prompts'), { recursive: true });
+      expect(store.verify(v).isOk()).toBe(true);
+    });
+
+    it('accepts empty prompts and fixtures directories', () => {
+      const v = save(goodFiles())._unsafeUnwrap();
+      mkdirSync(join(v.dir, 'prompts'));
+      mkdirSync(join(v.dir, 'fixtures'));
+      expect(store.verify(v).isOk()).toBe(true);
+    });
+
+    it('fails when the script directory is a symbolic link', () => {
+      const v = save(goodFiles())._unsafeUnwrap();
+      const moved = join(root, 'moved');
+      renameSync(join(root, v.scriptId), moved);
+      symlinkSync(moved, join(root, v.scriptId));
+      expectFailed(v);
     });
   });
 
