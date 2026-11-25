@@ -207,7 +207,7 @@ export class SignalToolExecutionRegistry {
       return err(unavailable());
     const payload = parseSignalQueuePayload(row.value.payload);
     if (payload.isErr()) return err(payload.error);
-    if (payload.value.personaId !== identity.personaId) return err(unavailable());
+    if (payloadPersonaId(payload.value) !== identity.personaId) return err(unavailable());
     const run = this.dependencies.runs.findById(identity.runId);
     if (run.isErr()) return err(run.error);
     if (
@@ -220,6 +220,24 @@ export class SignalToolExecutionRegistry {
       return err(unavailable());
     return ok(undefined);
   }
+}
+
+/**
+ * Signal and other queue items keep the persona id at the payload top level. Voice backend work
+ * (written by VoiceStore) nests it in `request.personaId`. No resolvable id yields undefined, which
+ * never equals a run identity, so such items stay rejected.
+ */
+function payloadPersonaId(payload: Readonly<Record<string, unknown>>): string | undefined {
+  if (payload['kind'] === 'voice_backend') {
+    const request = payload['request'];
+    if (typeof request === 'object' && request !== null && !Array.isArray(request)) {
+      const nested = (request as Record<string, unknown>)['personaId'];
+      return typeof nested === 'string' ? nested : undefined;
+    }
+    return undefined;
+  }
+  const top = payload['personaId'];
+  return typeof top === 'string' ? top : undefined;
 }
 
 /** Actual account/transport restrictions, not recipient refusal, target latch or local contention. */

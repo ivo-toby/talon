@@ -1,0 +1,235 @@
+{
+  "kind": "wdd_plan",
+  "schemaVersion": 1,
+  "scope": {
+    "baseRef": "epic/browservoice",
+    "id": "SCOPE-browservoice",
+    "maxConcurrent": 3,
+    "reconcileEveryNMerges": 1,
+    "reviewPolicy": "always"
+  },
+  "tasks": [
+    {
+      "conflictDomains": [
+        "src/voice/voice-types.ts",
+        ".wdd/epics/browservoice/evidence/**"
+      ],
+      "context": [
+        "spec.md#AC-2",
+        "spec.md#AC-3",
+        "spec.md#AC-4",
+        "spec.md#AC-8",
+        "design.md"
+      ],
+      "dependsOn": [],
+      "id": "TASK-01-contracts",
+      "model": null,
+      "reviewModel": null,
+      "risk": "high",
+      "specPath": "tasks/TASK-01-contracts.md",
+      "title": "Contracten en haalbaarheidsproef"
+    },
+    {
+      "conflictDomains": [
+        "src/voice/voice-store.ts",
+        "src/core/database/repositories/voice-repository.ts",
+        "src/core/database/repositories/index.ts",
+        "src/core/database/migrations/*-voice-*.sql",
+        "tests/unit/core/database/voice/**"
+      ],
+      "context": [
+        "spec.md#AC-5",
+        "spec.md#AC-7",
+        "design.md"
+      ],
+      "dependsOn": [
+        "TASK-01-contracts"
+      ],
+      "id": "TASK-02-persistence",
+      "model": null,
+      "reviewModel": null,
+      "risk": "high",
+      "specPath": "tasks/TASK-02-persistence.md",
+      "title": "Duurzame voice-sessies en delegaties"
+    },
+    {
+      "conflictDomains": [
+        "src/voice/transports/browser/**",
+        "src/voice/voice-auth.ts",
+        "tests/unit/voice/browser-server/**",
+        "tests/unit/voice/browser-server/voice-auth.test.ts"
+      ],
+      "context": [
+        "spec.md#AC-1",
+        "spec.md#AC-4",
+        "design.md"
+      ],
+      "dependsOn": [
+        "TASK-01-contracts"
+      ],
+      "id": "TASK-03-browser-server",
+      "model": null,
+      "reviewModel": null,
+      "risk": "high",
+      "specPath": "tasks/TASK-03-browser-server.md",
+      "title": "Browserauthenticatie en sessie-endpoints"
+    },
+    {
+      "conflictDomains": [
+        "src/voice/providers/**",
+        "tests/unit/voice/providers/**"
+      ],
+      "context": [
+        "spec.md#AC-3",
+        "spec.md#AC-6",
+        "spec.md#AC-7",
+        "design.md"
+      ],
+      "dependsOn": [
+        "TASK-01-contracts"
+      ],
+      "id": "TASK-04-live-adapter",
+      "model": null,
+      "reviewModel": null,
+      "risk": "high",
+      "specPath": "tasks/TASK-04-live-adapter.md",
+      "title": "GPT-Live-provideradapter"
+    },
+    {
+      "conflictDomains": [
+        "src/voice/voice-backend-bridge.ts",
+        "src/voice/voice-output-sink.ts",
+        "src/daemon/agent-runner.ts",
+        "src/daemon/context-assembler.ts",
+        "src/queue/queue-manager.ts",
+        "src/queue/queue-processor.ts",
+        "src/queue/queue-types.ts",
+        "src/core/database/repositories/queue-repository.ts",
+        "src/core/database/repositories/voice-repository.ts",
+        "src/channels/channel-types.ts",
+        "tests/unit/voice/backend/**",
+        "tests/unit/daemon/agent-runner*.test.ts",
+        "tests/unit/daemon/context-assembler*.test.ts",
+        "tests/unit/queue/**",
+        "tests/unit/core/database/repositories/queue-repository.test.ts"
+      ],
+      "context": [
+        "spec.md#AC-3",
+        "spec.md#AC-4",
+        "spec.md#AC-5",
+        "design.md"
+      ],
+      "dependsOn": [
+        "TASK-02-persistence",
+        "TASK-04-live-adapter"
+      ],
+      "id": "TASK-05-backend",
+      "model": null,
+      "reviewModel": null,
+      "risk": "high",
+      "specPath": "tasks/TASK-05-backend.md",
+      "title": "Queue- en AgentRunner-brug"
+    },
+    {
+      "conflictDomains": [
+        "src/voice/voice-session-service.ts",
+        "src/voice/voice-session-reconciler.ts",
+        "src/voice/voice-policy.ts",
+        "src/daemon/daemon-bootstrap.ts",
+        "src/daemon/daemon-context.ts",
+        "src/daemon/daemon.ts",
+        "src/core/config/config-schema.ts",
+        "src/core/config/config-types.ts",
+        "src/channels/channel-setup.ts",
+        "src/daemon/channel-factory.ts",
+        "tests/unit/voice/lifecycle/**",
+        "tests/unit/voice/lifecycle/policy.test.ts",
+        "tests/unit/daemon/daemon*.test.ts",
+        "tests/unit/core/config/**",
+        "tests/unit/daemon/reload.test.ts",
+        "tests/unit/daemon/channel-factory.test.ts",
+        "src/daemon/lifecycle.ts",
+        "tests/unit/channels/channel-setup.test.ts",
+        "tests/unit/daemon/lifecycle.test.ts"
+      ],
+      "context": [
+        "spec.md#AC-1",
+        "spec.md#AC-4",
+        "spec.md#AC-5",
+        "spec.md#AC-6",
+        "spec.md#AC-7",
+        "design.md"
+      ],
+      "dependsOn": [
+        "TASK-03-browser-server",
+        "TASK-05-backend",
+        "TASK-07-browser-ui"
+      ],
+      "id": "TASK-06-lifecycle",
+      "model": null,
+      "reviewModel": null,
+      "risk": "high",
+      "specPath": "tasks/TASK-06-lifecycle.md",
+      "title": "Sessiebeheer en daemonintegratie"
+    },
+    {
+      "conflictDomains": [
+        "src/voice/web/**",
+        "package.json",
+        "tests/unit/voice/browser-client/**"
+      ],
+      "context": [
+        "spec.md#AC-2",
+        "spec.md#AC-6",
+        "spec.md#AC-7",
+        "design.md"
+      ],
+      "dependsOn": [
+        "TASK-03-browser-server",
+        "TASK-04-live-adapter"
+      ],
+      "id": "TASK-07-browser-ui",
+      "model": null,
+      "reviewModel": null,
+      "risk": "high",
+      "specPath": "tasks/TASK-07-browser-ui.md",
+      "title": "Kleine mobiele browserinterface"
+    },
+    {
+      "conflictDomains": [
+        "tests/integration/voice/**",
+        "README.md",
+        "AGENTS.md",
+        "config/talond.example.yaml",
+        "docs/guides/voice.mdx",
+        "docs/reference/config-schema.mdx",
+        ".agents/skills/talon-setup/**",
+        ".agents/skills/talon-setup-docker/**",
+        ".agents/skills/add-voice/**",
+        ".wdd/epics/browservoice/evidence/**"
+      ],
+      "context": [
+        "spec.md#AC-1",
+        "spec.md#AC-2",
+        "spec.md#AC-3",
+        "spec.md#AC-4",
+        "spec.md#AC-5",
+        "spec.md#AC-6",
+        "spec.md#AC-7",
+        "spec.md#AC-8",
+        "spec.md#AC-9",
+        "design.md"
+      ],
+      "dependsOn": [
+        "TASK-06-lifecycle",
+        "TASK-07-browser-ui"
+      ],
+      "id": "TASK-08-validation-docs",
+      "model": null,
+      "reviewModel": null,
+      "risk": "high",
+      "specPath": "tasks/TASK-08-validation-docs.md",
+      "title": "Integratiebewijs en gebruiksdocumentatie"
+    }
+  ]
+}

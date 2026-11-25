@@ -1664,6 +1664,29 @@ describe('QueueRepository', () => {
         });
     });
 
+    it('leaves claimed voice_backend items to voice reconciliation while still recovering ordinary Signal-era items', () => {
+      const voicePayload = JSON.stringify({ kind: 'voice_backend', delegationId: 'd-1' });
+      const voice = makeItem({ type: 'collaboration', payload: voicePayload });
+      const ordinary = makeItem();
+      const otherCollaboration = makeItem({
+        type: 'collaboration',
+        payload: JSON.stringify({ kind: 'a2a' }),
+      });
+      for (const item of [voice, ordinary, otherCollaboration]) repo.enqueue(item)._unsafeUnwrap();
+      db.prepare("UPDATE queue_items SET status = 'claimed'").run();
+      const voiceBefore = repo.findById(voice.id)._unsafeUnwrap();
+
+      expect(repo.recoverSignalQueue(Date.now() + 1)._unsafeUnwrap()).toMatchObject({
+        ordinaryReset: 2,
+        invalid: 0,
+      });
+
+      expect(repo.findById(voice.id)._unsafeUnwrap()).toEqual(voiceBefore);
+      expect(repo.findById(voice.id)._unsafeUnwrap()?.status).toBe('claimed');
+      expect(repo.findById(ordinary.id)._unsafeUnwrap()?.status).toBe('pending');
+      expect(repo.findById(otherCollaboration.id)._unsafeUnwrap()?.status).toBe('pending');
+    });
+
     it('fails closed for malformed, escaped and truncated reserved Signal state without interpreting partial JSON', () => {
       const payloads = [
         String.raw`{"\u005f\u005ftalond_signal_delivery_v1":null}`,

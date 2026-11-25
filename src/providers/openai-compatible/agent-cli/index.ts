@@ -1,3 +1,7 @@
+import {
+  extractProviderErrorDiagnostic,
+  type ProviderErrorDiagnostic,
+} from './error-diagnostics.js';
 import { writeFileSync } from 'node:fs';
 import type { JSONObject } from '@ai-sdk/provider';
 import { Agent } from '@mastra/core/agent';
@@ -113,7 +117,7 @@ type WrapperEvent =
         cacheReadTokens?: number;
       };
     }
-  | { type: 'error'; message: string };
+  | { type: 'error'; message: string; diagnostic?: ProviderErrorDiagnostic };
 
 function emit(event: WrapperEvent): void {
   process.stdout.write(`${JSON.stringify(event)}\n`);
@@ -441,7 +445,11 @@ async function main(): Promise<void> {
             : typeof errorValue === 'string'
               ? errorValue
               : JSON.stringify(errorValue);
-        emit({ type: 'error', message });
+        emit({
+          type: 'error',
+          message,
+          diagnostic: extractProviderErrorDiagnostic(errorValue, 'wrapper-stream'),
+        });
         process.exitCode = 1;
         return;
       }
@@ -512,6 +520,7 @@ async function main(): Promise<void> {
     emit({
       type: 'error',
       message: error instanceof Error ? error.message : String(error),
+      diagnostic: extractProviderErrorDiagnostic(error, 'wrapper-execution'),
     });
     process.exitCode = 1;
   } finally {

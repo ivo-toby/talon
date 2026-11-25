@@ -577,6 +577,20 @@ export class QueueRepository extends BaseRepository {
     });
   }
 
+  private isVoiceBackendRow(row: QueueItemRow): boolean {
+    if (row.type !== 'collaboration') return false;
+    try {
+      const payload: unknown = JSON.parse(row.payload);
+      return (
+        typeof payload === 'object' &&
+        payload !== null &&
+        (payload as { kind?: unknown }).kind === 'voice_backend'
+      );
+    } catch {
+      return false;
+    }
+  }
+
   /**
    * Startup/replacement ONLY, with dispatch quiesced. One Result transaction classifies reservations first,
    * saved work/guards second, then orphan leases; no provider/network or local history finalization.
@@ -699,7 +713,12 @@ export class QueueRepository extends BaseRepository {
         }
         const state = snapshot.value.state;
         if (state.kind === 'ordinary') {
-          if (row.status === 'claimed' || row.status === 'processing') {
+          // Claimed voice_backend work is owned by voice startup reconciliation (it can never be replayed
+          // by polling after an uncertain provider effect), so generic recovery leaves it untouched.
+          if (
+            (row.status === 'claimed' || row.status === 'processing') &&
+            !this.isVoiceBackendRow(row)
+          ) {
             this.resetSignalQueueClaim(row, now);
             ordinaryReset++;
           }

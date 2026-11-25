@@ -24,6 +24,12 @@ import type { SubAgentError } from '../core/errors/index.js';
 import type { ResolvedContextUsage } from '../providers/provider-types.js';
 import { projectImageHistory, type ImageContextSource } from './context-assembler.js';
 import { readScheduleOriginExternalId } from './schedule-thread-utils.js';
+import {
+  createVoiceSafeLogger,
+  isVoiceObservationContext,
+  type VoiceObservationContext,
+  type VoicePrivacyClassification,
+} from '../observability/langfuse/voice-observation.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -83,7 +89,39 @@ export type SummarizerRunFn = (
   threadId: string,
   personaId: string,
   input: Record<string, unknown>,
+  diagnostics?: ContextRollerDiagnostics,
 ) => Promise<Result<SubAgentResult, SubAgentError>>;
+
+/** Trusted per-invocation privacy context for rotation diagnostics. */
+export interface ContextRollerDiagnostics {
+  readonly privacy: VoicePrivacyClassification;
+  readonly voiceObservation?: VoiceObservationContext;
+}
+
+/** Fail closed when a caller omits or forges the diagnostic classification. */
+export function normalizeContextRollerDiagnostics(
+  diagnostics?: ContextRollerDiagnostics,
+): ContextRollerDiagnostics {
+  if (!diagnostics || !['voice', 'nonvoice', 'unknown'].includes(diagnostics.privacy)) {
+    return { privacy: 'unknown' };
+  }
+  if (diagnostics.privacy === 'nonvoice') {
+    return { privacy: 'nonvoice' };
+  }
+  return {
+    privacy: diagnostics.privacy,
+    ...(isVoiceObservationContext(diagnostics.voiceObservation)
+      ? { voiceObservation: diagnostics.voiceObservation }
+      : {}),
+  };
+}
+
+function contextRollerLogger(
+  logger: pino.Logger,
+  diagnostics: ContextRollerDiagnostics,
+): pino.Logger {
+  return diagnostics.privacy === 'nonvoice' ? logger : createVoiceSafeLogger(logger);
+}
 
 /** Result of a successful context rotation. */
 export interface ContextRotationResult {
@@ -170,14 +208,17 @@ export class ContextRoller {
     overrideThreshold?: number,
     summarizerName: string = 'session-summarizer',
     imageContext?: RotationImageContext,
+    diagnostics?: ContextRollerDiagnostics,
   ): Promise<ContextRotationResult> {
+    const resolvedDiagnostics = normalizeContextRollerDiagnostics(diagnostics);
+    const logger = contextRollerLogger(this.deps.logger, resolvedDiagnostics);
     const noRotation: ContextRotationResult = { rotated: false, hasOpenThreads: false };
     const threshold = overrideThreshold ?? this.deps.thresholdRatio ?? 0.4;
     if (contextUsage.ratio < threshold) {
       return noRotation;
     }
 
-    this.deps.logger.info(
+    logger.info(
       { threadId, contextUsage, thresholdRatio: threshold },
       'context-roller: threshold exceeded, rotating session based on provider usage',
     );
@@ -185,7 +226,7 @@ export class ContextRoller {
     // 1. Reconstruct transcript from the most recent messages.
     const messagesResult = this.deps.messageRepo.findLatestByThread(threadId, 10_000);
     if (messagesResult.isErr()) {
-      this.deps.logger.error(
+      logger.error(
         { threadId, error: messagesResult.error.message },
         'context-roller: failed to read messages, skipping rotation',
       );
@@ -194,7 +235,7 @@ export class ContextRoller {
 
     const messages = messagesResult.value;
     if (messages.length === 0) {
-      this.deps.logger.warn({ threadId }, 'context-roller: no messages found, skipping rotation');
+      logger.warn({ threadId }, 'context-roller: no messages found, skipping rotation');
       return noRotation;
     }
 
@@ -215,7 +256,7 @@ export class ContextRoller {
       ? this.deps.resolveSummarizerRun(summarizerName)
       : this.deps.summarizerRun;
     if (!summarizerRun) {
-      this.deps.logger.error(
+      logger.error(
         { threadId, summarizer: summarizerName },
         'context-roller: summarizer not available, keeping current session',
       );
@@ -227,10 +268,11 @@ export class ContextRoller {
       threadId,
       personaId,
       { transcript },
+      resolvedDiagnostics,
     );
 
     if (summaryResult.isErr()) {
-      this.deps.logger.error(
+      logger.error(
         { threadId, error: summaryResult.error.message },
         'context-roller: summarization failed, keeping current session',
       );
@@ -263,7 +305,7 @@ export class ContextRoller {
             if (existingResult.isErr()) {
               // A read failure means we can't safely append — we might
               // silently truncate existing content. Abort the whole rotation.
-              this.deps.logger.error(
+              logger.error(
                 { key: update.key, error: existingResult.error.message },
                 'context-roller: findById failed in append mode, aborting rotation to prevent data loss',
               );
@@ -342,7 +384,7 @@ export class ContextRoller {
     });
 
     if (txResult.isErr()) {
-      this.deps.logger.error(
+      logger.error(
         { threadId, error: txResult.error.message },
         'context-roller: rotation transaction failed — all writes rolled back, keeping current session',
       );
@@ -350,7 +392,7 @@ export class ContextRoller {
     }
 
     if (pendingUpdates.length > 0) {
-      this.deps.logger.info(
+      logger.info(
         { threadId, applied: pendingUpdates.length, total: pendingUpdates.length },
         'context-roller: distributed memory updates to named keys',
       );
@@ -360,12 +402,12 @@ export class ContextRoller {
     //    continuity. The ContextAssembler injects this with explicit
     //    "already processed — do NOT re-execute" framing so the agent
     //    understands what was just being discussed without replaying instructions.
-    this.savePreRollTail(threadId, messages, rotatedThroughTs);
+    this.savePreRollTail(threadId, messages, rotatedThroughTs, resolvedDiagnostics, logger);
 
     // 7. Clear session — next run starts fresh.
     this.deps.sessionTracker.rotateSession(threadId);
 
-    this.deps.logger.info(
+    logger.info(
       { threadId, messageCount: messages.length, summaryLength: summaryContent.length },
       'context-roller: session rotated successfully',
     );
@@ -396,14 +438,17 @@ export class ContextRoller {
     threadMetadata?: string | null,
     channelId?: string,
     imageContext?: RotationImageContext,
+    diagnostics?: ContextRollerDiagnostics,
   ): Promise<ContextRotationResult> {
+    const resolvedDiagnostics = normalizeContextRollerDiagnostics(diagnostics);
+    const logger = contextRollerLogger(this.deps.logger, resolvedDiagnostics);
     const noRotation: ContextRotationResult = { rotated: false, hasOpenThreads: false };
     const threshold = overrideThreshold ?? this.deps.thresholdRatio ?? 0.4;
     if (contextUsage.ratio < threshold) {
       return noRotation;
     }
 
-    this.deps.logger.info(
+    logger.info(
       { threadId, contextUsage, thresholdRatio: threshold },
       'context-roller-om: threshold exceeded, creating observations',
     );
@@ -423,7 +468,7 @@ export class ContextRoller {
       : this.deps.messageRepo.findLatestByThread(threadId, 10_000);
 
     if (messagesResult.isErr()) {
-      this.deps.logger.error(
+      logger.error(
         { threadId, error: messagesResult.error.message },
         'context-roller-om: failed to read messages, skipping rotation',
       );
@@ -432,7 +477,7 @@ export class ContextRoller {
 
     const messages = messagesResult.value;
     if (messages.length === 0) {
-      this.deps.logger.warn({ threadId }, 'context-roller-om: no messages found, skipping rotation');
+      logger.warn({ threadId }, 'context-roller-om: no messages found, skipping rotation');
       return noRotation;
     }
 
@@ -442,29 +487,36 @@ export class ContextRoller {
     // Image section first — see the budget note in checkAndRotate above.
     const imageSection = await this.imageContextSection(threadId, imageContext);
     const transcript =
-      (await this.buildObservationTranscript(
+      this.buildObservationTranscriptWithDiagnostics(
         threadId,
         messages,
         threadMetadata,
         channelId,
+        resolvedDiagnostics,
+        logger,
         Math.max(1, MAX_TRANSCRIPT_CHARS - imageSection.length),
-      )) + imageSection;
+      ) + imageSection;
 
     // 2. Resolve and call the observer.
     const observerRun = this.deps.resolveSummarizerRun
       ? this.deps.resolveSummarizerRun(observerName)
       : null;
     if (!observerRun) {
-      this.deps.logger.error(
+      logger.error(
         { threadId, observer: observerName },
         'context-roller-om: observer not available, skipping rotation',
       );
       return noRotation;
     }
 
-    const observerResult = await observerRun(threadId, personaId, { transcript });
+    const observerResult = await observerRun(
+      threadId,
+      personaId,
+      { transcript },
+      resolvedDiagnostics,
+    );
     if (observerResult.isErr()) {
-      this.deps.logger.error(
+      logger.error(
         { threadId, error: observerResult.error.message },
         'context-roller-om: observation failed, skipping rotation',
       );
@@ -481,7 +533,7 @@ export class ContextRoller {
 
     const observations = observerData?.observations ?? [];
     if (observations.length === 0) {
-      this.deps.logger.warn({ threadId }, 'context-roller-om: observer produced no observations');
+      logger.warn({ threadId }, 'context-roller-om: observer produced no observations');
       return noRotation;
     }
 
@@ -493,7 +545,7 @@ export class ContextRoller {
       }
     }
     const observerUsage = observerResult.value.usage;
-    this.deps.logger.info(
+    logger.info(
       {
         threadId,
         transcriptChars: transcript.length,
@@ -512,7 +564,7 @@ export class ContextRoller {
 
     // Log individual observations at debug level for operator inspection.
     for (const obs of observations) {
-      this.deps.logger.debug(
+      logger.debug(
         { threadId, date: obs.date, time: obs.time, priority: obs.priority },
         `context-roller-om: [${obs.priority}] ${obs.text}`,
       );
@@ -612,7 +664,7 @@ export class ContextRoller {
     });
 
     if (txResult.isErr()) {
-      this.deps.logger.error(
+      logger.error(
         { threadId, error: txResult.error.message },
         'context-roller-om: observation transaction failed',
       );
@@ -620,7 +672,7 @@ export class ContextRoller {
     }
 
     // 6. Persist pre-roll tail — same as legacy path above.
-    this.savePreRollTail(threadId, messages, rotatedThroughTs);
+    this.savePreRollTail(threadId, messages, rotatedThroughTs, resolvedDiagnostics, logger);
 
     // 7. Rotate session.
     this.deps.sessionTracker.rotateSession(threadId);
@@ -628,7 +680,7 @@ export class ContextRoller {
     const compressionRatio = transcript.length > 0
       ? (transcript.length / newObservationBlock.length).toFixed(1)
       : '0';
-    this.deps.logger.info(
+    logger.info(
       {
         threadId,
         observationCount: observations.length,
@@ -641,7 +693,14 @@ export class ContextRoller {
     );
 
     // 7. Check if accumulated observations need reflection (consolidation).
-    await this.maybeReflect(threadId, personaId, reflectorName, reflectionThresholdChars);
+    await this.maybeReflect(
+      threadId,
+      personaId,
+      reflectorName,
+      reflectionThresholdChars,
+      resolvedDiagnostics,
+      logger,
+    );
 
     // hasOpenThreads gates the stateless-provider auto-"continue" in agent-runner.
     // Fire it only when the observer explicitly flags unfinished work — i.e.
@@ -661,6 +720,8 @@ export class ContextRoller {
     personaId: string,
     reflectorName: string,
     reflectionThresholdChars: number,
+    diagnostics: ContextRollerDiagnostics,
+    logger: pino.Logger,
   ): Promise<void> {
     const observationsResult = this.deps.memoryRepo.findByThread(threadId, 'observation');
     if (observationsResult.isErr() || observationsResult.value.length === 0) {
@@ -674,7 +735,7 @@ export class ContextRoller {
       return;
     }
 
-    this.deps.logger.info(
+    logger.info(
       { threadId, observationChars: fullLog.length, threshold: reflectionThresholdChars },
       'context-roller-om: observation log exceeds threshold, triggering reflector',
     );
@@ -691,16 +752,21 @@ export class ContextRoller {
       ?? this.deps.reflectorRun
       ?? null;
     if (!reflectorRun) {
-      this.deps.logger.warn(
+      logger.warn(
         { threadId, reflector: reflectorName },
         'context-roller-om: reflector not available, skipping consolidation',
       );
       return;
     }
 
-    const reflectorResult = await reflectorRun(threadId, personaId, { observationLog: fullLog });
+    const reflectorResult = await reflectorRun(
+      threadId,
+      personaId,
+      { observationLog: fullLog },
+      diagnostics,
+    );
     if (reflectorResult.isErr()) {
-      this.deps.logger.error(
+      logger.error(
         { threadId, error: reflectorResult.error.message },
         'context-roller-om: reflection failed, keeping current observations',
       );
@@ -709,7 +775,7 @@ export class ContextRoller {
 
     const consolidated = (reflectorResult.value.data as { consolidatedLog?: string })?.consolidatedLog;
     if (!consolidated || consolidated.trim().length === 0) {
-      this.deps.logger.warn({ threadId }, 'context-roller-om: reflector returned empty output');
+      logger.warn({ threadId }, 'context-roller-om: reflector returned empty output');
       return;
     }
 
@@ -798,7 +864,7 @@ export class ContextRoller {
     });
 
     if (txResult.isErr()) {
-      this.deps.logger.error(
+      logger.error(
         { threadId, error: txResult.error.message },
         'context-roller-om: reflection transaction failed',
       );
@@ -808,7 +874,7 @@ export class ContextRoller {
     const reflectorReduction = fullLog.length > 0
       ? `${((1 - consolidated.length / fullLog.length) * 100).toFixed(0)}%`
       : '0%';
-    this.deps.logger.info(
+    logger.info(
       {
         threadId,
         consolidatedFrom: allObservations.length,
@@ -867,6 +933,26 @@ export class ContextRoller {
     channelId?: string,
     maxChars: number = MAX_TRANSCRIPT_CHARS,
   ): Promise<string> {
+    return this.buildObservationTranscriptWithDiagnostics(
+      threadId,
+      scheduleMessages,
+      threadMetadata,
+      channelId,
+      undefined,
+      this.deps.logger,
+      maxChars,
+    );
+  }
+
+  private buildObservationTranscriptWithDiagnostics(
+    threadId: string,
+    scheduleMessages: MessageRow[],
+    threadMetadata?: string | null,
+    channelId?: string,
+    _diagnostics?: ContextRollerDiagnostics,
+    logger: pino.Logger = this.deps.logger,
+    maxChars: number = MAX_TRANSCRIPT_CHARS,
+  ): string {
     const scheduleTranscript = this.buildTranscript(scheduleMessages, maxChars);
     const originExternalId = readScheduleOriginExternalId(threadMetadata);
     if (!originExternalId || !channelId || !this.deps.threadRepo) {
@@ -875,7 +961,7 @@ export class ContextRoller {
 
     const conversationThreadResult = this.deps.threadRepo.findByExternalId(channelId, originExternalId);
     if (conversationThreadResult.isErr()) {
-      this.deps.logger.debug(
+      logger.debug(
         { threadId, channelId, originExternalId, error: conversationThreadResult.error.message },
         'context-roller-om: failed to load direct conversation thread, continuing with schedule history only',
       );
@@ -892,7 +978,7 @@ export class ContextRoller {
       SCHEDULE_CONTEXT_MESSAGE_LIMIT,
     );
     if (conversationMessagesResult.isErr()) {
-      this.deps.logger.debug(
+      logger.debug(
         { threadId, conversationThreadId: conversationThread.id, error: conversationMessagesResult.error.message },
         'context-roller-om: failed to load direct conversation messages, continuing with schedule history only',
       );
@@ -924,7 +1010,13 @@ export class ContextRoller {
    * Fails silently — a missing tail degrades to the pre-fix behaviour (empty
    * recent messages) rather than blocking the rotation.
    */
-  private savePreRollTail(threadId: string, messages: MessageRow[], rotatedThroughTs: number): void {
+  private savePreRollTail(
+    threadId: string,
+    messages: MessageRow[],
+    rotatedThroughTs: number,
+    _diagnostics?: ContextRollerDiagnostics,
+    logger: pino.Logger = this.deps.logger,
+  ): void {
     const tail = messages.slice(-PRE_ROLL_TAIL_SIZE);
     if (tail.length === 0) return;
 
@@ -958,7 +1050,7 @@ export class ContextRoller {
     });
 
     if (upsertResult.isErr()) {
-      this.deps.logger.warn(
+      logger.warn(
         { threadId, error: upsertResult.error.message },
         'context-roller: failed to save pre-roll tail — continuity degraded gracefully',
       );

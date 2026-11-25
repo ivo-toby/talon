@@ -22,11 +22,105 @@ import {
   type SignalDeliveryCheckpoint,
 } from './signal-delivery-checkpoint.js';
 import type { SignalQueueFailure } from './signal-delivery-state.js';
-import type { QueueRepository } from '../core/database/repositories/queue-repository.js';
+import type {
+  QueueItemRow,
+  QueueRepository,
+} from '../core/database/repositories/queue-repository.js';
 import type { calculateBackoff } from './retry-strategy.js';
 import type { DeadLetterHandler } from './dead-letter.js';
+import { isVoiceQueuePayload } from './queue-types.js';
 import type { QueueItem, QueueHandler, SavedSignalDeliveryHandler } from './queue-types.js';
 import { rowToQueueItem } from './queue-mapper.js';
+import type { VoicePrivacyClassification } from '../observability/langfuse/voice-observation.js';
+
+/**
+ * Claims a voice queue row through VoiceStore's delegation CAS boundary.
+ * Returning null means another lifecycle transition won the race and the
+ * generic queue must not claim the row afterwards.
+ */
+export type VoiceQueueClaimer = (row: QueueItemRow) => Result<QueueItemRow | null, Error>;
+
+/** Server-owned persisted channel classification for queue diagnostics. */
+export interface QueueDiagnosticResolver {
+  resolveThread(threadId: string): VoicePrivacyClassification;
+  resolveRow(row: QueueItemRow): VoicePrivacyClassification;
+}
+
+type QueueLogLevel = 'debug' | 'info' | 'warn' | 'error' | 'fatal' | 'trace';
+
+const SAFE_QUEUE_LOG_KEYS = new Set([
+  'itemId',
+  'threadId',
+  'type',
+  'attempts',
+  'maxAttempts',
+  'nextRetryAt',
+]);
+
+/** Keep queue diagnostics content-free when persisted channel state is voice or unknown. */
+export function logQueueDiagnostic(
+  logger: pino.Logger,
+  privacy: VoicePrivacyClassification,
+  level: QueueLogLevel,
+  fields: Record<string, unknown>,
+  message: string,
+): void {
+  const emit = (payload: Record<string, unknown>, text: string): void => {
+    try {
+      logger[level](payload, text);
+    } catch {
+      // Queue diagnostics are best effort; never change a transition or retry outcome.
+    }
+  };
+  if (privacy === 'nonvoice') {
+    emit(fields, message);
+    return;
+  }
+
+  const safeFields: Record<string, string | number | boolean> = {
+    voice: true,
+    errorCategory: 'unknown',
+  };
+  for (const [key, value] of Object.entries(fields)) {
+    if (
+      SAFE_QUEUE_LOG_KEYS.has(key) &&
+      (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean')
+    ) {
+      safeFields[key] = value;
+    }
+  }
+  emit(safeFields, 'queue diagnostic event');
+}
+
+export function classifyQueueRow(
+  resolver: QueueDiagnosticResolver | undefined,
+  row: QueueItemRow | undefined,
+): VoicePrivacyClassification {
+  if (!resolver || !row) return 'unknown';
+  try {
+    const classification = resolver.resolveRow(row);
+    return classification === 'voice' || classification === 'nonvoice' || classification === 'unknown'
+      ? classification
+      : 'unknown';
+  } catch {
+    return 'unknown';
+  }
+}
+
+function classifyThread(
+  resolver: QueueDiagnosticResolver | undefined,
+  threadId: string,
+): VoicePrivacyClassification {
+  if (!resolver) return 'unknown';
+  try {
+    const classification = resolver.resolveThread(threadId);
+    return classification === 'voice' || classification === 'nonvoice' || classification === 'unknown'
+      ? classification
+      : 'unknown';
+  } catch {
+    return 'unknown';
+  }
+}
 
 /**
  * Sentinel error a handler may return to defer an item without consuming a
@@ -67,6 +161,8 @@ export class QueueProcessor {
     private readonly logger: pino.Logger,
     private readonly backoffBaseMs: number = 1000,
     private readonly backoffMaxMs: number = 60_000,
+    private readonly voiceClaimer?: VoiceQueueClaimer,
+    private readonly diagnosticResolver?: QueueDiagnosticResolver,
   ) {}
 
   /**
@@ -90,7 +186,13 @@ export class QueueProcessor {
     // Find all pending items to discover eligible thread IDs.
     const pendingResult = this.queueRepo.findPending();
     if (pendingResult.isErr()) {
-      this.logger.error({ err: pendingResult.error }, 'processNext: failed to find pending items');
+      logQueueDiagnostic(
+        this.logger,
+        'unknown',
+        'error',
+        {},
+        'processNext: failed to find pending items',
+      );
       return null;
     }
 
@@ -107,7 +209,11 @@ export class QueueProcessor {
     const threadIds: string[] = [];
     const oldestPendingTypeByThread = new Map<string, string>();
     const threadsWithPendingCollaboration = new Set<string>();
+    const pendingRowsByThread = new Map<string, QueueItemRow[]>();
     for (const row of pending) {
+      const rows = pendingRowsByThread.get(row.thread_id) ?? [];
+      rows.push(row);
+      pendingRowsByThread.set(row.thread_id, rows);
       if (!seenThreads.has(row.thread_id)) {
         seenThreads.add(row.thread_id);
         threadIds.push(row.thread_id);
@@ -119,6 +225,12 @@ export class QueueProcessor {
     }
 
     for (const threadId of threadIds) {
+      const threadPendingRows = pendingRowsByThread.get(threadId) ?? [];
+      const oldestRow = threadPendingRows[0];
+      const oldestIsVoice = oldestRow !== undefined && isVoiceQueueRow(oldestRow);
+      const collaborationRow = threadPendingRows.find((row) => row.type === 'collaboration');
+      const collaborationIsVoice =
+        collaborationRow !== undefined && isVoiceQueueRow(collaborationRow);
       // Collaboration items are dispatched to a different persona and may be
       // submitted while the source thread's current run is in-flight (when a
       // persona calls persona_send with await_reply: true and waits for the
@@ -130,12 +242,15 @@ export class QueueProcessor {
       // still excludes ordinary work on this thread.
       let claimCollaborationOnly = false;
 
-      if (!oldestIsCollaboration) {
+      if (!oldestIsCollaboration || oldestIsVoice) {
         // Durable inflight rows and full live ordinary dispatches both exclude
         // ordinary work; only a specifically claimed collaboration may bypass.
         const inflightResult = this.queueRepo.hasInflightItem(threadId);
         if (inflightResult.isErr()) {
-          this.logger.error(
+          logQueueDiagnostic(
+            this.logger,
+            classifyThread(this.diagnosticResolver, threadId),
+            'error',
             { err: inflightResult.error, threadId },
             'processNext: failed to check inflight items',
           );
@@ -145,7 +260,7 @@ export class QueueProcessor {
           // Thread is busy. Check whether a collaboration item is pending
           // further back in the queue — if so we can bypass the block and claim
           // just the collaboration item to avoid deadlock.
-          if (!threadsWithPendingCollaboration.has(threadId)) {
+          if (!threadsWithPendingCollaboration.has(threadId) || collaborationIsVoice) {
             // No collaboration item waiting — skip the thread entirely.
             continue;
           }
@@ -160,7 +275,10 @@ export class QueueProcessor {
       if (claimCollaborationOnly) {
         const inflightRecheckResult = this.queueRepo.hasInflightItem(threadId);
         if (inflightRecheckResult.isErr()) {
-          this.logger.error(
+          logQueueDiagnostic(
+            this.logger,
+            classifyThread(this.diagnosticResolver, threadId),
+            'error',
             { err: inflightRecheckResult.error, threadId },
             'processNext: failed to re-check inflight items before claim',
           );
@@ -175,12 +293,33 @@ export class QueueProcessor {
       // Head collaboration also requires a type-filtered claim: saved wall-time
       // eligibility may change after discovery. An unfiltered claim could then
       // select ordinary work through the collaboration-only admission path.
-      const claimResult =
-        claimCollaborationOnly || oldestIsCollaboration
-          ? this.queueRepo.claimNextCollaboration(threadId)
-          : this.queueRepo.claimNext(threadId);
+      // Voice rows are claimed through VoiceStore's transactional claimer instead.
+      const candidateRow = claimCollaborationOnly ? collaborationRow : oldestRow;
+      const candidateIsVoice = candidateRow !== undefined && isVoiceQueueRow(candidateRow);
+      let claimResult: Result<QueueItemRow | null, Error>;
+      if (candidateIsVoice) {
+        if (!this.voiceClaimer) {
+          logQueueDiagnostic(
+            this.logger,
+            classifyQueueRow(this.diagnosticResolver, candidateRow),
+            'warn',
+            { itemId: candidateRow.id, threadId },
+            'processNext: voice queue item has no transactional claimer',
+          );
+          continue;
+        }
+        claimResult = this.voiceClaimer(candidateRow);
+      } else {
+        claimResult =
+          claimCollaborationOnly || oldestIsCollaboration
+            ? this.queueRepo.claimNextCollaboration(threadId)
+            : this.queueRepo.claimNext(threadId);
+      }
       if (claimResult.isErr()) {
-        this.logger.error(
+        logQueueDiagnostic(
+          this.logger,
+          classifyQueueRow(this.diagnosticResolver, candidateRow),
+          'error',
           { err: claimResult.error, threadId },
           'processNext: failed to claim item',
         );
@@ -199,7 +338,13 @@ export class QueueProcessor {
       if (ordinaryDispatch) this.activeOrdinaryThreads.add(threadId);
       try {
         const item = rowToQueueItem(row);
-        this.logger.info({ itemId: item.id, threadId, type: item.type }, 'queue item claimed');
+        logQueueDiagnostic(
+          this.logger,
+          classifyQueueRow(this.diagnosticResolver, row),
+          'info',
+          { itemId: item.id, threadId, type: item.type },
+          'queue item claimed',
+        );
 
         // Inspect persisted bytes before mapping/caller state can hide a reserved replay boundary.
         const inspection = await this.retryStateWrite(() =>
@@ -336,7 +481,10 @@ export class QueueProcessor {
       // Signal-checkpointed or invoked items never reach here (handled above).
       const deferred = this.queueRepo.defer(itemId, Date.now() + failure.delayMs);
       if (deferred.isErr()) return err(new QueueError('Queue state write failed', deferred.error));
-      this.logger.debug(
+      logQueueDiagnostic(
+        this.logger,
+        classifyQueueRow(this.diagnosticResolver, row.value),
+        'debug',
         { itemId, delayMs: failure.delayMs, reason: failure.message },
         'queue item deferred',
       );
@@ -478,7 +626,11 @@ export class QueueProcessor {
         ),
       );
     }
-    this.logger.info({ itemId }, 'queue item completed');
+    const rowResult = this.queueRepo.findById(itemId);
+    const privacy = rowResult.isOk() && rowResult.value
+      ? classifyQueueRow(this.diagnosticResolver, rowResult.value)
+      : 'unknown';
+    logQueueDiagnostic(this.logger, privacy, 'info', { itemId }, 'queue item completed');
     return ok(undefined);
   }
 
@@ -522,7 +674,10 @@ export class QueueProcessor {
           ),
         );
       }
-      this.logger.warn(
+      logQueueDiagnostic(
+        this.logger,
+        classifyQueueRow(this.diagnosticResolver, row),
+        'warn',
         { itemId, attempts: newAttempts, maxAttempts: row.max_attempts },
         'queue item dead-lettered after exhausting retries',
       );
@@ -543,10 +698,21 @@ export class QueueProcessor {
       );
     }
 
-    this.logger.warn(
+    logQueueDiagnostic(
+      this.logger,
+      classifyQueueRow(this.diagnosticResolver, row),
+      'warn',
       { itemId, attempts: newAttempts, nextRetryAt, error },
       'queue item failed, scheduled for retry',
     );
     return ok(undefined);
+  }
+}
+
+function isVoiceQueueRow(row: QueueItemRow): boolean {
+  try {
+    return isVoiceQueuePayload(JSON.parse(row.payload) as unknown);
+  } catch {
+    return false;
   }
 }

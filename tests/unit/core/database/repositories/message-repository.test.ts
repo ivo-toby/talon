@@ -75,6 +75,54 @@ describe('MessageRepository', () => {
     });
   });
 
+  describe('upsertVoiceTranscript', () => {
+    it('updates a correction in place without changing its row identity or order', () => {
+      const key = `voice-transcript-${uuid()}`;
+      const first = repo.upsertVoiceTranscript(
+        makeMsg({
+          id: 'voice-transcript-original',
+          content: JSON.stringify({ body: 'Book Fri', voice: { state: 'incomplete' } }),
+          idempotency_key: key,
+        }),
+      );
+      expect(first.isOk()).toBe(true);
+
+      const later = repo.insert(makeMsg({ id: 'message-after-transcript' }));
+      expect(later.isOk()).toBe(true);
+
+      const corrected = repo.upsertVoiceTranscript(
+        makeMsg({
+          id: 'voice-transcript-correction-id-is-ignored',
+          content: JSON.stringify({ body: 'Book Thursday', voice: { state: 'completed' } }),
+          idempotency_key: key,
+        }),
+      );
+      expect(corrected.isOk()).toBe(true);
+      expect(corrected._unsafeUnwrap()).toMatchObject({
+        id: 'voice-transcript-original',
+        content: JSON.stringify({ body: 'Book Thursday', voice: { state: 'completed' } }),
+      });
+      expect(corrected._unsafeUnwrap().created_at).toBe(first._unsafeUnwrap().created_at);
+
+      const rows = repo.findByThread(threadId, 10, 0)._unsafeUnwrap();
+      expect(rows.map((row) => row.id)).toEqual([
+        'voice-transcript-original',
+        'message-after-transcript',
+      ]);
+    });
+
+    it('rejects reusing a transcript key for another direction', () => {
+      const key = `voice-transcript-${uuid()}`;
+      expect(repo.upsertVoiceTranscript(makeMsg({ idempotency_key: key })).isOk()).toBe(true);
+
+      const reused = repo.upsertVoiceTranscript(
+        makeMsg({ direction: 'outbound', idempotency_key: key }),
+      );
+      expect(reused.isErr()).toBe(true);
+      expect(reused._unsafeUnwrapErr().message).toContain('belongs to another message');
+    });
+  });
+
   describe('findById', () => {
     it('finds by primary key', () => {
       const input = makeMsg();

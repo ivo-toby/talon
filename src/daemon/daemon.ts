@@ -27,6 +27,8 @@ import {
   registerChannels,
   injectSiblingBotIds,
   signalRepositoriesFor,
+  registerVoiceConnector,
+  BROWSER_VOICE_CHANNEL_NAME,
 } from '../channels/channel-setup.js';
 import { SignalConnector } from '../channels/connectors/signal/signal-connector.js';
 
@@ -157,6 +159,8 @@ export class TalondDaemon {
     this.agentRunner = new AgentRunner(this.ctx, {
       imageContextSource: this.ctx.imageContextSource,
       a2aAborts: this.a2aAborts,
+      voiceOutputSink: this.ctx.voiceOutputSink ?? undefined,
+      voiceExecutionGate: this.ctx.voiceBackendBridge?.beforeProvider.bind(this.ctx.voiceBackendBridge),
     });
     this.ctx.a2aTaskMapper?.setAbortHook((taskId) => {
       this.a2aAborts.get(taskId)?.();
@@ -254,6 +258,17 @@ export class TalondDaemon {
 
     // Inject sibling bot IDs for multi-connector self-filtering.
     injectSiblingBotIds(this.ctx.channelRegistry, this.logger);
+
+    if (this.ctx.voiceServer && this.ctx.config.voice?.enabled) {
+      try {
+        await this.ctx.voiceServer.start(this.ctx.config.voice.host, this.ctx.config.voice.port);
+      } catch (cause) {
+        return this.failStartup(
+          'Failed to start browser voice server',
+          cause instanceof Error ? cause : new Error(String(cause)),
+        );
+      }
+    }
 
     // 4a. Reap stale A2A tasks (orphaned by purge/crash, or past TTL) before
     // dispatch starts, then keep reaping periodically.
@@ -362,6 +377,13 @@ export class TalondDaemon {
 
       this.ctx.scheduler.stop();
 
+      await this.ctx.voiceSessionService?.shutdown();
+      try {
+        await this.ctx.voiceServer?.stop();
+      } catch (cause) {
+        this.logger.warn({ cause }, 'daemon: failed to stop browser voice server');
+      }
+
       if (this.mcpRegistry !== null) {
         await this.mcpRegistry.stopAll();
         this.mcpRegistry = null;
@@ -467,6 +489,30 @@ export class TalondDaemon {
 
     if (context !== null) {
       try {
+        await context.channelRegistry.stopAll();
+      } catch (cleanupCause) {
+        this.logger.warn(
+          { cleanupCause },
+          'daemon: failed to stop channel connectors after startup failure',
+        );
+      }
+      context.scheduler.stop();
+      try {
+        await context.voiceSessionService?.shutdown();
+        await context.voiceServer?.stop();
+      } catch (cleanupCause) {
+        this.logger.warn(
+          { cleanupCause },
+          'daemon: failed to stop browser voice runtime after startup failure',
+        );
+      }
+      if (this.mcpRegistry !== null) {
+        await this.mcpRegistry.stopAll();
+        this.mcpRegistry = null;
+      }
+      context.queueManager.stopProcessing();
+      context.hostToolsBridge.stop();
+      try {
         await context.backgroundAgentManager?.shutdown();
       } catch (cleanupCause) {
         this.logger.warn(
@@ -569,6 +615,9 @@ export class TalondDaemon {
       );
     }
 
+    const voiceReload = this.ctx.voiceSessionService;
+    const voiceConfigChanged = JSON.stringify(oldConfig.voice) !== JSON.stringify(newConfig.voice);
+
     this.logger.info({ configPath: effectivePath }, 'daemon: applying hot-reload');
 
     // Channel diff.
@@ -609,6 +658,7 @@ export class TalondDaemon {
       this.ctx.dataDir,
     );
     if (loadedSkillsResult.isErr()) {
+      if (voiceReload && !voiceConfigChanged) voiceReload.openAdmission();
       return err(
         new DaemonError(`Failed to reload skills: ${loadedSkillsResult.error.message}`),
       );
@@ -624,19 +674,73 @@ export class TalondDaemon {
     const connectors = this.ctx.channelRegistry.listAll();
     const stopped = await this.stopSignalConnectors(connectors);
     if (stopped.isErr()) {
+      if (voiceReload && !voiceConfigChanged) voiceReload.openAdmission();
       this.scheduleReloadRetry(effectivePath);
       return err(stopped.error);
     }
     if (this._state !== 'running' || this.ctx === null) {
+      if (voiceReload && !voiceConfigChanged) voiceReload.openAdmission();
       return err(new DaemonError('Reload abandoned: daemon is no longer running'));
     }
+
     await this.stopOtherConnectors(connectors);
+
+    // Freeze voice admission and invalidate browser auth before personas,
+    // skills, or MCP definitions become mutable. This preserves the policy
+    // generation captured by every existing delegation. It runs only after the Signal connectors
+    // stopped cleanly, so a pending Signal stop (retried every RELOAD_RETRY_MS) never revokes
+    // voice logins or ends live calls repeatedly.
+    if (voiceReload) {
+      voiceReload.closeAdmission();
+      voiceReload.bumpGeneration();
+      if (this.ctx.voiceGeneration) this.ctx.voiceGeneration.value += 1;
+    }
+    const invalidated = this.ctx.voiceAuth?.invalidateRuntime();
+    if (invalidated?.isErr()) {
+      await this.replaceRegistry(oldConfig, connectors);
+      quiesced.resumeClaims();
+      return err(new DaemonError('Failed to revoke browser voice authentication', invalidated.error));
+    }
+    if (voiceReload) {
+      await voiceReload.shutdown();
+      if (voiceConfigChanged) {
+        try {
+          await this.ctx.voiceServer?.stop();
+        } catch (cause) {
+          this.logger.warn({ cause }, 'daemon: reload — failed to stop old browser voice server');
+        }
+      }
+    }
+
+    if (this.ctx.voiceAuth && !newConfig.voice?.enabled) this.ctx.voiceAuth.disable();
+
+    if (this.ctx.voiceAuth && newConfig.voice?.enabled) {
+      const voiceAccessToken = resolveVoiceAccessToken(newConfig);
+      const voicePersonaName = newConfig.voice.persona ?? newConfig.personas[0]?.name;
+      if (!voiceAccessToken || !voicePersonaName) {
+        this.ctx.voiceAuth.disable();
+        await this.replaceRegistry(oldConfig, connectors);
+        quiesced.resumeClaims();
+        return err(new DaemonError('Failed to reload browser voice authentication'));
+      }
+      const rebound = this.ctx.voiceAuth.rebind(
+        voiceAccessToken,
+        `voice:${voicePersonaName}`,
+      );
+      if (rebound.isErr()) {
+        this.ctx.voiceAuth.disable();
+        await this.replaceRegistry(oldConfig, connectors);
+        quiesced.resumeClaims();
+        return err(new DaemonError('Failed to reload browser voice authentication', rebound.error));
+      }
+    }
 
     const applied = await this.applyGlobalReload(newConfig, loadedSkillsResult.value);
     if (applied.isErr()) {
       // Nothing global changed past the failure point; restore a working generation from the old config.
       await this.replaceRegistry(oldConfig, connectors);
       quiesced.resumeClaims();
+      if (voiceReload && !voiceConfigChanged) voiceReload.openAdmission();
       return err(applied.error);
     }
 
@@ -646,6 +750,8 @@ export class TalondDaemon {
     this.agentRunner = new AgentRunner(this.ctx, {
       imageContextSource: this.ctx.imageContextSource,
       a2aAborts: this.a2aAborts,
+      voiceOutputSink: this.ctx.voiceOutputSink ?? undefined,
+      voiceExecutionGate: this.ctx.voiceBackendBridge?.beforeProvider.bind(this.ctx.voiceBackendBridge),
     });
 
     // Update config snapshot and log level.
@@ -659,6 +765,14 @@ export class TalondDaemon {
     }
     this.clearReloadRetry();
     quiesced.resumeClaims();
+    if (this.ctx.voiceRuntimeConfig) this.ctx.voiceRuntimeConfig.current = newConfig;
+    if (voiceReload && !voiceConfigChanged && newConfig.voice?.enabled) {
+      voiceReload.openAdmission();
+    } else if (voiceReload && voiceConfigChanged) {
+      this.logger.warn('daemon: reload — browser voice configuration changed; restart required to rebuild its provider and auth runtime');
+    } else if (!voiceReload && newConfig.voice?.enabled) {
+      this.logger.warn('daemon: reload — browser voice was enabled; restart required to initialize its provider and auth runtime');
+    }
 
     this.logger.info('daemon: hot-reload complete');
     return ok(undefined);
@@ -993,6 +1107,24 @@ export class TalondDaemon {
         generation,
       },
     });
+    if (config.voice?.enabled && ctx.voiceSessionService) {
+      const voiceConnector = registerVoiceConnector(
+        {
+          channelRegistry: ctx.channelRegistry,
+          channelRepo: ctx.repos.channel,
+          threadRepository: ctx.repos.thread,
+          sessionService: ctx.voiceSessionService,
+          logger: this.logger,
+        },
+        BROWSER_VOICE_CHANNEL_NAME,
+      );
+      if (voiceConnector.isErr()) {
+        this.logger.error(
+          { cause: voiceConnector.error },
+          'daemon: reload — failed to register browser voice connector',
+        );
+      }
+    }
     try {
       await ctx.channelRegistry.startAll();
       this.logger.info('daemon: all channel connectors started');
@@ -1053,4 +1185,14 @@ export class TalondDaemon {
     if (changed.length > 0)
       this.logger.info({ changed: changed }, 'daemon: reload — personas changed');
   }
+}
+
+function resolveVoiceAccessToken(config: TalondConfig): string | undefined {
+  const voice = config.voice;
+  if (!voice?.enabled) return undefined;
+  return (
+    voice.accessToken ??
+    config.auth.providers[voice.accessTokenRef]?.apiKey ??
+    config.auth.apiKey
+  );
 }

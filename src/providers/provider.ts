@@ -1,3 +1,4 @@
+import { type ProviderErrorDiagnostic } from './openai-compatible/agent-cli/error-diagnostics.js';
 import type { Result } from 'neverthrow';
 import type { BackgroundAgentError } from '../core/errors/error-types.js';
 import type { ReasoningEffort } from '../core/config/config-types.js';
@@ -70,7 +71,7 @@ export type AgentStreamEvent =
       excerptChars?: number;
     }
   | { type: 'result'; result: AgentRunResult }
-  | { type: 'error'; message: string };
+  | { type: 'error'; message: string; diagnostic?: ProviderErrorDiagnostic };
 
 export interface SDKExecutionStrategy {
   readonly type: 'sdk';

@@ -123,3 +123,11 @@ export type {
 } from './signal-account-state-repository.js';
 export { SignalDestinationLeaseRepository } from './signal-destination-lease-repository.js';
 export type { SignalDestinationLease } from './signal-destination-lease-repository.js';
+
+export type {
+  VoiceSessionRow,
+  VoiceDelegationRow,
+  VoiceOutputRow,
+  VoiceSessionLookup,
+} from './voice-repository.js';
+export { VoiceRepository } from './voice-repository.js';

@@ -42,6 +42,7 @@ Channel Connector → MessagePipeline (normalize, dedup, route, persist)
 | Pipeline  | `src/pipeline/`            | Inbound normalization, dedup, routing, persistence                  |
 | Queue     | `src/queue/`               | Durable SQLite queue, retry with exponential backoff, dead-letter   |
 | Scheduler | `src/scheduler/`           | Cron/interval/one-shot task execution                               |
+| Voice     | `src/voice/`               | Optional browser voice: authentication, WebRTC transport, live provider, durable lifecycle, queue bridge (details in `AGENTS.md` and `docs/guides/voice.mdx`) |
 | Memory    | `src/memory/`              | Per-thread fact/summary/note storage + context assembly             |
 | Tools     | `src/tools/`               | 15 host-tools + capability-based filtering via `tool-filter.ts`     |
 | MCP       | `src/mcp/`                 | MCP server registry and lifecycle                                   |
@@ -74,11 +75,11 @@ Channel Connector → MessagePipeline (normalize, dedup, route, persist)
 
 ### Database
 
-Schema in `src/core/database/migrations/001-initial-schema.sql`. Key tables: `channels`, `personas`, `bindings` (channel↔persona routing), `threads`, `messages`, `queue_items`, `runs`, `schedules`, `memory_items`, `artifacts`, `audit_log`, `tool_results`. Later migrations in the same folder add more tables, among them `background_tasks` (003), `a2a_tasks` (007) and Signal's `signal_account_state` and `signal_destination_leases` (`017-signal-state.sql`).
+Schema in `src/core/database/migrations/001-initial-schema.sql`. Key tables: `channels`, `personas`, `bindings` (channel↔persona routing), `threads`, `messages`, `queue_items`, `runs`, `schedules`, `memory_items`, `artifacts`, `audit_log`, `tool_results`. Later migrations in the same folder add more tables, among them `background_tasks` (003), `a2a_tasks` (007) and Signal's `signal_account_state` and `signal_destination_leases` (`019-signal-state.sql`).
 
 Image tables (migrations `014-image-ledger.sql`, `015-finding-ledger.sql`, `016-image-ingestion-route.sql`): `images` (unique `id` and `(message_id, ordinal)`), `image_ingestions` (per owning message, no queue FK so completion survives queue-item deletion), `image_source_messages`, `image_admission_records`, `findings` + `finding_images`.
 
-Migration numbers are global and `PRAGMA user_version` skips any file at or below the current version, so a new migration must use the next free number (currently 018). Signal's state migration is `017-signal-state.sql`; it was renumbered from 014 when it collided with `014-image-ledger.sql`, and `tests/unit/core/database/migrations/runner.test.ts` pins the full chain (fresh DB and a 16-to-17 upgrade). Databases created on the unreleased pre-merge Signal branch (Signal schema at version 14) must be recreated before running the merged build.
+Migration numbers are global and `PRAGMA user_version` skips any file at or below the current version, so a new migration must use the next free number (currently 020). Signal's state migration is `019-signal-state.sql`; it was renumbered 014 → 017 → 019 because of collisions, first with `014-image-ledger.sql` and then with the already-released `017-voice-sessions.sql` and `018-voice-auth-sessions.sql`. `tests/unit/core/database/migrations/runner.test.ts` pins the full chain (fresh DB and an 18-to-19 upgrade). Databases created on the unreleased pre-merge Signal branch (Signal schema at version 14 or 17) must be recreated before running the merged build.
 
 Table names to know: `memory_items` (not `memory`), `schedules` (column `expression` not `cron_expression`).
 

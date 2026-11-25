@@ -978,6 +978,51 @@ describe('TalondDaemon.reload() channel generation replacement', () => {
       expect(vi.getTimerCount()).toBe(0);
     });
 
+    it('tears voice down at most once, and only on the attempt whose Signal stop succeeds', async () => {
+      vi.useFakeTimers();
+      const voiceAuth = {
+        invalidateRuntime: vi.fn().mockReturnValue(ok(undefined)),
+        rebind: vi.fn().mockReturnValue(ok(undefined)),
+        disable: vi.fn(),
+      };
+      const voiceSessionService = {
+        closeAdmission: vi.fn(() => events.push('voice-close')),
+        bumpGeneration: vi.fn(),
+        shutdown: vi.fn().mockResolvedValue(undefined),
+        openAdmission: vi.fn(),
+      };
+      Object.assign(ctx as unknown as Record<string, unknown>, {
+        voiceAuth,
+        voiceSessionService,
+        voiceGeneration: { value: 0 },
+      });
+      const old = currentSignal();
+      let healthy = false;
+      const stop = vi.spyOn(old, 'stopWithResult').mockImplementation(async () =>
+        healthy ? (ok(undefined) as never) : (err(new SignalVerificationError('STOPPED')) as never),
+      );
+      vi.spyOn(old, 'retryStateWrites').mockReturnValue(err(new SignalVerificationError('STOPPED')) as never);
+
+      const first = await daemon.reload('/config.yaml');
+      expect(first.isErr()).toBe(true);
+      // Failed attempt: voice untouched (admission never closed, no revocation, no shutdown).
+      expect(voiceSessionService.closeAdmission).not.toHaveBeenCalled();
+      expect(voiceAuth.invalidateRuntime).not.toHaveBeenCalled();
+      expect(voiceSessionService.shutdown).not.toHaveBeenCalled();
+
+      // The retry still cannot stop the connector: still no teardown.
+      await vi.advanceTimersByTimeAsync(RELOAD_RETRY_MS);
+      expect(voiceAuth.invalidateRuntime).not.toHaveBeenCalled();
+
+      healthy = true;
+      await vi.advanceTimersByTimeAsync(RELOAD_RETRY_MS);
+      expect(stop).toHaveBeenCalled();
+      expect(voiceSessionService.closeAdmission).toHaveBeenCalledOnce();
+      expect(voiceAuth.invalidateRuntime).toHaveBeenCalledOnce();
+      expect(voiceSessionService.shutdown).toHaveBeenCalledOnce();
+      await daemon.stop();
+    });
+
     it('cancels the automatic retry when the daemon stops', async () => {
       vi.useFakeTimers();
       const old = currentSignal();

@@ -70,3 +70,17 @@ export type SavedSignalDeliveryHandler = (
   item: QueueItem,
   checkpoint: SignalDeliveryCheckpoint,
 ) => Promise<Result<void, Error>>;
+
+/**
+ * Returns true for the durable voice work payload written by VoiceStore.
+ * Voice work is stored as collaboration data for queue compatibility, but it
+ * must be claimed through VoiceStore's compare-and-set boundary.
+ */
+export function isVoiceQueuePayload(payload: unknown): boolean {
+  return (
+    typeof payload === 'object' &&
+    payload !== null &&
+    'kind' in payload &&
+    (payload as { kind?: unknown }).kind === 'voice_backend'
+  );
+}

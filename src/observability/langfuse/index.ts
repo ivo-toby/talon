@@ -7,6 +7,7 @@ import { NoopObservabilityService } from './noop-observability.js';
 export * from './observability-types.js';
 export * from './noop-observability.js';
 export * from './traceparent.js';
+export * from './voice-observation.js';
 
 export async function createObservabilityService(
   config: LangfuseConfig,

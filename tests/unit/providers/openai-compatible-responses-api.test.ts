@@ -13,6 +13,24 @@ import {
 } from '../../../src/providers/openai-compatible/agent-cli/responses-api.js';
 
 describe('openai-compatible Responses API runner', () => {
+  it('retains HTTP status as structured evidence on request failure', async () => {
+    await expect(
+      runResponsesLoop({
+        prompt: 'hello',
+        systemPrompt: 'system',
+        model: 'test',
+        baseUrl: 'https://example.invalid/v1',
+        tools: {},
+        maxSteps: 1,
+        streamEvents: true,
+        emit: () => {},
+        fetchImpl: vi.fn(
+          async () => new Response('private response', { status: 429 }),
+        ) as unknown as typeof fetch,
+      }),
+    ).rejects.toMatchObject({ statusCode: 429 });
+  });
+
   it('uses the executable tool map key as the Responses tool name', () => {
     const tool = createTool({
       id: 'internal_id',

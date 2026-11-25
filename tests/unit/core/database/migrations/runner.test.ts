@@ -139,7 +139,7 @@ describe('runMigrations', () => {
     expect(result._unsafeUnwrapErr().message).toMatch(/numeric version prefix/);
   });
 
-  it('upgrades a real version-013 database through image ledgers (014-016) to Signal state (017) without disturbing queued work', () => {
+  it('upgrades a real version-013 database through image ledgers (014-016), voice (017-018) and Signal state (019) without disturbing queued work', () => {
     const realMigrationsDir = join(import.meta.dirname, '../../../../../src/core/database/migrations');
     for (const file of readdirSync(realMigrationsDir).filter((file) => /^\d+.*\.sql$/.test(file) && Number(file.split('-')[0]) <= 13)) {
       copyFileSync(join(realMigrationsDir, file), join(tmpDir, file));
@@ -151,9 +151,10 @@ describe('runMigrations', () => {
       INSERT INTO threads (id, channel_id, external_id, created_at, updated_at) VALUES ('t', 'c', 'test', 1, 1);
       INSERT INTO queue_items (id, thread_id, payload, created_at, updated_at) VALUES ('q', 't', '{"saved":true}', 1, 1);
     `);
-    // 014-image-ledger, 015-finding-ledger, 016-image-ingestion-route, 017-signal-state.
-    expect(runMigrations(db, realMigrationsDir)._unsafeUnwrap()).toBe(4);
-    expect(db.pragma('user_version', { simple: true })).toBe(17);
+    // 014-image-ledger, 015-finding-ledger, 016-image-ingestion-route, 017-voice-sessions,
+    // 018-voice-auth-sessions, 019-signal-state.
+    expect(runMigrations(db, realMigrationsDir)._unsafeUnwrap()).toBe(6);
+    expect(db.pragma('user_version', { simple: true })).toBe(19);
     expect(db.prepare('SELECT payload FROM queue_items WHERE id = ?').get('q')).toEqual({ payload: '{"saved":true}' });
     expect(db.prepare("SELECT name FROM sqlite_master WHERE name IN ('signal_account_state', 'signal_destination_leases')").all()).toHaveLength(2);
     expect(runMigrations(db, realMigrationsDir)._unsafeUnwrap()).toBe(0);
@@ -242,22 +243,41 @@ describe('runMigrations', () => {
       expect(['TEXT', 'INTEGER']).toContain(column.type);
     }
   });
-  describe('Signal and image-processing migration coexistence', () => {
+  describe('Signal, voice and image-processing migration coexistence', () => {
     const realDir = join(process.cwd(), 'src/core/database/migrations');
     const tableNames = (d: Database.Database): string[] =>
       (d.prepare(`SELECT name FROM sqlite_master WHERE type = 'table'`).all() as Array<{ name: string }>).map(
         (r) => r.name,
       );
+    const stageWithout = (prefix: string): string => {
+      const staging = makeTmpDir();
+      for (const f of readdirSync(realDir).filter((n) => n.endsWith('.sql'))) {
+        if (!f.startsWith(prefix)) copyFileSync(join(realDir, f), join(staging, f));
+      }
+      return staging;
+    };
 
-    it('applies the full real chain to a fresh DB ending at 17 with Signal and image tables', () => {
+    it('pins the voice and Signal migration numbers in order', () => {
+      const files = readdirSync(realDir).filter((n) => n.endsWith('.sql'));
+      expect(files).toEqual(
+        expect.arrayContaining(['017-voice-sessions.sql', '018-voice-auth-sessions.sql', '019-signal-state.sql']),
+      );
+      expect(files).not.toContain('017-signal-state.sql');
+      expect(files.filter((n) => n.startsWith('017-'))).toHaveLength(1);
+    });
+
+    it('applies the full real chain to a fresh DB ending at 19 with Signal, voice and image tables', () => {
       const result = runMigrations(db, realDir);
       expect(result.isOk()).toBe(true);
-      expect(db.pragma('user_version', { simple: true })).toBe(17);
+      expect(db.pragma('user_version', { simple: true })).toBe(19);
       const tables = tableNames(db);
       expect(tables).toEqual(
         expect.arrayContaining([
           'signal_account_state',
           'signal_destination_leases',
+          'voice_sessions',
+          'voice_delegations',
+          'voice_outputs',
           'images',
           'image_source_messages',
           'image_ingestions',
@@ -266,35 +286,30 @@ describe('runMigrations', () => {
       );
     });
 
-    it('applies 017 idempotently when the Signal tables already exist at version 16', () => {
-      const staging = makeTmpDir();
-      for (const f of readdirSync(realDir).filter((n) => n.endsWith('.sql'))) {
-        if (!f.startsWith('017-')) copyFileSync(join(realDir, f), join(staging, f));
-      }
+    it('applies 019 idempotently when the Signal tables already exist at version 18', () => {
+      const staging = stageWithout('019-');
       expect(runMigrations(db, staging).isOk()).toBe(true);
-      // Pre-create the Signal schema by running 017's SQL directly, leaving user_version at 16.
-      db.exec(readFileSync(join(realDir, '017-signal-state.sql'), 'utf-8'));
-      expect(db.pragma('user_version', { simple: true })).toBe(16);
+      // Pre-create the Signal schema by running 019's SQL directly, leaving user_version at 18.
+      db.exec(readFileSync(join(realDir, '019-signal-state.sql'), 'utf-8'));
+      expect(db.pragma('user_version', { simple: true })).toBe(18);
 
       const result = runMigrations(db, realDir);
       expect(result._unsafeUnwrap()).toBe(1);
-      expect(db.pragma('user_version', { simple: true })).toBe(17);
+      expect(db.pragma('user_version', { simple: true })).toBe(19);
     });
 
-    it('upgrades a DB already at version 16 (main schema) to 17 with the Signal tables', () => {
-      const staging = makeTmpDir();
-      for (const f of readdirSync(realDir).filter((n) => n.endsWith('.sql'))) {
-        if (!f.startsWith('017-')) copyFileSync(join(realDir, f), join(staging, f));
-      }
+    it('upgrades a DB already at version 18 (main schema with voice) to 19 with the Signal tables', () => {
+      const staging = stageWithout('019-');
       expect(runMigrations(db, staging).isOk()).toBe(true);
-      expect(db.pragma('user_version', { simple: true })).toBe(16);
+      expect(db.pragma('user_version', { simple: true })).toBe(18);
       expect(tableNames(db)).not.toContain('signal_account_state');
+      expect(tableNames(db)).toContain('voice_sessions');
 
       const upgraded = runMigrations(db, realDir);
       expect(upgraded._unsafeUnwrap()).toBe(1);
-      expect(db.pragma('user_version', { simple: true })).toBe(17);
+      expect(db.pragma('user_version', { simple: true })).toBe(19);
       expect(tableNames(db)).toEqual(
-        expect.arrayContaining(['signal_account_state', 'signal_destination_leases', 'images']),
+        expect.arrayContaining(['signal_account_state', 'signal_destination_leases', 'voice_sessions', 'images']),
       );
     });
   });

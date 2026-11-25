@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { QueueRepository } from '../../../src/core/database/repositories/queue-repository.js';
 import { DeadLetterHandler } from '../../../src/queue/dead-letter.js';
@@ -117,6 +117,58 @@ describe('DeadLetterHandler', () => {
       expect(item.status).toBe(QueueItemStatus.DeadLetter);
       expect(typeof item.createdAt).toBe('number');
       expect(typeof item.updatedAt).toBe('number');
+    });
+
+    it('redacts direct move diagnostics for voice rows but keeps the stored reason', () => {
+      const logger = {
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+        debug: vi.fn(),
+        trace: vi.fn(),
+        fatal: vi.fn(),
+        child: vi.fn().mockReturnThis(),
+      } as any;
+      const resolver = {
+        resolveThread: vi.fn().mockReturnValue('voice'),
+        resolveRow: vi.fn().mockReturnValue('voice'),
+      };
+      const voiceHandler = new DeadLetterHandler(repo, logger, resolver);
+      const itemId = enqueueItem(repo, threadId);
+      const reason = 'VOICE_DEAD_LETTER_SENTINEL';
+
+      expect(voiceHandler.moveToDeadLetter(itemId, reason).isOk()).toBe(true);
+      expect((repo.findById(itemId)._unsafeUnwrap() as { error: string }).error).toBe(reason);
+      expect(JSON.stringify(logger.warn.mock.calls)).not.toContain(reason);
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ voice: true, errorCategory: 'unknown' }),
+        'queue diagnostic event',
+      );
+    });
+
+    it('keeps nonvoice direct move diagnostics unchanged', () => {
+      const logger = {
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+        debug: vi.fn(),
+        trace: vi.fn(),
+        fatal: vi.fn(),
+        child: vi.fn().mockReturnThis(),
+      } as any;
+      const resolver = {
+        resolveThread: vi.fn().mockReturnValue('nonvoice'),
+        resolveRow: vi.fn().mockReturnValue('nonvoice'),
+      };
+      const ordinaryHandler = new DeadLetterHandler(repo, logger, resolver);
+      const itemId = enqueueItem(repo, threadId);
+      const reason = 'NONVOICE_DEAD_LETTER_REASON';
+
+      ordinaryHandler.moveToDeadLetter(itemId, reason);
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ itemId, reason }),
+        'queue item moved to dead letter',
+      );
     });
   });
 });
