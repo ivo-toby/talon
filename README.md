@@ -741,6 +741,12 @@ bindings:
 
 A thread-scoped binding wins over the channel default. Unbound topics and General use the default persona. All personas speak through the same bot account. Bindings are applied at startup; removing the entry returns the topic to the default.
 
+To bring an existing conversation into a topic, so the agent there does not start from nothing, use [`talonctl move-context`](#thread-and-provider-affinity):
+
+```bash
+npx talonctl move-context --channel my-telegram --from 123456789 --to '-1004452318413:42'
+```
+
 A reminder or schedule created inside a topic is delivered into that topic, unless the scheduled run passes an explicit `externalChatId`. The `channel.send: message sent successfully` log line names the `recipient` and the `recipientSource` (`schedule origin`, `externalChatId argument` or `current thread`).
 
 ### Telegram
@@ -2358,6 +2364,7 @@ npx talonctl config-show --show-secrets
 | ------------------------- | ------------------------------------------------------------------------------ |
 | `list-threads`            | List persisted threads for a channel, including external IDs and provider info |
 | `reset-provider-affinity` | Reset provider affinity for one channel thread                                 |
+| `move-context`            | Move or copy memory and message history from one conversation to another       |
 
 **`list-threads`** options:
 
@@ -2390,6 +2397,37 @@ npx talonctl list-threads --channel my-telegram
 npx talonctl reset-provider-affinity --channel my-telegram --external-id 123456789
 npx talonctl reset-provider-affinity --channel my-telegram --external-id 123456789 --yes
 ```
+
+**`move-context`** options:
+
+| Option                | Description                                                                 | Default       |
+| --------------------- | --------------------------------------------------------------------------- | ------------- |
+| `--channel <name>`    | Channel of the source conversation (required)                               | —             |
+| `--from <id>`         | Source thread external ID (required). Use `list-threads` to discover values | —             |
+| `--to <id>`           | Target thread external ID (required), e.g. a Telegram topic `<chat>:<topic>` | —             |
+| `--to-channel <name>` | Channel of the target conversation, when it differs                         | `--channel`   |
+| `--copy`              | Leave the source unchanged instead of emptying it                           | off (move)    |
+| `--memory-only`       | Carry memory items and notebook files only, not the message history         | off           |
+| `--dry-run`           | Show what would be moved without changing anything                          | off           |
+| `--yes`               | Bypass the confirmation prompt                                              | off           |
+| `--config <path>`     | Path to talond.yaml                                                         | `talond.yaml` |
+
+`move-context` carries what makes a conversation remember — memory items (facts, notes, summaries, observations), message history, and the notebook files in the thread's `memory/` directory — to another conversation. The usual case is promoting a subject from a main chat into its own Telegram topic:
+
+```bash
+# Preview, then move the main chat's context into a topic
+npx talonctl move-context --channel my-telegram --from 123456789 --to '-1004452318413:42' --dry-run
+npx talonctl move-context --channel my-telegram --from 123456789 --to '-1004452318413:42'
+
+# Keep the main chat as it is and give the topic a copy
+npx talonctl move-context --channel my-telegram --from 123456789 --to '-1004452318413:42' --copy
+```
+
+- **Move** empties the source: it starts fresh afterwards. **Copy** leaves the source unchanged, and running the same copy twice adds nothing.
+- The target is created when the conversation has no history yet. A target that already has history is merged by time; the preview warns about it.
+- The daemon can keep running. Both affected conversations get a session reset, so the next message starts a fresh session that reads the migrated context.
+- It refuses while either conversation has queued or running work.
+- Not carried over: Images and Findings (they belong to the conversation they were sent in, so in move mode a message with images stays in the source), the reply/reaction message ledger, runs, schedules and bindings.
 
 ### Provider Management
 

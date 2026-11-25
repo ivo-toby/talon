@@ -240,6 +240,51 @@ If something is off, see `docs/guides/telegram-topics.mdx`, section Troubleshoot
 - `telegram message from disallowed chat, dropping` — the group ID is missing from `allowedChatIds`.
 - `telegram group chat is ignored because allowGroupChats is not enabled` — `allowGroupChats` is off.
 
+### T8: Bring existing context into a topic (optional)
+
+A new topic starts with no memory. Ask:
+
+> **Have you already been talking to the bot about one of these subjects somewhere else, for example in your private chat, and should the topic know that?**
+
+If no, the flow is done.
+
+If yes, for each topic:
+
+1. Find the source conversation:
+
+```bash
+npx talonctl list-threads --channel <channel>
+```
+
+For a private chat the external ID is the user's own chat ID. Confirm with the user which one it is.
+
+2. Find the target: the `Talon thread` value from `/chatid@YourBotName` sent inside the topic (T6 step 2).
+
+3. Ask:
+
+> **Move or copy?**
+>
+> a) Move: the topic gets the memory and history, and the old conversation starts fresh
+> b) Copy: the topic gets a copy and the old conversation keeps everything
+
+Recommend **copy** when the source is a general-purpose chat that covers several subjects, because a move sends all of its memory to this one topic. Recommend **move** when the source conversation was about this subject only.
+
+4. Show the preview and read it to the user:
+
+```bash
+npx talonctl move-context --channel <channel> --from '<source ID>' --to '<Talon thread>' --dry-run
+```
+
+Add `--copy` for a copy. Add `--memory-only` if the user wants the facts and notes but not the message history. Point out any warning in the preview: a target that already has history is merged by time, and messages with images stay in the source on a move.
+
+5. After the user agrees, run the same command without `--dry-run` and with `--yes`.
+
+Tell the user:
+
+> The next message in the topic starts a fresh session that reads the migrated context. No restart is needed. Images are not carried over.
+
+If the command refuses with "queued or running item(s)", the agent is busy in one of the conversations; wait for it to finish and run it again.
+
 ## Phase 8: Verify
 
 Tell the user:
@@ -311,6 +356,7 @@ Telegram-specific behaviour worth warning the user about:
 | Duplicate responses | Check if multiple instances of talond are running |
 | Bot is silent in a group, nothing in the log | Set `allowGroupChats: true`; add the group's chat ID to `allowedChatIds` if that list is set |
 | Bot only answers @mentions, not ordinary group messages | Set `requireMention: false` and make the bot a group administrator |
+| A topic should know what was discussed in another chat | `npx talonctl move-context --channel <channel> --from <source ID> --to <Talon thread>`; add `--copy` to keep the source, `--dry-run` to preview |
 | Need the ID of a group or topic | Send `/chatid@YourBotName` there; the bot answers with the chat ID, topic ID and Talon thread key |
 | Answers quote every message | Set `replyToTrigger: never`, connector-wide or under `chats.<chat ID>` |
 | A reminder made in a topic arrives elsewhere | Check `recipientSource` on the `channel.send: message sent successfully` log line; `externalChatId argument` means the agent named a chat itself |
