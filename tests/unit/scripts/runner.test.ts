@@ -52,7 +52,12 @@ interface Provider extends ToolProvider {
 function provider(hang = false): Provider {
   const p: Provider = {
     signals: [],
-    describe: (name) => (name === 'mail.read' ? { toolClass: 'read' } : undefined),
+    describe: (name) =>
+      name === 'mail.read'
+        ? { toolClass: 'read' }
+        : name === 'mail.send'
+          ? { toolClass: 'write' }
+          : undefined,
     call: (_name, input, signal) => {
       p.signals.push(signal);
       if (hang) {
@@ -204,6 +209,73 @@ describe('runScript', () => {
     expect(p.signals).toHaveLength(1);
     expect(p.signals[0].aborted).toBe(true);
     expect(report.calls).toHaveLength(1);
+    expect(report.calls[0]).toMatchObject({ outcome: 'aborted', errorCode: 'SCRIPT_FAILED' });
+    await expectLeaseGone(backend, broker);
+  });
+
+  it('reports an un-awaited live write open at done as aborted, not failed', async () => {
+    const { backend, broker } = setup();
+    const p = provider(true);
+    backend.setExecStreamHandler((call) => {
+      call.onStdin(() => {
+        call.emitStdout(
+          line({ t: 'call', id: 1, name: 'mail.send', input: { to: 'x' } }) +
+            line({ t: 'done', ok: true, result: null }),
+        );
+      });
+      return new Promise(() => {});
+    });
+    const report = (
+      await runScript(
+        broker,
+        request({
+          provider: p,
+          manifest: { name: 'm', personaId: 'p1', tools: ['mail.send'] },
+        }),
+      )
+    )._unsafeUnwrap();
+    expect(report.ok).toBe(true);
+    expect(report.calls[0]).toMatchObject({ name: 'mail.send', outcome: 'aborted' });
+    await expectLeaseGone(backend, broker);
+  });
+
+  it('reports CALL_LIMIT and stops the run once the call limit is passed', async () => {
+    const { backend, broker } = setup();
+    const p = provider();
+    backend.setExecStreamHandler((call) => {
+      call.onStdin(() => {
+        let text = '';
+        for (let i = 1; i <= 205; i++) {
+          text += line({ t: 'call', id: i, name: 'mail.read', input: {} });
+        }
+        call.emitStdout(text + line({ t: 'done', ok: true, result: 1 }));
+      });
+      return new Promise(() => {});
+    });
+    const report = (await runScript(broker, request({ provider: p })))._unsafeUnwrap();
+    expect(report).toMatchObject({ ok: false, errorCode: 'CALL_LIMIT' });
+    expect(report.result).toBeUndefined();
+    expect(report.calls.filter((c) => c.errorCode === 'CALL_LIMIT')).toHaveLength(1);
+    expect(report.calls.length).toBeLessThanOrEqual(201);
+    await expectLeaseGone(backend, broker);
+  });
+
+  it('reports PROTOCOL for a call name that is not a tool name', async () => {
+    const { backend, broker } = setup();
+    backend.setExecStreamHandler((call) => {
+      call.onStdin(() => call.emitStdout(line({ t: 'call', id: 1, name: 'a b', input: {} })));
+      return new Promise(() => {});
+    });
+    const report = (await runScript(broker, request()))._unsafeUnwrap();
+    expect(report).toMatchObject({ ok: false, errorCode: 'PROTOCOL' });
+    await expectLeaseGone(backend, broker);
+  });
+
+  it('reports SANDBOX when the exec fails in the backend before done', async () => {
+    const { backend, broker } = setup();
+    backend.setExecStreamHandler(() => Promise.reject(new Error('backend broke')));
+    const report = (await runScript(broker, request()))._unsafeUnwrap();
+    expect(report).toMatchObject({ ok: false, errorCode: 'SANDBOX' });
     await expectLeaseGone(backend, broker);
   });
 

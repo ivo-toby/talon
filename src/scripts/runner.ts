@@ -23,6 +23,12 @@ export interface ScriptRunRequest {
   stubs?: Record<string, unknown[]>;
   /** Broker names. The operator allowlist must grant them to manifest.personaId. */
   profile: string;
+  /**
+   * Broker workspace id. The operator must configure this workspace as read-only
+   * (`mode: 'ro'`) with mount target `/scripts`. With a read-write mount, one script
+   * could change the SDK or another script. Part 2 enforces this at configuration load;
+   * this runner does not check it.
+   */
   workspace: string;
 }
 
@@ -160,6 +166,10 @@ async function run(
           settle({ kind: 'done', message });
         } else {
           reply(message);
+          if (gateway.limitExceeded()) {
+            // Set synchronously by the call above, so it ranks in stream order with `done`.
+            settle({ kind: 'failed', code: 'CALL_LIMIT' });
+          }
         }
       }
     } catch {
@@ -192,8 +202,12 @@ async function run(
 
   const execEnded = started.value.result.then(
     (result) => {
-      const timedOut = result.isOk() && result.value.timedOut;
-      settle({ kind: 'failed', code: timedOut ? 'TIMEOUT' : 'SCRIPT_FAILED' });
+      if (result.isErr()) {
+        // The backend failed; the script did not necessarily do anything wrong.
+        settle({ kind: 'failed', code: 'SANDBOX' });
+        return;
+      }
+      settle({ kind: 'failed', code: result.value.timedOut ? 'TIMEOUT' : 'SCRIPT_FAILED' });
     },
     () => settle({ kind: 'failed', code: 'SCRIPT_FAILED' }),
   );

@@ -245,6 +245,26 @@ describe('talon script SDK', () => {
     expect(run.lines[0]).toMatchObject({ t: 'done', ok: false });
   }, 20_000);
 
+  it('rejects an over-long call with RESULT_TOO_LARGE and writes nothing', async () => {
+    const run = start(
+      `import { tools } from 'talon';
+       export default async function () {
+         try { await tools.mail.send({ body: 'x'.repeat(1_048_576) }); } catch (e) {
+           return { code: (e as { code: string }).code };
+         }
+       }`,
+    );
+    await run.waitFor(1);
+    expect(run.lines).toEqual([{ t: 'done', ok: true, result: { code: 'RESULT_TOO_LARGE' } }]);
+  }, 20_000);
+
+  it('sends done as failed with a fixed message when the result is over-long', async () => {
+    const run = start(`export default async function () { return 'x'.repeat(1_048_576); }`);
+    await run.waitFor(1);
+    expect(run.lines).toEqual([{ t: 'done', ok: false, message: 'script result is too large' }]);
+    expect(await run.exitCode).toBe(0);
+  }, 20_000);
+
   it('sends null for an undefined result', async () => {
     const run = start('export default async function () {}');
     await run.waitFor(1);

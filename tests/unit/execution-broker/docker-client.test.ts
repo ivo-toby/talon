@@ -71,7 +71,9 @@ describe('createDockerEngineClient', () => {
       res.end('{"message":"no such container"}');
     };
     const client = createDockerEngineClient({ socketPath });
-    const response = (await client.request({ method: 'DELETE', path: '/containers/x' }))._unsafeUnwrap();
+    const response = (
+      await client.request({ method: 'DELETE', path: '/containers/x' })
+    )._unsafeUnwrap();
     expect(response.status).toBe(404);
   });
 
@@ -146,7 +148,7 @@ describe('createDockerEngineClient openStream', () => {
   const nextChunk = (listen: (cb: (c: Buffer) => void) => void): Promise<Buffer> =>
     new Promise((resolve) => listen(resolve));
 
-  it('sends the upgrade headers and the JSON body', async () => {
+  it('sends the upgrade headers', async () => {
     const client = createDockerEngineClient({ socketPath });
     const duplex = (
       await client.openStream({ method: 'POST', path: '/exec/x/start', body: { Detach: false } })
@@ -158,7 +160,9 @@ describe('createDockerEngineClient openStream', () => {
 
   it('moves bytes both ways after a 101 reply', async () => {
     const client = createDockerEngineClient({ socketPath });
-    const duplex = (await client.openStream({ method: 'POST', path: '/exec/x/start' }))._unsafeUnwrap();
+    const duplex = (
+      await client.openStream({ method: 'POST', path: '/exec/x/start' })
+    )._unsafeUnwrap();
     const fromServer = nextChunk((cb) => duplex.onData(cb));
     upgrades[0].socket.write('hello');
     expect((await fromServer).toString('utf8')).toBe('hello');
@@ -174,7 +178,9 @@ describe('createDockerEngineClient openStream', () => {
       u.socket.write('HTTP/1.1 101 UPGRADED\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\nearly');
     };
     const client = createDockerEngineClient({ socketPath });
-    const duplex = (await client.openStream({ method: 'POST', path: '/exec/x/start' }))._unsafeUnwrap();
+    const duplex = (
+      await client.openStream({ method: 'POST', path: '/exec/x/start' })
+    )._unsafeUnwrap();
     const chunk = await nextChunk((cb) => duplex.onData(cb));
     expect(chunk.toString('utf8')).toBe('early');
     duplex.destroy();
@@ -187,14 +193,18 @@ describe('createDockerEngineClient openStream', () => {
       socket.end(`HTTP/1.1 ${status} X\r\nContent-Length: 0\r\n\r\n`);
     });
     const client = createDockerEngineClient({ socketPath });
-    const error = (await client.openStream({ method: 'POST', path: '/exec/x/start' }))._unsafeUnwrapErr();
+    const error = (
+      await client.openStream({ method: 'POST', path: '/exec/x/start' })
+    )._unsafeUnwrapErr();
     expect(error.brokerCode).toBe('BACKEND_FAILURE');
     expect(error.message).not.toContain(socketPath);
   });
 
   it('endInput half-closes the input while output continues', async () => {
     const client = createDockerEngineClient({ socketPath });
-    const duplex = (await client.openStream({ method: 'POST', path: '/exec/x/start' }))._unsafeUnwrap();
+    const duplex = (
+      await client.openStream({ method: 'POST', path: '/exec/x/start' })
+    )._unsafeUnwrap();
     const serverSocket = upgrades[0].socket;
     serverSocket.on('end', () => serverSocket.write('after-end'));
     const fromServer = nextChunk((cb) => duplex.onData(cb));
@@ -225,7 +235,9 @@ describe('createDockerEngineClient openStream', () => {
 
   it('calls onClose without an error when the server closes the stream', async () => {
     const client = createDockerEngineClient({ socketPath });
-    const duplex = (await client.openStream({ method: 'POST', path: '/exec/x/start' }))._unsafeUnwrap();
+    const duplex = (
+      await client.openStream({ method: 'POST', path: '/exec/x/start' })
+    )._unsafeUnwrap();
     const closed = new Promise<unknown>((resolve) => duplex.onClose((error) => resolve(error)));
     upgrades[0].socket.end();
     expect(await closed).toBeUndefined();
@@ -233,7 +245,9 @@ describe('createDockerEngineClient openStream', () => {
 
   it('delivers a close that happened before onClose was registered', async () => {
     const client = createDockerEngineClient({ socketPath });
-    const duplex = (await client.openStream({ method: 'POST', path: '/exec/x/start' }))._unsafeUnwrap();
+    const duplex = (
+      await client.openStream({ method: 'POST', path: '/exec/x/start' })
+    )._unsafeUnwrap();
     duplex.destroy();
     await new Promise((r) => setTimeout(r, 20));
     const calls: unknown[] = [];

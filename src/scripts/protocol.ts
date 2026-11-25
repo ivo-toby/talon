@@ -4,6 +4,9 @@ import { ScriptError, type ScriptErrorCode, type ScriptMode } from './types.js';
 /** One JSON object per line, UTF-8. Upper bound for a single line, in bytes. */
 export const MAX_LINE_BYTES = 1_048_576;
 
+const MAX_CALL_NAME_CHARS = 200;
+const CALL_NAME = /^[A-Za-z0-9._-]+$/;
+
 export type HostMessage =
   | { t: 'start'; mode: ScriptMode; input: unknown }
   | { t: 'result'; id: number; ok: true; value: unknown }
@@ -41,8 +44,8 @@ function parseLine(line: string): Result<ScriptMessage, string> {
     if (typeof id !== 'number' || !Number.isSafeInteger(id) || id < 0) {
       return err('call id is not a non-negative integer');
     }
-    if (typeof name !== 'string' || name.length === 0) {
-      return err('call name is not a non-empty string');
+    if (typeof name !== 'string' || name.length > MAX_CALL_NAME_CHARS || !CALL_NAME.test(name)) {
+      return err('call name is not a valid tool name');
     }
     return ok({ t: 'call', id, name, input: obj.input });
   }
@@ -72,12 +75,16 @@ export interface LineDecoder {
  * After the first error the decoder stays failed.
  */
 export function createLineDecoder(maxLineBytes: number = MAX_LINE_BYTES): LineDecoder {
-  let pending = '';
+  // The pending line is kept as parts with a running byte count, so a push costs
+  // only the size of the new text, whatever the pending line already holds.
+  let parts: string[] = [];
+  let pendingBytes = 0;
   let failed = false;
 
   const fail = (detail: string): Result<ScriptMessage[], ScriptError> => {
     failed = true;
-    pending = '';
+    parts = [];
+    pendingBytes = 0;
     return err(protocolError(detail));
   };
 
@@ -86,11 +93,18 @@ export function createLineDecoder(maxLineBytes: number = MAX_LINE_BYTES): LineDe
       if (failed) {
         return err(protocolError('decoder already failed'));
       }
-      const parts = (pending + text).split('\n');
-      pending = parts.pop() ?? '';
       const messages: ScriptMessage[] = [];
+      let from = 0;
+      let newline = text.indexOf('\n', from);
 
-      for (const raw of parts) {
+      while (newline !== -1) {
+        const segment = text.slice(from, newline);
+        const raw = parts.length === 0 ? segment : parts.join('') + segment;
+        parts = [];
+        pendingBytes = 0;
+        from = newline + 1;
+        newline = text.indexOf('\n', from);
+
         if (Buffer.byteLength(raw, 'utf8') > maxLineBytes) {
           return fail('line exceeds the size limit');
         }
@@ -105,8 +119,13 @@ export function createLineDecoder(maxLineBytes: number = MAX_LINE_BYTES): LineDe
         messages.push(parsed.value);
       }
 
-      if (Buffer.byteLength(pending, 'utf8') > maxLineBytes) {
-        return fail('line exceeds the size limit');
+      if (from < text.length) {
+        const rest = from === 0 ? text : text.slice(from);
+        parts.push(rest);
+        pendingBytes += Buffer.byteLength(rest, 'utf8');
+        if (pendingBytes > maxLineBytes) {
+          return fail('line exceeds the size limit');
+        }
       }
       return ok(messages);
     },

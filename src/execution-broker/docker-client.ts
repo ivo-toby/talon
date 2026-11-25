@@ -3,7 +3,12 @@ import { Buffer } from 'node:buffer';
 import { err, ok, type Result } from 'neverthrow';
 import { ExecutionBrokerError } from './errors.js';
 import type { Duplex } from 'node:stream';
-import type { DockerDuplex, DockerEngineClient, DockerRequest, DockerResponse } from './docker-types.js';
+import type {
+  DockerDuplex,
+  DockerEngineClient,
+  DockerRequest,
+  DockerResponse,
+} from './docker-types.js';
 
 /** Default response cap: 8 MiB. */
 const DEFAULT_MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
@@ -17,11 +22,6 @@ function backendFailure(detail: string, cause?: Error): ExecutionBrokerError {
   return new ExecutionBrokerError('BACKEND_FAILURE', detail, cause);
 }
 
-/**
- * Docker Engine transport over a unix socket. Any HTTP status resolves `ok`;
- * only transport failures (connect error, abort, oversize response) are
- * `BACKEND_FAILURE`. Error detail never carries the socket path or bodies.
- */
 function createDuplex(socket: Duplex, head: Buffer, onSettled: () => void): DockerDuplex {
   let dataListener: ((chunk: Buffer) => void) | undefined;
   const pending: Buffer[] = head.length > 0 ? [head] : [];
@@ -75,6 +75,11 @@ function createDuplex(socket: Duplex, head: Buffer, onSettled: () => void): Dock
   };
 }
 
+/**
+ * Docker Engine transport over a unix socket. Any HTTP status resolves `ok`;
+ * only transport failures (connect error, abort, oversize response) are
+ * `BACKEND_FAILURE`. Error detail never carries the socket path or bodies.
+ */
 export function createDockerEngineClient(options: DockerEngineClientOptions): DockerEngineClient {
   const maxResponseBytes = options.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
 
@@ -95,7 +100,9 @@ export function createDockerEngineClient(options: DockerEngineClientOptions): Do
         }
 
         const body: Buffer | undefined =
-          request.body === undefined ? undefined : Buffer.from(JSON.stringify(request.body), 'utf8');
+          request.body === undefined
+            ? undefined
+            : Buffer.from(JSON.stringify(request.body), 'utf8');
 
         const req: ClientRequest = httpRequest({
           socketPath: options.socketPath,
@@ -131,7 +138,13 @@ export function createDockerEngineClient(options: DockerEngineClientOptions): Do
           res.resume();
           req.destroy();
           detachAbort();
-          settle(err(backendFailure(`docker did not upgrade the connection (status ${res.statusCode ?? 0})`)));
+          settle(
+            err(
+              backendFailure(
+                `docker did not upgrade the connection (status ${res.statusCode ?? 0})`,
+              ),
+            ),
+          );
         });
         req.on('error', (cause: Error) => {
           detachAbort();
@@ -163,7 +176,9 @@ export function createDockerEngineClient(options: DockerEngineClientOptions): Do
         }
 
         const body: Buffer | undefined =
-          request.body === undefined ? undefined : Buffer.from(JSON.stringify(request.body), 'utf8');
+          request.body === undefined
+            ? undefined
+            : Buffer.from(JSON.stringify(request.body), 'utf8');
 
         const args: ClientRequestArgs = {
           socketPath: options.socketPath,
@@ -173,7 +188,11 @@ export function createDockerEngineClient(options: DockerEngineClientOptions): Do
           headers:
             body === undefined
               ? { host: 'docker' }
-              : { host: 'docker', 'content-type': 'application/json', 'content-length': String(body.length) },
+              : {
+                  host: 'docker',
+                  'content-type': 'application/json',
+                  'content-length': String(body.length),
+                },
         };
 
         const req: ClientRequest = httpRequest(args, (res) => {

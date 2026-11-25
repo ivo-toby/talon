@@ -51,7 +51,14 @@ export interface ToolProvider {
   call(name: string, input: unknown, signal: AbortSignal): Promise<Result<unknown, ScriptError>>;
 }
 
-export type CallOutcome = 'executed' | 'stubbed' | 'skipped-dry-run' | 'denied' | 'failed';
+export type CallOutcome =
+  | 'executed'
+  | 'stubbed'
+  | 'skipped-dry-run'
+  | 'denied'
+  | 'failed'
+  /** The provider call was started and then aborted, so the effect is unknown. */
+  | 'aborted';
 
 export interface CallRecord {
   seq: number;

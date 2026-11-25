@@ -21,8 +21,11 @@ const IMAGE = process.env.TALON_DOCKER_IT_IMAGE ?? '';
 const SOCKET = process.env.TALON_DOCKER_SOCKET ?? '/var/run/docker.sock';
 const enabled = IMAGE !== '' && existsSync(SOCKET);
 
-function containerIds(): string[] {
-  return execFileSync('docker', ['ps', '-aq', '--no-trunc'], { encoding: 'utf8' })
+/** Containers that mount this file's own temporary directory, so parallel files do not collide. */
+function containerIds(hostPath: string): string[] {
+  return execFileSync('docker', ['ps', '-aq', '--no-trunc', '--filter', `volume=${hostPath}`], {
+    encoding: 'utf8',
+  })
     .split('\n')
     .filter(Boolean)
     .sort();
@@ -30,7 +33,6 @@ function containerIds(): string[] {
 
 describe.skipIf(!enabled)('execution broker against a real Docker daemon', () => {
   let dir: string;
-  let before: string[];
   let broker: ExecutionBroker;
 
   const allowlist = (hostPath: string): OperatorAllowlist => ({
@@ -46,7 +48,9 @@ describe.skipIf(!enabled)('execution broker against a real Docker daemon', () =>
       },
     ],
     workspaces: [{ id: 'wiki', hostPath, mountTarget: '/epic-wiki', mode: 'ro' }],
-    grants: [{ parentPersona: 'parent', workerPersona: 'worker', profile: 'it', workspace: 'wiki' }],
+    grants: [
+      { parentPersona: 'parent', workerPersona: 'worker', profile: 'it', workspace: 'wiki' },
+    ],
   });
 
   beforeAll(() => {
@@ -54,7 +58,6 @@ describe.skipIf(!enabled)('execution broker against a real Docker daemon', () =>
     chmodSync(dir, 0o755);
     writeFileSync(join(dir, 'note.txt'), 'wiki content\n');
     chmodSync(join(dir, 'note.txt'), 0o644);
-    before = containerIds();
     const backend = createDockerBackend(createDockerEngineClient({ socketPath: SOCKET }), {
       image: IMAGE,
       user: '10001:10001',
@@ -142,6 +145,6 @@ describe.skipIf(!enabled)('execution broker against a real Docker daemon', () =>
   }, 60_000);
 
   it('removes every container it created', () => {
-    expect(containerIds()).toEqual(before);
+    expect(containerIds(dir)).toEqual([]);
   });
 });

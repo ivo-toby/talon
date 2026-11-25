@@ -14,6 +14,8 @@ export interface ScriptGateway {
   handleCall(message: { id: number; name: string; input: unknown }): Promise<HostMessage>;
   /** Aborts every open provider call and fails every waiting call. */
   abortAll(): void;
+  /** True once a call was refused with `CALL_LIMIT`. */
+  limitExceeded(): boolean;
   records(): CallRecord[];
 }
 
@@ -35,6 +37,8 @@ const MESSAGES: Partial<Record<ScriptErrorCode, string>> = {
 interface OpenRecord {
   record: CallRecord;
   finished: boolean;
+  /** The provider call was entered; its effect is unknown if the run is aborted. */
+  entered: boolean;
 }
 
 function cloneInput(input: unknown): unknown {
@@ -197,6 +201,7 @@ function buildGateway(options: GatewayOptions): Result<ScriptGateway, ScriptErro
       }
       const controller = new AbortController();
       controllers.add(controller);
+      entry.entered = true;
       let result: Result<unknown, ScriptError>;
       try {
         result = await provider.call(name, input, controller.signal);
@@ -206,7 +211,8 @@ function buildGateway(options: GatewayOptions): Result<ScriptGateway, ScriptErro
         controllers.delete(controller);
       }
       if (aborted) {
-        return fail(id, entry, 'SCRIPT_FAILED');
+        finish(entry, 'aborted', 'SCRIPT_FAILED');
+        return failure(id, 'SCRIPT_FAILED');
       }
       if (result.isErr()) {
         return fail(id, entry, 'TOOL_FAILED');
@@ -233,6 +239,7 @@ function buildGateway(options: GatewayOptions): Result<ScriptGateway, ScriptErro
       return Promise.resolve(fail(id, entry, 'SCRIPT_FAILED'));
     }
     if (counter > maxCalls) {
+      limitHit = true;
       return Promise.resolve(deny(id, entry, 'CALL_LIMIT'));
     }
     if (!allowed.has(name)) {
@@ -276,11 +283,17 @@ function buildGateway(options: GatewayOptions): Result<ScriptGateway, ScriptErro
   };
 
   let counter = 0;
+  let limitHit = false;
   return ok({
     async handleCall(message): Promise<HostMessage> {
       counter++;
+      if (counter > maxCalls + 1 && !aborted) {
+        // Only the first call past the limit is recorded; the rest cost nothing.
+        return failure(message.id, 'CALL_LIMIT');
+      }
       const entry: OpenRecord = {
         finished: false,
+        entered: false,
         record: {
           seq: all.length + 1,
           name: message.name,
@@ -301,7 +314,7 @@ function buildGateway(options: GatewayOptions): Result<ScriptGateway, ScriptErro
       aborted = true;
       for (const entry of all) {
         if (!entry.finished) {
-          finish(entry, 'failed', 'SCRIPT_FAILED');
+          finish(entry, entry.entered ? 'aborted' : 'failed', 'SCRIPT_FAILED');
         }
       }
       for (const controller of controllers) {
@@ -313,6 +326,10 @@ function buildGateway(options: GatewayOptions): Result<ScriptGateway, ScriptErro
       for (const resolve of wake) {
         resolve();
       }
+    },
+
+    limitExceeded(): boolean {
+      return limitHit;
     },
 
     records(): CallRecord[] {

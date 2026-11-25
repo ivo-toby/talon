@@ -3,6 +3,8 @@
 // Protocol: one JSON object per line. Script to host on stdout, host to script on stdin.
 
 const MAX_ERROR_MESSAGE_CHARS = 2000;
+// Same bound as the host decoder: a longer line is a protocol error there.
+const MAX_LINE_BYTES = 1_048_576;
 
 export class TalonToolError extends Error {
   /**
@@ -106,6 +108,9 @@ export function call(name, input) {
       new TalonToolError('tool input is not JSON-serializable', 'INVALID_ARGUMENT'),
     );
   }
+  if (Buffer.byteLength(line, 'utf8') > MAX_LINE_BYTES) {
+    return Promise.reject(new TalonToolError('tool input is too large', 'RESULT_TOO_LARGE'));
+  }
   nextId += 1;
   return new Promise((resolve, reject) => {
     pending.set(id, { resolve, reject });
@@ -168,6 +173,9 @@ export function _finish(outcome) {
       text === undefined
         ? { t: 'done', ok: false, message: 'script result is not JSON-serializable' }
         : { t: 'done', ok: true, result: JSON.parse(text) };
+    if (Buffer.byteLength(JSON.stringify(message), 'utf8') > MAX_LINE_BYTES) {
+      message = { t: 'done', ok: false, message: 'script result is too large' };
+    }
   } else {
     message = { t: 'done', ok: false, message: outcome.message.slice(0, MAX_ERROR_MESSAGE_CHARS) };
   }

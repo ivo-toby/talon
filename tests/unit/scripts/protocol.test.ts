@@ -125,6 +125,46 @@ describe('createLineDecoder', () => {
     expect(tooSmall.push(body + '\n').isErr()).toBe(true);
   });
 
+  it('decodes 200,000 one-byte pushes of one line in linear time', () => {
+    const d = createLineDecoder();
+    const body = '{"t":"done","ok":true,"result":"' + 'a'.repeat(200_000 - 40) + '"}';
+    const text = body + '\n';
+    const started = Date.now();
+    let last: ReturnType<typeof d.push> | undefined;
+    for (const ch of text) {
+      last = d.push(ch);
+    }
+    expect(Date.now() - started).toBeLessThan(1000);
+    expect(last?._unsafeUnwrap()).toEqual([
+      { t: 'done', ok: true, result: 'a'.repeat(200_000 - 40) },
+    ]);
+  });
+
+  it('refuses a pending line at the push that passes the limit', () => {
+    const d = createLineDecoder(10);
+    for (let i = 0; i < 10; i++) {
+      expect(d.push('x').isOk()).toBe(true);
+    }
+    expect(d.push('x').isErr()).toBe(true);
+  });
+
+  it.each([
+    ['name with space', 'a b'],
+    ['name with slash', 'a/b'],
+    ['name too long', 'a'.repeat(201)],
+  ])('gives PROTOCOL for a call with a %s', (_label, name) => {
+    const e = createLineDecoder()
+      .push(line({ t: 'call', id: 1, name, input: 1 }))
+      ._unsafeUnwrapErr();
+    expect(e.scriptCode).toBe('PROTOCOL');
+  });
+
+  it('accepts a call name of 200 allowed characters', () => {
+    const name = 'a.B_c-1'.padEnd(200, 'z');
+    const r = createLineDecoder().push(line({ t: 'call', id: 1, name, input: 1 }));
+    expect(r._unsafeUnwrap()).toHaveLength(1);
+  });
+
   it('stays failed after an error', () => {
     const d = createLineDecoder();
     expect(d.push('bad\n').isErr()).toBe(true);

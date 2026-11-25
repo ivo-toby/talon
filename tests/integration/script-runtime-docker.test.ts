@@ -25,8 +25,11 @@ const enabled = IMAGE !== '' && existsSync(SOCKET);
 
 const PERSONA = 'assistant';
 
-function containerIds(): string[] {
-  return execFileSync('docker', ['ps', '-aq', '--no-trunc'], { encoding: 'utf8' })
+/** Containers that mount this file's own temporary directory, so parallel files do not collide. */
+function containerIds(hostPath: string): string[] {
+  return execFileSync('docker', ['ps', '-aq', '--no-trunc', '--filter', `volume=${hostPath}`], {
+    encoding: 'utf8',
+  })
     .split('\n')
     .filter(Boolean)
     .sort();
@@ -76,7 +79,6 @@ const SCRIPTS: Record<string, string> = {
 
 describe.skipIf(!enabled)('script runtime against a real Docker daemon', () => {
   let root: string;
-  let before: string[];
   let broker: ExecutionBroker;
   let readCalls: unknown[];
   let writeCalls: unknown[];
@@ -111,7 +113,6 @@ describe.skipIf(!enabled)('script runtime against a real Docker daemon', () => {
       chmodSync(join(root, name), 0o755);
       writeFileSync(join(root, name, 'script.ts'), source, { mode: 0o644 });
     }
-    before = containerIds();
     const backend = createDockerBackend(createDockerEngineClient({ socketPath: SOCKET }), {
       image: IMAGE,
       user: '10001:10001',
@@ -239,6 +240,6 @@ describe.skipIf(!enabled)('script runtime against a real Docker daemon', () => {
   }, 60_000);
 
   it('removes every container it created', () => {
-    expect(containerIds()).toEqual(before);
+    expect(containerIds(root)).toEqual([]);
   });
 });

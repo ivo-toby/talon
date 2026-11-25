@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { err, ok, type Result } from 'neverthrow';
 import { createScriptGateway } from '../../../src/scripts/gateway.js';
 import {
@@ -93,6 +93,25 @@ describe('rules', () => {
       errorCode: 'CALL_LIMIT',
     });
     expect(provider.calls).toHaveLength(200);
+  });
+
+  it('keeps one CALL_LIMIT record and no input clone for later calls', async () => {
+    const gw = make('live', fakeProvider(CLASSES), { maxCalls: 2 });
+    expect(gw.limitExceeded()).toBe(false);
+    await gw.handleCall(call(1, 'r'));
+    await gw.handleCall(call(2, 'r'));
+    expect(gw.limitExceeded()).toBe(false);
+    expect(await gw.handleCall(call(3, 'r'))).toMatchObject({ ok: false, code: 'CALL_LIMIT' });
+    expect(gw.limitExceeded()).toBe(true);
+    const cloneSpy = vi.spyOn(globalThis, 'structuredClone');
+    for (let i = 4; i < 100; i++) {
+      expect(await gw.handleCall(call(i, 'r'))).toMatchObject({ id: i, code: 'CALL_LIMIT' });
+    }
+    expect(cloneSpy).not.toHaveBeenCalled();
+    cloneSpy.mockRestore();
+    const recs = gw.records();
+    expect(recs).toHaveLength(3);
+    expect(recs[2]).toMatchObject({ outcome: 'denied', errorCode: 'CALL_LIMIT' });
   });
 
   it('rule 1 counts denied calls too', async () => {
@@ -271,7 +290,54 @@ describe('abortAll', () => {
     expect(await gw.handleCall(call(5, 'r'))).toMatchObject({ code: 'SCRIPT_FAILED' });
     const recs = gw.records();
     expect(recs).toHaveLength(5);
-    expect(recs.every((r) => r.outcome === 'failed' && r.errorCode === 'SCRIPT_FAILED')).toBe(true);
+    // The two calls that reached the provider have an unknown effect; the others never started.
+    expect(recs.map((r) => r.outcome)).toEqual([
+      'aborted',
+      'aborted',
+      'failed',
+      'failed',
+      'failed',
+    ]);
+    expect(recs.every((r) => r.errorCode === 'SCRIPT_FAILED')).toBe(true);
+  });
+
+  it('an open live write at abort is aborted, a waiting one is failed', async () => {
+    const provider = fakeProvider(
+      CLASSES,
+      (_n, _i, signal) =>
+        new Promise((resolve) => {
+          signal.addEventListener('abort', () => resolve(err(new ScriptError('TIMEOUT', 'x'))));
+        }),
+    );
+    const gw = make('live', provider, { maxConcurrentCalls: 1 });
+    const open = gw.handleCall(call(1, 'w'));
+    const waiting = gw.handleCall(call(2, 'w'));
+    await new Promise((r) => setTimeout(r, 5));
+    gw.abortAll();
+    await Promise.all([open, waiting]);
+    expect(provider.calls).toHaveLength(1);
+    expect(gw.records().map((r) => [r.outcome, r.errorCode])).toEqual([
+      ['aborted', 'SCRIPT_FAILED'],
+      ['failed', 'SCRIPT_FAILED'],
+    ]);
+  });
+
+  it('a provider that returns ok after the abort is still aborted', async () => {
+    let release: () => void = () => undefined;
+    const provider = fakeProvider(
+      CLASSES,
+      () =>
+        new Promise((resolve) => {
+          release = () => resolve(ok('late'));
+        }),
+    );
+    const gw = make('live', provider);
+    const pending = gw.handleCall(call(1, 'w'));
+    await new Promise((r) => setTimeout(r, 5));
+    gw.abortAll();
+    release();
+    expect(await pending).toMatchObject({ ok: false, code: 'SCRIPT_FAILED' });
+    expect(gw.records()[0]).toMatchObject({ outcome: 'aborted', errorCode: 'SCRIPT_FAILED' });
   });
 
   it('each provider call gets its own signal', async () => {
@@ -351,6 +417,15 @@ describe('fail-closed hardening', () => {
     const gw = make('dry-run', p);
     expect(await gw.handleCall(call(1, 'r'))).toMatchObject({ ok: true, value: { dryRun: true } });
     expect(p.calls).toHaveLength(0);
+  });
+
+  it('a describe result without toolClass is a write tool and is skipped in dry-run', async () => {
+    const p = fakeProvider(CLASSES);
+    p.describe = () => ({}) as never;
+    const gw = make('dry-run', p);
+    expect(await gw.handleCall(call(1, 'r'))).toMatchObject({ ok: true, value: { dryRun: true } });
+    expect(p.calls).toHaveLength(0);
+    expect(gw.records()[0].outcome).toBe('skipped-dry-run');
   });
 
   it('stub values get the serialisation and size check', async () => {
