@@ -1628,3 +1628,27 @@ describe('TalondConfigSchema', () => {
     });
   });
 });
+
+describe('scripts section', () => {
+  it('defaults to disabled at the root', () => {
+    expect(TalondConfigSchema.parse({}).scripts.enabled).toBe(false);
+  });
+
+  it('accepts any image while disabled, also the empty string', () => {
+    expect(TalondConfigSchema.safeParse({ scripts: { image: 'node:22' } }).success).toBe(true);
+  });
+
+  it('accepts an enabled section with a digest-pinned image', () => {
+    const image = `registry.local/node@sha256:${'0'.repeat(64)}`;
+    expect(TalondConfigSchema.safeParse({ scripts: { enabled: true, image } }).success).toBe(true);
+  });
+
+  it.each(['', 'node:22', `node@sha256:${'0'.repeat(63)}`, `Node@sha256:${'0'.repeat(64)}`])(
+    'rejects enabled with the image %j',
+    (image) => {
+      const result = TalondConfigSchema.safeParse({ scripts: { enabled: true, image } });
+      expect(result.success).toBe(false);
+      expect(JSON.stringify(result.error?.issues)).toContain('scripts');
+    },
+  );
+});

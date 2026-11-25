@@ -601,6 +601,31 @@ export const ImagesConfigSchema = z.object({
 });
 
 // ---------------------------------------------------------------------------
+// Scripts
+// ---------------------------------------------------------------------------
+
+/** Digest-pinned worker image: `<name>@sha256:<64 lowercase hex>`. */
+export const SCRIPT_IMAGE_DIGEST_RE = /^[a-z0-9][a-z0-9._/:-]*@sha256:[0-9a-f]{64}$/;
+
+/** Model-written scripts that run in a hardened Docker container. Off by default. */
+export const ScriptsConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  /** Directory of script files; relative paths resolve against the working directory. */
+  root: z.string().default('data/scripts'),
+  /** Digest-pinned Node.js image, `name@sha256:<64 hex>`. Required when enabled. */
+  image: z.string().default(''),
+  dockerSocket: z.string().default('/var/run/docker.sock'),
+  runTimeoutMs: z.number().int().min(1000).max(600_000).default(120_000),
+  maxCallsPerRun: z.number().int().min(1).max(2000).default(200),
+  judgeTimeoutMs: z.number().int().min(1000).max(300_000).default(60_000),
+  approvalTtlMinutes: z.number().int().min(5).max(10_080).default(1440),
+  /** Overrides the read/write class of an MCP tool by its script name `<server>.<tool>`. */
+  toolClasses: z.record(z.string(), z.enum(['read', 'write'])).default({}),
+});
+
+export type ScriptsConfig = z.infer<typeof ScriptsConfigSchema>;
+
+// ---------------------------------------------------------------------------
 // Root config
 // ---------------------------------------------------------------------------
 
@@ -627,10 +652,20 @@ export const TalondConfigSchema = z
     subagents: SubAgentsConfigSchema.default({}),
     a2a: A2AConfigSchema.default(() => A2AConfigSchema.parse({})),
     images: ImagesConfigSchema.default(() => ImagesConfigSchema.parse({})),
+    scripts: ScriptsConfigSchema.default(() => ScriptsConfigSchema.parse({})),
     logLevel: z.enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal']).default('info'),
     dataDir: z.string().default('data'),
   })
   .superRefine((value, ctx) => {
+    if (value.scripts.enabled && !SCRIPT_IMAGE_DIGEST_RE.test(value.scripts.image)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['scripts', 'image'],
+        message:
+          'scripts.image must be pinned by digest as name@sha256:<64 hex> when scripts are enabled',
+      });
+    }
+
     if (value.voice.enabled) {
       value.channels.forEach((channel, index) => {
         if (channel.name === BROWSER_VOICE_CHANNEL_NAME) {

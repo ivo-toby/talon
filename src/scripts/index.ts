@@ -2,6 +2,7 @@ export { runScript } from './runner.js';
 export type { ScriptRunRequest } from './runner.js';
 export { createScriptGateway } from './gateway.js';
 export type { ScriptGateway } from './gateway.js';
+export { buildScriptBroker, SCRIPT_PROFILE, SCRIPT_WORKSPACE } from './config.js';
 export { installScriptSdk } from './sdk-install.js';
 export { encodeMessage, createLineDecoder, MAX_LINE_BYTES } from './protocol.js';
 export type { HostMessage, ScriptMessage } from './protocol.js';
