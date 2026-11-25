@@ -298,3 +298,91 @@ describe('records', () => {
     expect(gw.records()[0].outcome).toBe('executed');
   });
 });
+
+describe('fail-closed hardening', () => {
+  const base = { manifest: { name: 's', personaId: 'p', tools: ['r'] } };
+  const provider = fakeProvider(CLASSES);
+
+  it('rejects an unrecognised mode', () => {
+    const result = createScriptGateway({ ...base, provider, mode: 'dryrun' as never });
+    expect(result.isErr() && result.error.scriptCode).toBe('INVALID_ARGUMENT');
+  });
+
+  it.each([
+    ['null', null],
+    ['array', []],
+    ['string', 'x'],
+    ['non-array value', { r: 5 }],
+  ])('rejects stubs that are %s without throwing', (_label, stubs) => {
+    const result = createScriptGateway({ ...base, provider, mode: 'unit', stubs: stubs as never });
+    expect(result.isErr() && result.error.scriptCode).toBe('INVALID_ARGUMENT');
+  });
+
+  it('refuses inherited names and returns no inherited stub', async () => {
+    const p = fakeProvider({ ...CLASSES });
+    const gw = make('unit', p, { stubs: { r: [1] } });
+    for (const [i, name] of ['__proto__', 'constructor', 'toString'].entries()) {
+      expect(await gw.handleCall(call(i, name))).toMatchObject({ code: 'NOT_IN_MANIFEST' });
+    }
+    expect(p.calls).toHaveLength(0);
+    // a listed tool whose name is inherited has no stub either
+    const result = createScriptGateway({
+      manifest: { name: 's', personaId: 'p', tools: ['toString'] },
+      mode: 'unit',
+      provider: fakeProvider({ toString: 'read' }),
+    });
+    if (result.isErr()) throw new Error('create failed');
+    expect(await result.value.handleCall(call(1, 'toString'))).toMatchObject({ code: 'NO_STUB' });
+  });
+
+  it('a describe that throws gives a denied call and no provider call', async () => {
+    const p = fakeProvider(CLASSES);
+    p.describe = () => {
+      throw new Error('boom');
+    };
+    const gw = make('live', p);
+    expect(await gw.handleCall(call(1, 'r'))).toMatchObject({ ok: false, code: 'UNKNOWN_TOOL' });
+    expect(gw.records()[0].outcome).toBe('denied');
+    expect(p.calls).toHaveLength(0);
+  });
+
+  it('an unknown tool class is treated as write in dry-run', async () => {
+    const p = fakeProvider({ r: 'bogus' as never });
+    const gw = make('dry-run', p);
+    expect(await gw.handleCall(call(1, 'r'))).toMatchObject({ ok: true, value: { dryRun: true } });
+    expect(p.calls).toHaveLength(0);
+  });
+
+  it('stub values get the serialisation and size check', async () => {
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    const gw = make('unit', fakeProvider(CLASSES), {
+      stubs: { r: [circular, 'x'.repeat(50)], w: [BigInt(1)] },
+      maxResultChars: 20,
+    });
+    expect(await gw.handleCall(call(1, 'r'))).toMatchObject({ code: 'TOOL_FAILED' });
+    expect(await gw.handleCall(call(2, 'r'))).toMatchObject({ code: 'RESULT_TOO_LARGE' });
+    expect(await gw.handleCall(call(3, 'w'))).toMatchObject({ code: 'TOOL_FAILED' });
+    expect(gw.records().map((r) => r.outcome)).toEqual(['failed', 'failed', 'failed']);
+    const dry = make('dry-run', fakeProvider(CLASSES), {
+      stubs: { w: ['x'.repeat(50)] },
+      maxResultChars: 20,
+    });
+    expect(await dry.handleCall(call(1, 'w'))).toMatchObject({ code: 'RESULT_TOO_LARGE' });
+  });
+
+  it('record input is a snapshot of the caller object', async () => {
+    const input = { a: { b: 1 } };
+    const gw = make('live', fakeProvider(CLASSES));
+    await gw.handleCall(call(1, 'r', input));
+    input.a.b = 2;
+    expect(gw.records()[0].input).toEqual({ a: { b: 1 } });
+  });
+
+  it('record input falls back to the reference when cloning throws', async () => {
+    const input = { f: () => 1 };
+    const gw = make('live', fakeProvider(CLASSES));
+    await gw.handleCall(call(1, 'r', input));
+    expect(gw.records()[0].input).toBe(input);
+  });
+});

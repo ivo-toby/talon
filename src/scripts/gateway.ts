@@ -37,15 +37,35 @@ interface OpenRecord {
   finished: boolean;
 }
 
+function cloneInput(input: unknown): unknown {
+  try {
+    return structuredClone(input);
+  } catch {
+    return input;
+  }
+}
+
 function isPositiveInt(value: unknown): value is number {
   return typeof value === 'number' && Number.isInteger(value) && value > 0;
 }
 
+/** Never throws, whatever `options` holds. */
 export function createScriptGateway(options: GatewayOptions): Result<ScriptGateway, ScriptError> {
+  try {
+    return buildGateway(options);
+  } catch {
+    return err(new ScriptError('INVALID_ARGUMENT', 'gateway options are not usable'));
+  }
+}
+
+function buildGateway(options: GatewayOptions): Result<ScriptGateway, ScriptError> {
   const { manifest, mode, provider } = options;
   const invalid = (detail: string): Result<ScriptGateway, ScriptError> =>
     err(new ScriptError('INVALID_ARGUMENT', detail));
 
+  if (mode !== 'unit' && mode !== 'dry-run' && mode !== 'live') {
+    return invalid('mode is not recognised');
+  }
   if (typeof manifest?.name !== 'string' || manifest.name.length === 0) {
     return invalid('manifest name is empty');
   }
@@ -65,11 +85,21 @@ export function createScriptGateway(options: GatewayOptions): Result<ScriptGatew
     return invalid('limits must be positive integers');
   }
 
-  const allowed = new Set(manifest.tools);
+  const stubs: unknown = options.stubs;
   const stubQueues = new Map<string, unknown[]>();
-  for (const [name, list] of Object.entries(options.stubs ?? {})) {
-    stubQueues.set(name, [...list]);
+  if (stubs !== undefined) {
+    if (typeof stubs !== 'object' || stubs === null || Array.isArray(stubs)) {
+      return invalid('stubs must be an object of arrays');
+    }
+    for (const [name, list] of Object.entries(stubs)) {
+      if (!Array.isArray(list)) {
+        return invalid('stubs must be an object of arrays');
+      }
+      const items: unknown[] = list;
+      stubQueues.set(name, [...items]);
+    }
   }
+  const allowed = new Set(manifest.tools);
   const takeStub = (name: string): { value: unknown } | undefined => {
     const queue = stubQueues.get(name);
     if (queue === undefined || queue.length === 0) {
@@ -118,6 +148,26 @@ export function createScriptGateway(options: GatewayOptions): Result<ScriptGatew
     return failure(id, code);
   };
 
+  /** Same rule for provider values and stub values: serialisable and not too large. */
+  const checkValue = (
+    raw: unknown,
+  ): { value: unknown; code?: undefined } | { code: ScriptErrorCode } => {
+    const value = raw === undefined ? null : raw;
+    let text: string | undefined;
+    try {
+      text = JSON.stringify(value);
+    } catch {
+      return { code: 'TOOL_FAILED' };
+    }
+    if (typeof text !== 'string') {
+      return { code: 'TOOL_FAILED' };
+    }
+    if (text.length > maxResultChars) {
+      return { code: 'RESULT_TOO_LARGE' };
+    }
+    return { value };
+  };
+
   const acquire = async (): Promise<void> => {
     if (running < maxConcurrent) {
       running++;
@@ -161,21 +211,12 @@ export function createScriptGateway(options: GatewayOptions): Result<ScriptGatew
       if (result.isErr()) {
         return fail(id, entry, 'TOOL_FAILED');
       }
-      const value = result.value === undefined ? null : result.value;
-      let text: string | undefined;
-      try {
-        text = JSON.stringify(value);
-      } catch {
-        return fail(id, entry, 'TOOL_FAILED');
-      }
-      if (typeof text !== 'string') {
-        return fail(id, entry, 'TOOL_FAILED');
-      }
-      if (text.length > maxResultChars) {
-        return fail(id, entry, 'RESULT_TOO_LARGE');
+      const checked = checkValue(result.value);
+      if (checked.code !== undefined) {
+        return fail(id, entry, checked.code);
       }
       finish(entry, 'executed');
-      return success(id, value);
+      return success(id, checked.value);
     } finally {
       release();
     }
@@ -214,14 +255,22 @@ export function createScriptGateway(options: GatewayOptions): Result<ScriptGatew
       if (stub === undefined) {
         return Promise.resolve(fail(id, entry, 'NO_STUB'));
       }
+      const checked = checkValue(stub.value);
+      if (checked.code !== undefined) {
+        return Promise.resolve(fail(id, entry, checked.code));
+      }
       finish(entry, 'stubbed');
-      return Promise.resolve(success(id, stub.value));
+      return Promise.resolve(success(id, checked.value));
     }
-    // A tool that is not 'read' or 'model' is treated as write.
-    if (mode === 'dry-run' && toolClass !== 'read' && toolClass !== 'model') {
+    // A tool that is not 'read' or 'model' is treated as write; only 'live' runs it.
+    if (mode !== 'live' && toolClass !== 'read' && toolClass !== 'model') {
       const stub = takeStub(name);
+      const checked = checkValue(stub === undefined ? { dryRun: true } : stub.value);
+      if (checked.code !== undefined) {
+        return Promise.resolve(fail(id, entry, checked.code));
+      }
       finish(entry, 'skipped-dry-run');
-      return Promise.resolve(success(id, stub === undefined ? { dryRun: true } : stub.value));
+      return Promise.resolve(success(id, checked.value));
     }
     return runProvider(id, name, input, entry);
   };
@@ -236,7 +285,7 @@ export function createScriptGateway(options: GatewayOptions): Result<ScriptGatew
           seq: all.length + 1,
           name: message.name,
           toolClass: 'unknown',
-          input: message.input,
+          input: cloneInput(message.input),
           outcome: 'failed',
         },
       };
