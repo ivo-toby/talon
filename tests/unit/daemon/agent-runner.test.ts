@@ -4516,6 +4516,65 @@ describe('AgentRunner', () => {
   // Host-tools exposure when background agents are disabled
   // -------------------------------------------------------------------------
 
+  describe('MCP allowedTools on providers that ignore it', () => {
+    const WARNING =
+      'provider does not enforce MCP allowedTools; these servers expose all their tools';
+
+    function usePostgramSkill(allowedTools?: string[]): void {
+      vi.mocked(ctx.personaLoader.getByName).mockReturnValue(
+        ok({
+          config: {
+            model: 'claude-sonnet-4-20250514',
+            skills: ['postgram'],
+            capabilities: { allow: [] },
+          },
+          systemPromptContent: 'You are a test bot.',
+          resolvedCapabilities: { allow: [], requireApproval: [] },
+        } as any),
+      );
+      (ctx as any).loadedSkills = [
+        {
+          manifest: { name: 'postgram' },
+          format: 'yaml',
+          promptContents: ['Use Postgram.'],
+          resolvedToolManifests: [],
+          resolvedMcpServers: [
+            {
+              name: 'postgram',
+              config: {
+                transport: 'http',
+                url: 'http://mcp-server:3100/mcp',
+                ...(allowedTools ? { allowedTools } : {}),
+              },
+            },
+          ],
+          migrationPaths: [],
+        },
+      ];
+    }
+
+    it('warns when a foreground run hands allowedTools to claude-code', async () => {
+      usePostgramSkill(['search', 'recall']);
+
+      await runner.run(makeQueueItem());
+
+      expect(mockQuery).toHaveBeenCalledTimes(1);
+      expect(ctx.logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ provider: 'claude-code', mcpServers: ['postgram'] }),
+        WARNING,
+      );
+    });
+
+    it('does not warn when the skill declares no allowedTools', async () => {
+      usePostgramSkill();
+
+      await runner.run(makeQueueItem());
+
+      expect(mockQuery).toHaveBeenCalledTimes(1);
+      expect(ctx.logger.warn).not.toHaveBeenCalledWith(expect.anything(), WARNING);
+    });
+  });
+
   describe('background-agent tool exposure', () => {
     it('restricts native tools for OAuth MCP while preserving Talon and MCP tools', async () => {
       vi.mocked(ctx.personaLoader.getByName).mockReturnValue(

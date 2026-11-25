@@ -21,6 +21,7 @@ import type {
   ProviderResult,
 } from '../../providers/provider-types.js';
 import type { AgentProvider } from '../../providers/provider.js';
+import { warnIfMcpAllowedToolsIgnored } from '../../providers/mcp-allowed-tools-support.js';
 import type { ProviderRegistry } from '../../providers/provider-registry.js';
 import type {
   ObservabilityService,
@@ -360,6 +361,9 @@ export class BackgroundAgentManager {
       );
     }
     const disableNativeShellAndFilesystemTools = hasOAuthMcpAuth(workerMcpServers);
+    warnIfMcpAllowedToolsIgnored(providerEntry.provider, workerMcpServers, spawnLogger, {
+      taskId,
+    });
 
     const invocationResult = providerEntry.provider.prepareBackgroundInvocation({
       prompt: input.prompt,

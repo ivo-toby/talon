@@ -20,6 +20,7 @@ import type { ProviderConfig } from '../core/config/config-types.js';
 export class ClaudeCodeProvider implements AgentProvider {
   readonly name: ProviderName;
   readonly skillLoaderTransport = 'in-process' as const;
+  readonly enforcesMcpAllowedTools = false;
 
   constructor(
     private readonly config: ProviderConfig,

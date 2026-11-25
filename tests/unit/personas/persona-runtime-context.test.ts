@@ -305,6 +305,55 @@ describe('buildPersonaRuntimeContext', () => {
     });
   });
 
+  it('copies allowedTools into canonical entries on all transports (empty list survives)', () => {
+    const resolvedSkills = [
+      makeLoadedSkill('search', [
+        {
+          name: 'local-search',
+          config: {
+            name: 'local-search',
+            transport: 'stdio',
+            command: 'node',
+            args: ['search.js'],
+            allowedTools: ['search', '!delete'],
+          },
+        },
+        {
+          name: 'remote',
+          config: {
+            name: 'remote',
+            transport: 'http',
+            url: 'https://remote.example.com/mcp',
+            allowedTools: [],
+          },
+        },
+      ]),
+    ];
+
+    const skillResolver = {
+      mergePromptFragments: vi.fn().mockReturnValue(''),
+      collectMcpServers: vi
+        .fn()
+        .mockReturnValue(resolvedSkills.flatMap((skill) => skill.resolvedMcpServers)),
+    };
+
+    const result = buildPersonaRuntimeContext({
+      loadedPersona,
+      resolvedSkills,
+      skillResolver: skillResolver as any,
+    });
+
+    expect(result.mcpServers).toEqual({
+      'local-search': {
+        transport: 'stdio',
+        command: 'node',
+        args: ['search.js'],
+        allowedTools: ['search', '!delete'],
+      },
+      remote: { transport: 'http', url: 'https://remote.example.com/mcp', allowedTools: [] },
+    });
+  });
+
   it('keeps omitted limit fields absent from canonical entries', () => {
     const resolvedSkills = [
       makeLoadedSkill('search', [
@@ -348,6 +397,7 @@ describe('buildPersonaRuntimeContext', () => {
     for (const entry of Object.values(result.mcpServers)) {
       expect(entry).not.toHaveProperty('timeoutMs');
       expect(entry).not.toHaveProperty('toolOutputCap');
+      expect(entry).not.toHaveProperty('allowedTools');
     }
   });
 

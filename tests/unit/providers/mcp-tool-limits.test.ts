@@ -7,8 +7,11 @@ import {
 } from '../../../src/providers/openai-compatible/agent-cli/tool-output-excerpter.js';
 import {
   applyMcpToolLimits,
+  formatMcpAllowedToolsReport,
+  isMcpToolAllowed,
   isSerializableMcpServer,
   resolveMcpToolOutputCap,
+  selectAllowedMcpTools,
   toMastraMcpServers,
 } from '../../../src/providers/openai-compatible/agent-cli/mcp-tool-limits.js';
 
@@ -142,6 +145,208 @@ describe('isSerializableMcpServer', () => {
     expect(isSerializableMcpServer(stdioServer(overrides))).toBe(false);
     expect(isSerializableMcpServer(httpServer(overrides))).toBe(false);
     expect(isSerializableMcpServer(sseServer(overrides))).toBe(false);
+  });
+});
+
+describe('isSerializableMcpServer — allowedTools', () => {
+  it.each([
+    ['stdio', stdioServer({ allowedTools: ['search', 'task_*'] })],
+    ['http', httpServer({ allowedTools: [] })],
+    ['sse', sseServer({ allowedTools: ['!delete'] })],
+  ])('accepts %s with a string-array allowedTools', (_label, server) => {
+    expect(isSerializableMcpServer(server)).toBe(true);
+  });
+
+  it.each([
+    ['a string', { allowedTools: 'search' }],
+    ['a non-string entry', { allowedTools: ['search', 1] }],
+    ['null', { allowedTools: null }],
+  ])('rejects allowedTools as %s on all transports', (_label, overrides) => {
+    expect(isSerializableMcpServer(stdioServer(overrides))).toBe(false);
+    expect(isSerializableMcpServer(httpServer(overrides))).toBe(false);
+    expect(isSerializableMcpServer(sseServer(overrides))).toBe(false);
+  });
+});
+
+describe('isMcpToolAllowed', () => {
+  it('allows exact and glob include matches only', () => {
+    const patterns = ['search', 'task_*', 'lin?'];
+    expect(isMcpToolAllowed('search', patterns)).toBe(true);
+    expect(isMcpToolAllowed('task_list', patterns)).toBe(true);
+    expect(isMcpToolAllowed('link', patterns)).toBe(true);
+    expect(isMcpToolAllowed('unlink', patterns)).toBe(false);
+    expect(isMcpToolAllowed('search_all', patterns)).toBe(false);
+    expect(isMcpToolAllowed('delete', patterns)).toBe(false);
+  });
+
+  it('lets exclusions win over inclusions', () => {
+    expect(isMcpToolAllowed('task_delete', ['task_*', '!task_delete'])).toBe(false);
+    expect(isMcpToolAllowed('task_list', ['task_*', '!task_delete'])).toBe(true);
+  });
+
+  it('allows everything not excluded when the list has only exclusions', () => {
+    expect(isMcpToolAllowed('search', ['!delete', '!workspace_*'])).toBe(true);
+    expect(isMcpToolAllowed('delete', ['!delete', '!workspace_*'])).toBe(false);
+    expect(isMcpToolAllowed('workspace_link', ['!delete', '!workspace_*'])).toBe(false);
+  });
+
+  it('allows nothing for an empty list', () => {
+    expect(isMcpToolAllowed('search', [])).toBe(false);
+  });
+
+  it('treats regex metacharacters in patterns literally', () => {
+    expect(isMcpToolAllowed('a.b', ['a.b'])).toBe(true);
+    expect(isMcpToolAllowed('axb', ['a.b'])).toBe(false);
+    expect(isMcpToolAllowed('a+b', ['a+b'])).toBe(true);
+  });
+});
+
+describe('selectAllowedMcpTools', () => {
+  const toolsets = {
+    postgram: {
+      search: makeTool('search'),
+      delete: makeTool('delete'),
+      task_list: makeTool('task_list'),
+    },
+    other: { delete: makeTool('delete') },
+    __talond_host_tools: { channel_send: makeTool('channel_send') },
+  };
+
+  it('keys every tool <server>_<tool> when no server declares allowedTools', () => {
+    const servers = { postgram: httpServer(), other: stdioServer() };
+    const { tools, reports } = selectAllowedMcpTools(toolsets, servers);
+    expect(Object.keys(tools).sort()).toEqual(
+      [
+        '__talond_host_tools_channel_send',
+        'other_delete',
+        'postgram_delete',
+        'postgram_search',
+        'postgram_task_list',
+      ].sort(),
+    );
+    expect(tools.postgram_search).toBe(toolsets.postgram.search);
+    expect(reports).toEqual([]);
+  });
+
+  it('filters only the tools of servers that declare allowedTools', () => {
+    const servers = {
+      postgram: httpServer({ allowedTools: ['search', 'task_*'] }),
+      other: stdioServer(),
+    };
+    const { tools, reports } = selectAllowedMcpTools(toolsets, servers);
+    expect(Object.keys(tools).sort()).toEqual(
+      [
+        '__talond_host_tools_channel_send',
+        'other_delete',
+        'postgram_search',
+        'postgram_task_list',
+      ].sort(),
+    );
+    expect(reports).toEqual([{ server: 'postgram', total: 3, hidden: 1, unmatchedPatterns: [] }]);
+  });
+
+  it('removes every tool of a server with an empty allowedTools list', () => {
+    const servers = { postgram: httpServer({ allowedTools: [] }), other: stdioServer() };
+    const { tools, reports } = selectAllowedMcpTools(toolsets, servers);
+    expect(Object.keys(tools).sort()).toEqual(
+      ['__talond_host_tools_channel_send', 'other_delete'].sort(),
+    );
+    expect(reports).toEqual([{ server: 'postgram', total: 3, hidden: 3, unmatchedPatterns: [] }]);
+  });
+
+  it('judges a tool by its own server even when another server name is a prefix', () => {
+    // Server `git` exposes `hub_delete`, which Mastra keys `git_hub_delete` —
+    // the same prefix as server `git_hub`. Guessing the owner from the key
+    // would attribute it to `git_hub` (no allowlist) and let it through.
+    const servers = {
+      git: stdioServer({ allowedTools: ['status'] }),
+      git_hub: stdioServer(),
+    };
+    const { tools } = selectAllowedMcpTools(
+      {
+        git: { status: makeTool('status'), hub_delete: makeTool('hub_delete') },
+        git_hub: { issues: makeTool('issues') },
+      },
+      servers,
+    );
+    expect(Object.keys(tools).sort()).toEqual(['git_hub_issues', 'git_status']);
+  });
+
+  it('reports patterns that match none of the server tools, exclusions included', () => {
+    const servers = {
+      postgram: httpServer({
+        allowedTools: ['postgram_search', 'task_*', '!delet', '!delete'],
+      }),
+    };
+    const { tools, reports } = selectAllowedMcpTools({ postgram: toolsets.postgram }, servers);
+    expect(Object.keys(tools)).toEqual(['postgram_task_list']);
+    expect(reports).toEqual([
+      {
+        server: 'postgram',
+        total: 3,
+        hidden: 2,
+        unmatchedPatterns: ['postgram_search', '!delet'],
+      },
+    ]);
+  });
+
+  it('ignores allowedTools of servers that listed no tools', () => {
+    const servers = {
+      postgram: httpServer({ allowedTools: ['search'] }),
+      offline: httpServer({ allowedTools: ['anything'] }),
+    };
+    const { reports } = selectAllowedMcpTools({ postgram: toolsets.postgram }, servers);
+    expect(reports.map((report) => report.server)).toEqual(['postgram']);
+  });
+
+  it('keeps the selected tools wrappable by applyMcpToolLimits', async () => {
+    const servers = { postgram: httpServer({ allowedTools: ['search'], toolOutputCap: 10 }) };
+    const { tools } = selectAllowedMcpTools(
+      {
+        postgram: {
+          search: makeTool('search', async () => BIG_OUTPUT),
+          delete: makeTool('delete', async () => 'gone'),
+        },
+      },
+      servers,
+    );
+    const limited = applyMcpToolLimits(
+      tools,
+      servers,
+      undefined,
+      new ToolOutputStore(),
+      () => 'id-1',
+      () => {},
+    );
+    expect(Object.keys(limited).sort()).toEqual(['fetch_tool_output', 'postgram_search']);
+  });
+});
+
+describe('formatMcpAllowedToolsReport', () => {
+  it('states how many tools a server hides', () => {
+    expect(
+      formatMcpAllowedToolsReport({
+        server: 'postgram',
+        total: 24,
+        hidden: 15,
+        unmatchedPatterns: [],
+      }),
+    ).toBe('openai-compatible wrapper: MCP server "postgram" allowedTools hides 15 of 24 tools.\n');
+  });
+
+  it('lists patterns that matched nothing, on the same line', () => {
+    const line = formatMcpAllowedToolsReport({
+      server: 'postgram',
+      total: 24,
+      hidden: 24,
+      unmatchedPatterns: ['postgram_search', '!delet'],
+    });
+    expect(line).toBe(
+      'openai-compatible wrapper: MCP server "postgram" allowedTools hides 24 of 24 tools. ' +
+        'Patterns matching no tool: "postgram_search", "!delet" ' +
+        '(patterns match the bare tool name, without the server prefix).\n',
+    );
+    expect(line.trimEnd()).not.toContain('\n');
   });
 });
 

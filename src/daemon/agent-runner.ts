@@ -30,6 +30,7 @@ import { resolveToolInstructions } from '../tools/tool-instructions.js';
 import { buildPersonaRosterAppendix } from '../personas/persona-roster.js';
 import { hasOAuthMcpAuth, resolveMcpServers } from '../mcp/resolve-mcp-servers.js';
 import { buildPersonaRuntimeContext } from '../personas/persona-runtime-context.js';
+import { warnIfMcpAllowedToolsIgnored } from '../providers/mcp-allowed-tools-support.js';
 import {
   TALON_SKILL_LOAD_TOOL_DESCRIPTION,
   formatMissingTalonSkillError,
@@ -54,6 +55,7 @@ import type {
 import {
   classifyVoiceChannelType,
   createVoiceObservationContext,
+  createVoiceSafeLogger,
   observeVoiceSafely,
   startVoiceObservationSafely,
   type VoiceObservationContext,
@@ -708,6 +710,12 @@ export class AgentRunner {
                 ? { runId, personaId, voice: true, toolCount: allowedMcpTools.length }
                 : { runId, personaId, allowedMcpTools },
               'agent-sdk: persona tool restrictions applied',
+            );
+            warnIfMcpAllowedToolsIgnored(
+              providerEntry.provider,
+              baseMcpServers,
+              voiceObservation ? createVoiceSafeLogger(this.ctx.logger) : this.ctx.logger,
+              { runId, personaId },
             );
 
             // Derived once per run from the actual filtered tool set; used by
