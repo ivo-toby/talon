@@ -7,3 +7,5 @@ export { installScriptSdk } from './sdk-install.js';
 export { encodeMessage, createLineDecoder, MAX_LINE_BYTES } from './protocol.js';
 export type { HostMessage, ScriptMessage } from './protocol.js';
 export * from './types.js';
+export { createScriptStore } from './store.js';
+export type { ScriptStore, ScriptFile, StoredVersion } from './store.js';
