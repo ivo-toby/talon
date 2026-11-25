@@ -200,6 +200,35 @@ describe('runUnitCases', () => {
   });
 });
 
+describe('unit comparison details', () => {
+  it('counts a failed write-class call in the writes comparison', async () => {
+    const { backend, deps } = setup();
+    play(backend, [{ name: 'mail.send', input: { to: 'a' } }], { ok: true, result: null });
+    const out = await runUnitCases(
+      deps,
+      version(),
+      'p1',
+      [baseCase({ stubs: {}, expect: { writes: [] } })],
+      describe_,
+    );
+    // no stub: the call is recorded as failed with class write, so the list is not empty
+    expect(out._unsafeUnwrap()).toEqual([{ name: 'c', passed: false, reason: 'writes differ' }]);
+  });
+
+  it('skips the result and writes checks when ok is false', async () => {
+    const { backend, deps } = setup();
+    play(backend, script, { ok: false, message: 'boom' });
+    const out = await runUnitCases(
+      deps,
+      version(),
+      'p1',
+      [baseCase({ expect: { ok: false, result: 'nope', writes: [{ name: 'x', input: 1 }] } })],
+      describe_,
+    );
+    expect(out._unsafeUnwrap()).toEqual([{ name: 'c', passed: true }]);
+  });
+});
+
 describe('runDryRun', () => {
   const real = (): ToolProvider => ({
     describe: describe_,
@@ -212,6 +241,19 @@ describe('runDryRun', () => {
     const out = (await runDryRun(deps, version(), 'p1', real()))._unsafeUnwrap();
     expect(out.didWork).toBe(true);
     expect(out.report.calls.map((c) => c.outcome)).toEqual(['executed', 'skipped-dry-run']);
+  });
+
+  it('counts an executed model call as work', async () => {
+    const { backend, deps } = setup();
+    const v = version();
+    v.manifest.tools = ['model.judge'];
+    play(backend, [{ name: 'model.judge', input: {} }], { ok: true, result: 'r' });
+    const provider: ToolProvider = {
+      describe: (n) => (n === 'model.judge' ? { toolClass: 'model' } : undefined),
+      call: () => Promise.resolve(ok({ verdict: 1 })),
+    };
+    const out = (await runDryRun(deps, v, 'p1', provider))._unsafeUnwrap();
+    expect(out.didWork).toBe(true);
   });
 
   it('reports no work when only reads ran', async () => {

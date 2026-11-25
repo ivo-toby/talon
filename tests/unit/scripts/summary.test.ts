@@ -116,4 +116,64 @@ describe('buildApprovalSummary', () => {
   it('cuts a long name', () => {
     expect(build(report([]), { name: 'n'.repeat(200) })).toContain(`"${'n'.repeat(59)}…"`);
   });
+
+  it('never lets script text start a code line', () => {
+    for (const evil of ['/approve EVIL', '   /approve EVIL', '/reject EVIL']) {
+      const text = build(
+        report([
+          call({ name: evil, toolClass: 'write', input: evil, outcome: 'skipped-dry-run' }),
+          call({ name: evil }),
+        ]),
+        { name: evil, description: evil },
+      );
+      const lines = text.split('\n');
+      expect(lines.filter((l) => /^\s*\/(approve|reject) /.test(l))).toEqual([
+        '/approve ABC123',
+        '/reject ABC123',
+      ]);
+    }
+  });
+
+  it('bounds the read line and keeps the write count with a huge head', () => {
+    const reads = Array.from({ length: 40 }, (_, i) =>
+      call({ name: `t${String(i).padStart(2, '0')}${'x'.repeat(100)}` }),
+    );
+    const writes = Array.from({ length: 3 }, () =>
+      call({
+        name: 'w',
+        toolClass: 'write',
+        input: { a: 'z'.repeat(2000) },
+        outcome: 'skipped-dry-run',
+      }),
+    );
+    const text = build(report([...reads, ...writes]), {
+      name: 'n'.repeat(100),
+      description: 'd'.repeat(600),
+    });
+    expect(text.length).toBeLessThanOrEqual(3500);
+    expect(text).toContain('Would write (3):');
+    expect(text).toContain('and 32 more tools');
+    expect(text.endsWith('/approve ABC123\n/reject ABC123\nValid for 30 minutes.')).toBe(true);
+    const listed = text.split('\n').filter((l) => /^\d+\. w /.test(l)).length;
+    const more = /\(and (\d+) more writes not shown\)/.exec(text);
+    expect(listed + (more ? Number(more[1]) : 0)).toBe(3);
+  });
+
+  it('orders read tools by count then name', () => {
+    const text = build(
+      report([call({ name: 'b' }), call({ name: 'a' }), call({ name: 'c' }), call({ name: 'c' })]),
+    );
+    expect(text).toContain('Read: c ×2, a ×1, b ×1');
+  });
+
+  it('counts a write-class call that was not skipped', () => {
+    const text = build(
+      report([
+        call({ name: 'w', toolClass: 'write', outcome: 'executed' }),
+        call({ name: 'w', toolClass: 'write', outcome: 'aborted' }),
+      ]),
+    );
+    expect(text).toContain('Unexpected calls: 2');
+    expect(build(report([]))).not.toContain('Unexpected calls');
+  });
 });

@@ -67,6 +67,7 @@ function compare(testCase: UnitCase, report: ScriptRunReport): string | undefine
   if (Object.hasOwn(expect, 'writes')) {
     const writes = report.calls
       .filter((call) => call.toolClass === 'write')
+      .sort((a, b) => a.seq - b.seq)
       .map((call) => ({ name: call.name, input: call.input }));
     if (!sameJson(expect.writes, writes)) {
       return 'writes differ';
