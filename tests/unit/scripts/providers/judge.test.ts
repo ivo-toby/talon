@@ -1,4 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { generateText } from 'ai';
+
+vi.mock('ai', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('ai')>();
+  return { ...actual, generateText: vi.fn(actual.generateText) };
+});
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync } from 'node:fs';
@@ -120,6 +126,22 @@ describe('createJudgeProvider', () => {
     expect(generate).not.toHaveBeenCalled();
   });
 
+  it('rejects a prompts directory that is a symbolic link', async () => {
+    const other = mkdtempSync(join(tmpdir(), 'judge-other-'));
+    try {
+      writeFileSync(join(other, 'classify.md'), 'outside');
+      rmSync(join(dir, 'prompts'), { recursive: true });
+      symlinkSync(other, join(dir, 'prompts'));
+      const { model, generate } = fake();
+      expect(
+        await code(make(model).call('model.judge', { prompt: 'classify', input: 1, schema }, live)),
+      ).toBe('INVALID_ARGUMENT');
+      expect(generate).not.toHaveBeenCalled();
+    } finally {
+      rmSync(other, { recursive: true, force: true });
+    }
+  });
+
   it('rejects a symbolic link and an oversized prompt file', async () => {
     writeFileSync(join(dir, 'secret.txt'), 'secret');
     symlinkSync(join(dir, 'secret.txt'), join(dir, 'prompts', 'link.md'));
@@ -238,6 +260,77 @@ describe('createJudgeProvider', () => {
   });
 });
 
+describe('judge schema safety', () => {
+  const run = async (s: object): Promise<{ code?: string; calls: number }> => {
+    const { model, generate } = fake({});
+    const r = await make(model).call(
+      'model.judge',
+      { prompt: 'classify', input: 1, schema: s },
+      live,
+    );
+    return { code: r.isErr() ? r.error.scriptCode : undefined, calls: generate.mock.calls.length };
+  };
+  const withProp = (prop: unknown): object => ({ type: 'object', properties: { a: prop } });
+  /** A chain of n nested schema nodes below `properties.a`; the leaf is at JSON depth n + 2. */
+  const chain = (n: number): unknown =>
+    n === 1 ? { type: 'string' } : { type: 'array', items: chain(n - 1) };
+
+  it('refuses a catastrophic pattern without calling the model', async () => {
+    const r = await run(withProp({ type: 'string', pattern: '^(a+)+$' }));
+    expect(r).toEqual({ code: 'INVALID_ARGUMENT', calls: 0 });
+  });
+
+  it.each([
+    ['pattern in items', withProp({ type: 'array', items: { type: 'string', pattern: 'a' } })],
+    ['pattern in anyOf', withProp({ anyOf: [{ type: 'string', pattern: 'a' }] })],
+    [
+      'pattern in additionalProperties',
+      {
+        type: 'object',
+        additionalProperties: { type: 'string', pattern: 'a' },
+      },
+    ],
+    ['format', withProp({ type: 'string', format: 'email' })],
+    ['$ref', withProp({ $ref: '#/$defs/x' })],
+    ['patternProperties', { type: 'object', patternProperties: { a: { type: 'string' } } }],
+    ['not', withProp({ not: { type: 'string' } })],
+    ['pattern in unknown schema keyword', withProp({ contains: { type: 'string', pattern: 'a' } })],
+  ])('refuses %s', async (_n, s) => {
+    expect(await run(s as object)).toEqual({ code: 'INVALID_ARGUMENT', calls: 0 });
+  });
+
+  it('accepts properties merely named pattern or format, and keyword words in data', async () => {
+    const r = await run({
+      type: 'object',
+      properties: {
+        pattern: { type: 'string' },
+        format: { type: 'string', enum: ['pattern', 'format'], description: 'format' },
+      },
+    });
+    expect(r.code).toBeUndefined();
+    expect(r.calls).toBe(1);
+  });
+
+  it('accepts depth 12 and refuses depth 13', async () => {
+    expect((await run(withProp(chain(10)))).code).toBeUndefined();
+    expect(await run(withProp(chain(11)))).toEqual({ code: 'INVALID_ARGUMENT', calls: 0 });
+  });
+
+  it('refuses more than 500 nodes, also inside data keywords', async () => {
+    const many = Array.from({ length: 501 }, () => ({}));
+    expect((await run({ type: 'object', properties: { a: { enum: many } } })).code).toBe(
+      'INVALID_ARGUMENT',
+    );
+    const props = Object.fromEntries(
+      Array.from({ length: 501 }, (_, i) => [`p${i}`, { type: 'string' }]),
+    );
+    expect(await run({ type: 'object', properties: props })).toEqual({
+      code: 'INVALID_ARGUMENT',
+      calls: 0,
+    });
+  });
+});
+
 describe('createOpenAiCompatibleJudgeModel', () => {
   let server: Server;
   let baseUrl: string;
@@ -314,6 +407,24 @@ describe('createOpenAiCompatibleJudgeModel', () => {
     expect(body.temperature).toBe(0);
     expect(headersSeen[0].authorization).toBe('Bearer k');
     expect(headersSeen[0]['x-extra']).toBe('yes');
+  });
+
+  it('passes the telemetry object to generateText only when given', async () => {
+    const spy = vi.mocked(generateText);
+    spy.mockClear();
+    await createOpenAiCompatibleJudgeModel({
+      baseUrl,
+      modelId: 'm',
+      telemetry: { scriptName: 'demo' },
+    }).generate(request());
+    expect(spy.mock.calls[0][0].experimental_telemetry).toEqual({
+      isEnabled: true,
+      functionId: 'script.judge',
+      metadata: { scriptName: 'demo' },
+    });
+    expect(spy.mock.calls[0][0]).not.toHaveProperty('tools');
+    await createOpenAiCompatibleJudgeModel({ baseUrl, modelId: 'm' }).generate(request());
+    expect(spy.mock.calls[1][0].experimental_telemetry).toBeUndefined();
   });
 
   it('strips one Markdown code fence', async () => {

@@ -43,11 +43,89 @@ const callSchema = z
   .strict()
   .refine((v) => 'input' in v);
 
+const MAX_SCHEMA_DEPTH = 12;
+const MAX_SCHEMA_NODES = 500;
+/** Keywords that can make a reply check slow (patterns) or reach outside the schema. */
+const FORBIDDEN_KEYWORDS = new Set([
+  'pattern',
+  'patternProperties',
+  'format',
+  '$ref',
+  '$defs',
+  'definitions',
+  '$dynamicRef',
+  'not',
+  'if',
+  'then',
+  'else',
+  'dependentSchemas',
+]);
+/** Keywords whose values are data, not schemas. They are only counted. */
+const DATA_KEYWORDS = new Set([
+  'enum',
+  'const',
+  'default',
+  'examples',
+  'required',
+  'description',
+  'title',
+]);
+
+function isPlain(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Bounded walk over a script-supplied JSON Schema. Zod runs the reply check
+ * synchronously, so a catastrophic regex or a huge schema would freeze the daemon.
+ * Returns true when the schema is acceptable.
+ */
+function isSafeSchema(root: unknown): boolean {
+  let nodes = 0;
+  const count = (value: unknown, depth: number): boolean => {
+    if (typeof value !== 'object' || value === null) return true;
+    nodes += 1;
+    if (depth > MAX_SCHEMA_DEPTH || nodes > MAX_SCHEMA_NODES) return false;
+    return Object.values(value).every((v) => count(v, depth + 1));
+  };
+  const schemas = (value: unknown, depth: number): boolean => {
+    if (Array.isArray(value)) {
+      nodes += 1;
+      if (depth > MAX_SCHEMA_DEPTH || nodes > MAX_SCHEMA_NODES) return false;
+      return value.every((v) => schema(v, depth + 1));
+    }
+    return schema(value, depth);
+  };
+  const schema = (node: unknown, depth: number): boolean => {
+    if (!isPlain(node)) return count(node, depth);
+    nodes += 1;
+    if (depth > MAX_SCHEMA_DEPTH || nodes > MAX_SCHEMA_NODES) return false;
+    for (const [key, value] of Object.entries(node)) {
+      if (FORBIDDEN_KEYWORDS.has(key)) return false;
+      if (DATA_KEYWORDS.has(key)) {
+        if (!count(value, depth + 1)) return false;
+      } else if (key === 'properties') {
+        if (!isPlain(value)) return false;
+        nodes += 1;
+        if (depth + 1 > MAX_SCHEMA_DEPTH || nodes > MAX_SCHEMA_NODES) return false;
+        for (const sub of Object.values(value)) {
+          if (!schema(sub, depth + 2)) return false;
+        }
+      } else if (!schemas(value, depth + 1)) {
+        return false;
+      }
+    }
+    return true;
+  };
+  return schema(root, 1);
+}
+
 const invalid = (detail: string): ScriptError => new ScriptError('INVALID_ARGUMENT', detail);
 
 async function readPrompt(versionDir: string, prompt: string): Promise<string | undefined> {
   const file = join(versionDir, 'prompts', `${prompt}.md`);
   try {
+    if (!(await lstat(join(versionDir, 'prompts'))).isDirectory()) return undefined;
     const stat = await lstat(file);
     if (!stat.isFile() || stat.size > MAX_PROMPT_BYTES) return undefined;
     const bytes = await readFile(file);
@@ -95,6 +173,8 @@ export function createJudgeProvider(options: {
 
       const system = await readPrompt(options.context.versionDir, prompt);
       if (system === undefined) return err(invalid('judge prompt file is not usable'));
+
+      if (!isSafeSchema(schema)) return err(invalid('judge schema cannot be used'));
 
       let replySchema: z.ZodType;
       try {
