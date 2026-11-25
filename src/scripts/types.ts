@@ -42,6 +42,8 @@ export interface ScriptManifest {
   personaId: string;
   /** Tool names as the script calls them, e.g. `mailbox.list_metadata`. */
   tools: string[];
+  /** Channel names that `talon.channel_send` can use. Default: none. */
+  channels?: string[];
 }
 
 /** Source of real tools. The gateway is its only caller. */
@@ -91,4 +93,55 @@ export interface GatewayOptions {
   maxCalls?: number;
   /** Default 262_144. Measured on the JSON text of a tool result. */
   maxResultChars?: number;
+}
+
+/** `manifest.json` as the author writes it. The store adds the persona. */
+export interface AuthoredManifest {
+  /** Matches /^[a-z][a-z0-9-]{1,48}$/. */
+  name: string;
+  /** 1 to 500 characters. Shown to the user in the approval message. */
+  description: string;
+  /** At most 50 tool names. */
+  tools: string[];
+  /** At most 5 channel names. */
+  channels: string[];
+  /** Input of the dry run. It must send the script through its work path. */
+  dryRunInput: unknown;
+  /** Input of a scheduled run. Default null. */
+  liveInput?: unknown;
+}
+
+export type VersionState =
+  'draft' | 'tested' | 'awaiting-approval' | 'approved' | 'rejected' | 'retired';
+
+/** One unit case of `tests.json`. The host runs it in `unit` mode and compares. */
+export interface UnitCase {
+  name: string;
+  input: unknown;
+  stubs: Record<string, unknown[]>;
+  expect: {
+    /** Default true. */
+    ok?: boolean;
+    /** Compared with deep equality, if present. */
+    result?: unknown;
+    /** Exact ordered list of the write-class calls, if present. */
+    writes?: Array<{ name: string; input: unknown }>;
+  };
+}
+
+/** What a provider must know about the run it serves. */
+export interface RunContext {
+  personaId: string;
+  threadId: string;
+  scriptRunId: string;
+  scriptName: string;
+  /** Channel names of the manifest. */
+  channels: string[];
+  /** Absolute directory of the version, for the prompt files of `model.judge`. */
+  versionDir: string;
+}
+
+/** A provider that holds resources for one run. `close` never rejects. */
+export interface RunProvider extends ToolProvider {
+  close(): Promise<void>;
 }
