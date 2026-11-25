@@ -19,3 +19,5 @@ export { createCompositeProvider } from './providers/composite.js';
 export { runUnitCases, runDryRun } from './test-runner.js';
 export type { RunDeps, UnitOutcome, DryRunOutcome } from './test-runner.js';
 export { buildApprovalSummary } from './summary.js';
+export { createApprovalService } from './approval.js';
+export type { ApprovalService } from './approval.js';
