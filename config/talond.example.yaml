@@ -32,6 +32,17 @@ channels:
       allowedChatIds:
         - '123456789'
       pollingTimeoutSec: 30
+      # Native replies and reactions (also available on whatsappBaileys and
+      # whatsappBusiness). Both are optional; these are the defaults.
+      # allowGroupChats: true    # answer in group chats (default: false)
+      # requireMention: false    # answer every group message, not only @mentions (default: true);
+      #                          # needs the bot to be group admin, and list the group in allowedChatIds
+      # replyToTrigger: groups   # never | groups | always — quote the message being answered
+      # chats:                   # per-chat overrides; send /chatid in a chat to get its ID
+      #   '-1001234567890':      # e.g. a forum group used as a topic workspace
+      #     requireMention: false
+      #     replyToTrigger: never
+      # inboundReactions: true   # run the agent when a user reacts to one of its messages
 
   # WhatsApp Web bridge via Baileys — no Meta Business account required.
   # Authenticate first: npx talonctl whatsapp-auth --auth-dir ./baileys-auth
@@ -111,6 +122,9 @@ personas:
     capabilities:
       allow:
         - channel.send:telegram
+        # Lets the persona react with an emoji (the `channel_react` tool), e.g.
+        # 👍 instead of a written "understood". Separate from channel.send.
+        - channel.react:*
         - fs.read:*
         - memory.access:*
         - subagent.invoke:*

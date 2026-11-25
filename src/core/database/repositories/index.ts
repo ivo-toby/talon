@@ -23,6 +23,9 @@ export { ThreadRepository } from './thread-repository.js';
 export type { MessageRow, InsertMessageInput } from './message-repository.js';
 export { MessageRepository } from './message-repository.js';
 
+export type { MessageRefRow, RecordMessageRefInput } from './message-ref-repository.js';
+export { MessageRefRepository, MESSAGE_REF_EXCERPT_MAX_CHARS } from './message-ref-repository.js';
+
 export type {
   QueueItemRow,
   QueueStatus,

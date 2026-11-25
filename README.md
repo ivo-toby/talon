@@ -84,6 +84,7 @@ integration, or automation is safe without your configuration and review.
 - **WhatsApp** — WhatsApp Web bridge via Baileys, supports dedicated number or self-chat mode
 - **Email** — IMAP polling + SMTP send (imapflow / nodemailer), thread tracking via References / In-Reply-To headers _(IMAP polling verified against a live KPN mailbox; SMTP send not yet verified live)_
 - **Browser voice** — Opt-in authenticated WebRTC sessions at `/voice/`, backed by the durable queue and configured persona policy
+- **Replies, threads and reactions** — On Telegram and WhatsApp the agent sees which message a user replied to, can answer as a native reply, can react with an emoji instead of writing (👍 for "understood"), and is told when a user reacts to one of its messages. Telegram forum topics are separate conversations. See [Replies, Threads and Reactions](#replies-threads-and-reactions)
 
 ### Agent System
 
@@ -645,6 +646,109 @@ channels:
       appToken: ${SLACK_APP_TOKEN}
 ```
 
+#### Replies, Threads and Reactions
+
+Telegram, WhatsApp Baileys and WhatsApp Business support native replies and emoji reactions in both directions. The other connectors ignore these features and behave as before.
+
+**What the agent sees.** A reply or a reaction arrives as one bracketed line at the top of the message, so every provider and every stored transcript reads it the same way:
+
+```text
+[Replying to your message (id 4521): "Shall I book the 14:00 slot?"]
+yes please
+
+[Reaction: the user reacted with 👍 to your message (id 4521): "Shall I book the 14:00 slot?"]
+```
+
+The `(id …)` is the channel's own message ID. The agent passes it to `channel_react` or to `channel_send`'s `replyTo` to address that exact message.
+
+**Replies from users.** The replied-to message is resolved from Talon's message ledger (the `message_refs` table), which records the provider ID of every message Talon receives and sends. A reply to a message from before the ledger existed is shown as "an earlier message" with whatever text the channel delivered.
+
+**Replies from Talon.** `replyToTrigger` in the connector `config` controls whether an answer is sent as a native reply to the message that triggered it:
+
+| `replyToTrigger`   | Behaviour                                                                              |
+| ------------------ | -------------------------------------------------------------------------------------- |
+| `groups` (default) | Quote the triggering message in group chats only, where it shows who is being answered |
+| `always`           | Quote the triggering message in every chat                                             |
+| `never`            | Never quote automatically                                                              |
+
+Only the first message of an answer quotes; later messages of the same run are plain. A reply the agent asks for explicitly (`channel_send` with `replyTo`) is always sent as a native reply, whatever the setting.
+
+**Reactions from Talon.** The `channel_react` tool places an emoji on a message, by default the one the agent is answering. It needs the `channel.react` capability, which is separate from `channel.send`:
+
+```yaml
+personas:
+  - name: assistant
+    capabilities:
+      allow:
+        - channel.react:*
+```
+
+With no `messageId` the tool reacts to the message that started the run. For any other message the agent passes an ID from a header, or asks the tool for the conversation's recent messages with `list: true`. An ID the message ledger does not know is refused with that same listing instead of being sent to the channel, so a number read from the database (on Telegram the stored key is an `update_id`, not a message ID) cannot end in a provider error.
+
+To acknowledge without sending text, the agent reacts and then makes its whole response `NO_REPLY`. A response that is only that word is never delivered to the chat. Telegram accepts only its standard reaction set (👍 👎 ❤ 🔥 🎉 🙏 👌 🤔 👀 and about sixty more); anything else returns an error listing the alternatives, so the agent can pick one.
+
+**Reactions from users.** A reaction a user places on one of Talon's messages starts an agent run on that conversation, with the reaction as the message. The agent can answer, react back, or stay silent with `NO_REPLY`. This is how a 👍 on "Shall I book it?" becomes a yes. Set `inboundReactions: false` in the connector `config` to turn it off. Three limits apply:
+
+- Only reactions on messages Talon sent are forwarded. Reactions on other people's messages, and on messages sent before the ledger existed, are ignored.
+- Removing a reaction is ignored.
+- Each forwarded reaction is one agent run, with the usual model cost.
+
+**Telegram topics.** A message inside a topic (a forum supergroup topic, or a topic in a private chat with the bot) belongs to its own Talon thread, `<chat_id>:<topic_id>`. Each topic has its own conversation, session and memory, and answers go back into the topic. Messages outside a topic keep using the plain `chat_id` thread.
+
+> **Upgrading:** topic messages previously shared the chat's single thread and were answered in the General topic. After this change each topic starts a fresh conversation; the old shared thread keeps serving messages outside topics.
+
+#### Telegram Topic Workspaces
+
+One forum group can serve as a workspace of separate conversations: a "Groceries" topic, a "Calendar" topic, each with its own history and optionally its own persona. The full walkthrough is in [docs/guides/telegram-topics.mdx](docs/guides/telegram-topics.mdx); the short version:
+
+1. Create a group, turn on **Topics**, add the bot and make it an **administrator**.
+2. Send `/chatid@YourBotName` in the group. The bot answers with the chat ID (and, inside a topic, the topic ID and the `Talon thread` key). The command is answered by the connector, never reaches the agent, and works before the group is configured. With `allowedChatIds` set, only a listed sender gets an answer.
+3. Configure the group:
+
+```yaml
+channels:
+  - name: my-telegram
+    type: telegram
+    config:
+      botToken: ${TELEGRAM_BOT_TOKEN}
+      allowGroupChats: true
+      allowedChatIds:
+        - '123456789' # your private chat
+        - '-1004452318413' # the forum group
+      chats:
+        '-1004452318413':
+          requireMention: false # answer every message, no @mention
+          replyToTrigger: never # plain answers, no quoting
+```
+
+`chats` holds per-chat overrides of `requireMention` and `replyToTrigger`, so a topic workspace and an ordinary multi-person group can behave differently on the same bot. A key can also be one topic, `'<chat_id>:<topic_id>'`, which wins over the chat's entry. That lets several bots share a group, each answering unprompted in its own topic: give each bot's channel a `chats` entry for its topic only, and do not set `requireMention: false` on the chat ID itself. A bot that answers every message still leaves a message alone when it @mentions, commands or replies to a different bot. Listing a chat there does not admit it; `allowGroupChats` and `allowedChatIds` still decide that.
+
+4. Optionally give a topic its own persona with a thread-scoped binding:
+
+```bash
+npx talonctl bind --persona groceries --channel my-telegram --thread '-1004452318413:42'
+```
+
+```yaml
+bindings:
+  - persona: assistant
+    channel: my-telegram
+    isDefault: true
+  - persona: groceries
+    channel: my-telegram
+    thread: '-1004452318413:42'
+```
+
+A thread-scoped binding wins over the channel default. Unbound topics and General use the default persona. All personas speak through the same bot account. Bindings are applied at startup; removing the entry returns the topic to the default.
+
+To bring an existing conversation into a topic, so the agent there does not start from nothing, use [`talonctl move-context`](#thread-and-provider-affinity):
+
+```bash
+npx talonctl move-context --channel my-telegram --from 123456789 --to '-1004452318413:42'
+```
+
+A reminder or schedule created inside a topic is delivered into that topic, unless the scheduled run passes an explicit `externalChatId`. The `channel.send: message sent successfully` log line names the `recipient` and the `recipientSource` (`schedule origin`, `externalChatId argument` or `current thread`).
+
 ### Telegram
 
 Long-polling connector using the Telegram Bot API.
@@ -659,12 +763,23 @@ channels:
       pollingTimeoutSec: 30
       allowedChatIds:
         - 123456789
+      allowGroupChats: false # default: false — answer in group chats
+      requireMention: true # default: true — see "Group chats" below
+      # chats: per-chat overrides of requireMention / replyToTrigger,
+      #        see "Telegram Topic Workspaces"
+      replyToTrigger: groups # never | groups (default) | always
+      inboundReactions: true # default: true
 ```
 
-- **Inbound**: Long polling via `getUpdates`
-- **Outbound**: `sendMessage` with MarkdownV2 parse mode
+- **Inbound**: Long polling via `getUpdates`, subscribed to `message` and (unless `inboundReactions: false`) `message_reaction`
+- **Outbound**: `sendMessage` with MarkdownV2 parse mode; native replies via `reply_parameters`; reactions via `setMessageReaction`
 - **Idempotency key**: `update_id`
-- **Thread mapping**: `chat_id`
+- **Thread mapping**: `chat_id`, or `chat_id:message_thread_id` for a message inside a topic
+- **Group chats**: off by default. With `allowGroupChats: true` the bot answers an @mention, a trigger word, or a native reply to one of its own messages. Add `requireMention: false` to answer every message in the group, which suits a forum group where each topic is a conversation with the bot. Three things to know:
+  - Telegram only delivers every group message when the bot is a group administrator or has Group Privacy turned off in BotFather.
+  - Set `allowedChatIds` alongside it. Without an allow-list the bot answers everything in any group it is added to, and logs a warning at startup.
+  - Every member of an allowed group can talk to the bot, and each message is one agent run.
+- **Reactions**: Telegram delivers user reactions in private chats and in groups where the bot is an administrator. See [Replies, Threads and Reactions](#replies-threads-and-reactions)
 
 ### Slack
 
@@ -728,12 +843,15 @@ channels:
       webhookPort: 3000 # default: 3000
       webhookHost: '0.0.0.0' # default: 0.0.0.0
       webhookPath: '/webhook' # default: /webhook
+      replyToTrigger: groups # never | groups (default) | always
+      inboundReactions: true # default: true
 ```
 
 - **Inbound**: Embedded HTTP server handles Meta webhook verification (GET) and signed event delivery (POST with HMAC-SHA256 validation). Requires a public URL — use a reverse proxy (nginx, Caddy) or ngrok for local dev.
 - **Outbound**: REST API `POST /v21.0/{phoneNumberId}/messages`
 - **Idempotency key**: WhatsApp message ID
 - **Thread mapping**: Sender phone number
+- **Replies and reactions**: contextual replies (`context.message_id`) and `type: reaction` messages in both directions. The Cloud API has no group chats, so the default `replyToTrigger: groups` never quotes automatically; set `always` to quote every answer. See [Replies, Threads and Reactions](#replies-threads-and-reactions)
 
 ### WhatsApp Baileys
 
@@ -812,6 +930,7 @@ Once authenticated, the daemon uses the saved credentials — no QR code display
 - **Outbound**: Send via Baileys socket using WhatsApp JID (e.g. `447700900000@s.whatsapp.net`)
 - **Idempotency key**: Baileys message ID
 - **Thread mapping**: Sender JID
+- **Replies and reactions**: quoted replies and emoji reactions in both directions (`replyToTrigger`, `inboundReactions`). A reaction passes the same `allowedSenders` / self-chat / group checks as a message but needs no trigger word. See [Replies, Threads and Reactions](#replies-threads-and-reactions)
 - **Reconnection**: Automatic on disconnect; logged-out sessions require re-authentication (delete `authDir` and re-run `talonctl whatsapp-auth`)
 
 ### Email
@@ -1022,6 +1141,7 @@ prompt a user or block execution.
 | Capability               | Description                                                                 |
 | ------------------------ | --------------------------------------------------------------------------- |
 | `channel.send:<channel>` | Send messages to a specific channel                                         |
+| `channel.react:*`        | React with an emoji to messages in the current conversation (Telegram, WhatsApp) |
 | `persona.send:*`         | Delegate to any persona, list personas, and fetch or cancel delegated tasks |
 | `persona.send:<persona>` | Delegate only to that persona (repeat the label for several); same list/status/cancel tools |
 | `schedule.manage`        | Create/modify/delete scheduled tasks                                        |
@@ -2244,6 +2364,7 @@ npx talonctl config-show --show-secrets
 | ------------------------- | ------------------------------------------------------------------------------ |
 | `list-threads`            | List persisted threads for a channel, including external IDs and provider info |
 | `reset-provider-affinity` | Reset provider affinity for one channel thread                                 |
+| `move-context`            | Move or copy memory and message history from one conversation to another       |
 
 **`list-threads`** options:
 
@@ -2276,6 +2397,37 @@ npx talonctl list-threads --channel my-telegram
 npx talonctl reset-provider-affinity --channel my-telegram --external-id 123456789
 npx talonctl reset-provider-affinity --channel my-telegram --external-id 123456789 --yes
 ```
+
+**`move-context`** options:
+
+| Option                | Description                                                                 | Default       |
+| --------------------- | --------------------------------------------------------------------------- | ------------- |
+| `--channel <name>`    | Channel of the source conversation (required)                               | —             |
+| `--from <id>`         | Source thread external ID (required). Use `list-threads` to discover values | —             |
+| `--to <id>`           | Target thread external ID (required), e.g. a Telegram topic `<chat>:<topic>` | —             |
+| `--to-channel <name>` | Channel of the target conversation, when it differs                         | `--channel`   |
+| `--copy`              | Leave the source unchanged instead of emptying it                           | off (move)    |
+| `--memory-only`       | Carry memory items and notebook files only, not the message history         | off           |
+| `--dry-run`           | Show what would be moved without changing anything                          | off           |
+| `--yes`               | Bypass the confirmation prompt                                              | off           |
+| `--config <path>`     | Path to talond.yaml                                                         | `talond.yaml` |
+
+`move-context` carries what makes a conversation remember — memory items (facts, notes, summaries, observations), message history, and the notebook files in the thread's `memory/` directory — to another conversation. The usual case is promoting a subject from a main chat into its own Telegram topic:
+
+```bash
+# Preview, then move the main chat's context into a topic
+npx talonctl move-context --channel my-telegram --from 123456789 --to '-1004452318413:42' --dry-run
+npx talonctl move-context --channel my-telegram --from 123456789 --to '-1004452318413:42'
+
+# Keep the main chat as it is and give the topic a copy
+npx talonctl move-context --channel my-telegram --from 123456789 --to '-1004452318413:42' --copy
+```
+
+- **Move** empties the source: it starts fresh afterwards. **Copy** leaves the source unchanged, and running the same copy twice adds nothing.
+- The target is created when the conversation has no history yet. A target that already has history is merged by time; the preview warns about it.
+- The daemon can keep running. Both affected conversations get a session reset, so the next message starts a fresh session that reads the migrated context.
+- It refuses while either conversation has queued or running work.
+- Not carried over: Images and Findings (they belong to the conversation they were sent in, so in move mode a message with images stays in the source), the reply/reaction message ledger, runs, schedules and bindings.
 
 ### Provider Management
 
@@ -2815,9 +2967,10 @@ Agents interact with the host through a small set of MCP tools exposed over a Un
 | Tool                  | Purpose                                                                  |
 | --------------------- | ------------------------------------------------------------------------ |
 | `schedule_manage`     | CRUD + list scheduled tasks (supports `promptFile` for reusable prompts) |
-| `channel_send`        | Send messages to channel connectors (supports `externalChatId` for explicit targeting; CLI-created schedules must pass it or use `channel_list` / `channel_broadcast`) |
+| `channel_send`        | Send messages to channel connectors (supports `externalChatId` for explicit targeting and `replyTo` for a native reply to a message ID; CLI-created schedules must pass `externalChatId` or use `channel_list` / `channel_broadcast`) |
 | `channel_list`        | List channels bound to the persona + their chat external_ids (discovery for `channel_send`) |
 | `channel_broadcast`   | Fan out a message to every chat the persona is bound to; skips channel-default bindings (no `thread_id`) with a warning |
+| `channel_react`       | Place or remove an emoji reaction on a message in the current conversation (Telegram, WhatsApp); defaults to the message being answered |
 | `persona_send`        | Submit a delegated A2A task to another persona                           |
 | `persona_task_status` | Fetch the status or result of a delegated A2A task                       |
 | `persona_task_cancel` | Cancel a delegated A2A task you submitted (queued or running)            |
@@ -3541,6 +3694,7 @@ talon/
     tools/
       host-tools/                # Host-side tool handlers
         channel-send.ts          # Send via channel connector
+        channel-react.ts         # Emoji reactions on messages
         http-proxy.ts            # Fetch with domain allowlist
         memory-access.ts         # Thread memory CRUD
         schedule-manage.ts       # Schedule CRUD

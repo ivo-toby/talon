@@ -36,6 +36,7 @@ personas:
     capabilities:
       allow:
         - channel.send:*
+        - channel.react:*
         - memory.access:*
     maxConcurrent: 1
 

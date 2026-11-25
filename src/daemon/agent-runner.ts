@@ -35,9 +35,10 @@ import {
   formatMissingTalonSkillError,
 } from '../skills/skill-runtime-text.js';
 import { getProviderAffinityResetAt } from '../threads/thread-metadata.js';
-import { readScheduleOriginExternalId } from './schedule-thread-utils.js';
+import { resolveThreadRecipient } from './schedule-thread-utils.js';
 import { buildTimeContext } from '../core/time-context.js';
 import { formatToolCall } from './tool-name-formatter.js';
+import { RunDelivery } from './run-delivery.js';
 import type {
   AgentUsage,
   ContextUsage,
@@ -662,6 +663,12 @@ export class AgentRunner {
               currentChannelName
                 ? `When sending messages, use channelId: "${currentChannelName}".`
                 : '',
+              // A scheduled run delivers to the conversation the schedule was
+              // created in — a chat, or one topic of a forum group — but only
+              // while the agent does not name another recipient.
+              isScheduleTask
+                ? 'This is a scheduled run. Call channel_send WITHOUT externalChatId: the message then goes to the conversation (chat or topic) where this schedule was created. Pass externalChatId only to deliver somewhere else on purpose.'
+                : '',
             ]
               .filter(Boolean)
               .join('\n');
@@ -723,11 +730,12 @@ export class AgentRunner {
             // the thread's own external_id is a synthetic marker, not a
             // valid provider recipient. Prefer metadata.originExternalId
             // so typing indicators and any agent-runner-originated
-            // outbound reach the originating chat (issue #200).
+            // outbound reach the originating chat (issue #200). A schedule
+            // thread WITHOUT an origin has no recipient: leave it undefined
+            // so nothing (typing included) is sent to the synthetic id.
             const externalId =
               threadResult.isOk() && threadResult.value
-                ? (readScheduleOriginExternalId(threadResult.value.metadata) ??
-                  threadResult.value.external_id)
+                ? (resolveThreadRecipient(threadResult.value) ?? undefined)
                 : undefined;
             const channelName =
               channelRow?.isOk() && channelRow.value ? channelRow.value.name : undefined;
@@ -735,6 +743,36 @@ export class AgentRunner {
               ? this.ctx.config.channels?.find((c) => c.name === channelName)
               : undefined;
             const showToolCalls = channelConfig?.showToolCalls ?? false;
+
+            // The run's own text goes through RunDelivery: it attaches the
+            // triggering message as an implicit reply target, records the
+            // provider message IDs for later replies/reactions, and honours
+            // the NO_REPLY directive. Progress notices stay plain sends.
+            const outboundMessageId = uuidv4();
+            const triggerRef =
+              item.type === 'message' &&
+              typeof item.messageId === 'string' &&
+              item.messageId.length > 0
+                ? this.ctx.repos.messageRef?.findInboundByMessageId(item.messageId)
+                : undefined;
+            const delivery =
+              connector !== undefined && externalId
+                ? new RunDelivery({
+                    connector,
+                    externalThreadId: externalId,
+                    threadId: item.threadId,
+                    outboundMessageId,
+                    ...(this.ctx.repos.messageRef
+                      ? { messageRefs: this.ctx.repos.messageRef }
+                      : {}),
+                    trigger: triggerRef !== undefined && triggerRef.isOk() ? triggerRef.value : null,
+                    recordRefs:
+                      threadResult.isOk() &&
+                      threadResult.value !== null &&
+                      threadResult.value.external_id === externalId,
+                    logger: this.ctx.logger,
+                  })
+                : undefined;
 
             // Send typing indicator and keep it alive every 4s while the agent works.
             // A2A tasks must not send typing indicators to the source thread's channel
@@ -1287,10 +1325,8 @@ export class AgentRunner {
                             externalId
                           ) {
                             // Flush preceding text first, then show tool description (issue #102 + #108).
-                            if (outputText) {
-                              const flushResult = await connector.send(externalId, {
-                                body: outputText,
-                              });
+                            if (outputText && delivery !== undefined) {
+                              const flushResult = await delivery.sendText(outputText);
                               if (flushResult.isErr()) {
                                 throw new Error(
                                   `channel send failed: ${flushResult.error.message}`,
@@ -1641,12 +1677,11 @@ export class AgentRunner {
                 { runId, outputLength: fullOutputText.length },
                 'agent-sdk: skipping outbound reply for schedule item (agent must use channel.send to deliver)',
               );
-            } else if (connector !== undefined && externalId && outputText) {
+            } else if (delivery !== undefined && outputText) {
               // Send remaining text (final block). Intermediate blocks were flushed
               // during the stream when tool_use events were encountered (issue #102).
-              const sendResult = await connector.send(externalId, {
-                body: outputText,
-              });
+              // A block that is only the NO_REPLY directive is not delivered.
+              const sendResult = await delivery.sendText(outputText);
               if (sendResult.isErr()) {
                 throw new Error(`channel send failed: ${sendResult.error.message}`);
               }
@@ -1657,7 +1692,7 @@ export class AgentRunner {
             // The message is stored immediately after delivery (issue #164).
             if (!isVoiceTask && !isA2ATask && !isScheduleTask) {
               this.ctx.repos.message.insert({
-                id: uuidv4(),
+                id: outboundMessageId,
                 thread_id: item.threadId,
                 direction: 'outbound',
                 content: JSON.stringify({ body: fullOutputText }),
@@ -2309,7 +2344,18 @@ export class AgentRunner {
       return err(new Error(`channel connector not found: ${channelResult.value.name}`));
     }
 
-    const sendResult = await connector.send(threadResult.value.external_id, {
+    // A background task started from a scheduled run reports back to the
+    // chat the schedule came from, not to the synthetic schedule thread id.
+    const recipient = resolveThreadRecipient(threadResult.value);
+    if (recipient === null) {
+      return err(
+        new Error(
+          `thread ${threadId} has no chat to deliver to (schedule thread without an origin chat)`,
+        ),
+      );
+    }
+
+    const sendResult = await connector.send(recipient, {
       body: notification.content,
     });
     if (sendResult.isErr()) {

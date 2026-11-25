@@ -16,6 +16,7 @@ import type { ToolExecutionContext } from './host-tools/channel-send.js';
 import { ScheduleManageHandler, type ScheduleManageArgs } from './host-tools/schedule-manage.js';
 import { ChannelSendHandler, type ChannelSendArgs } from './host-tools/channel-send.js';
 import { ChannelListHandler } from './host-tools/channel-list.js';
+import { ChannelReactHandler } from './host-tools/channel-react.js';
 import {
   ChannelBroadcastHandler,
   type ChannelBroadcastArgs,
@@ -99,6 +100,7 @@ export class HostToolsBridge {
   private scheduleHandler: ScheduleManageHandler;
   private channelHandler: ChannelSendHandler;
   private channelListHandler: ChannelListHandler;
+  private channelReactHandler: ChannelReactHandler;
   private channelBroadcastHandler: ChannelBroadcastHandler;
   private personaSendHandler: PersonaSendHandler | null = null;
   private personaTaskStatusHandler: PersonaTaskStatusHandler | null = null;
@@ -135,6 +137,15 @@ export class HostToolsBridge {
       messageRepository: ctx.repos.message,
       bindingRepository: ctx.repos.binding,
       sessionTracker: ctx.sessionTracker,
+      ...(ctx.repos.messageRef ? { messageRefRepository: ctx.repos.messageRef } : {}),
+      logger: handlerLogger,
+    });
+
+    this.channelReactHandler = new ChannelReactHandler({
+      channelRegistry: ctx.channelRegistry,
+      threadRepository: ctx.repos.thread,
+      channelRepository: ctx.repos.channel,
+      ...(ctx.repos.messageRef ? { messageRefRepository: ctx.repos.messageRef } : {}),
       logger: handlerLogger,
     });
 
@@ -794,6 +805,9 @@ export class HostToolsBridge {
 
       case 'channel.list':
         return this.channelListHandler.execute(args, context);
+
+      case 'channel.react':
+        return this.channelReactHandler.execute(args, context);
 
       case 'channel.broadcast':
         return this.channelBroadcastHandler.execute(

@@ -419,6 +419,10 @@ Invoke the matching per-channel skill for the full setup walkthrough:
 
 Each skill handles: bot/app creation, credentials, config, env vars, verification, and troubleshooting.
 
+**Telegram topic workspace.** If the user wants one Telegram group with a separate conversation per topic (and optionally a different persona per topic), run the **Topic Workspace (forum group)** flow in `/add-telegram` after the basic Telegram setup works. It finds the group ID with the `/chatid` command, writes `allowGroupChats`, `allowedChatIds` and the per-chat `chats` block, and binds personas to topics with `npx talonctl bind --thread`. Its last step moves or copies the memory and history of an existing conversation into a topic with `npx talonctl move-context`.
+
+**Moving a conversation.** To carry memory and history from one conversation to another outside that flow (any channel, not only Telegram), use `npx talonctl move-context --channel <channel> --from <source ID> --to <target ID>`. Always run it with `--dry-run` first and show the user the preview. `--copy` keeps the source; without it the source is emptied. `npx talonctl list-threads --channel <channel>` lists the IDs.
+
 Ask: **"Add another channel?"** Loop until done.
 
 ### Step 5: Persona configuration
@@ -474,6 +478,7 @@ After creating a persona, show what capabilities it has and what's available.
 If yes, help the user decide which to add or remove:
 
 - For agents that should message other channels: `npx talonctl set-capabilities --persona <name> --add "channel.send:*"`
+- For agents that should react with emoji on Telegram or WhatsApp (👍 instead of a written "understood"): `npx talonctl set-capabilities --persona <name> --add "channel.react:*"`
 - For agents that need database access: `npx talonctl set-capabilities --persona <name> --add "db.query:own"`
 - For agents that run background tasks: `npx talonctl set-capabilities --persona <name> --add "subagent.background"`
 - For agents that invoke sub-agents: `npx talonctl set-capabilities --persona <name> --add "subagent.invoke"`
