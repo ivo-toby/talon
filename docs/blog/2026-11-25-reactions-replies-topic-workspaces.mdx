@@ -1,0 +1,142 @@
+---
+title: "Reactions, replies and Telegram topic workspaces"
+date: 2026-11-25
+description: Talon now understands replies and emoji reactions on Telegram and WhatsApp, and turns a Telegram forum group into a workspace where every topic is its own conversation, with its own memory and optionally its own persona or bot.
+---
+
+# Reactions, replies and Telegram topic workspaces
+
+Until now a Talon conversation was a flat stream of text. You wrote, the agent wrote back. This release adds the two things chat apps have that the stream was missing, replies and emoji reactions, and then uses Telegram topics to split one group into separate conversations.
+
+Telegram is where all of this has had real use. The two WhatsApp connectors have the same reply and reaction features with test coverage, but they have not been through daily use yet.
+
+## Replies
+
+When you reply to a specific message, the agent now sees which one. It arrives as one line above your text:
+
+```text
+[Replying to your message (id 4521): "Shall I book the 14:00 slot?"]
+yes please
+```
+
+The other direction works too. `replyToTrigger` on the connector decides whether the agent's answer quotes the message it responds to:
+
+| Value | Behaviour |
+|---|---|
+| `groups` (default) | Quote in group chats, where it shows who is being answered |
+| `always` | Quote everywhere |
+| `never` | Never quote |
+
+In a Telegram group, replying to one of the bot's messages now addresses the bot, the same as an @mention.
+
+## Reactions
+
+Not every message needs a written answer. With the new `channel_react` tool an agent can put a 👍 on "remember I have the dentist tomorrow" and leave it at that. When the reaction is the whole answer, the agent ends its turn with `NO_REPLY` and no message is sent.
+
+Reacting is its own capability, separate from sending:
+
+```yaml
+personas:
+  - name: assistant
+    capabilities:
+      allow:
+        - channel.react:*
+```
+
+Reactions also flow the other way. A 👍 you put on one of the agent's messages reaches it as a message, so reacting to "Shall I book it?" counts as a yes. Three things to know:
+
+- Only reactions on the agent's own messages are forwarded.
+- Each forwarded reaction is one agent run.
+- Turn it off per connector with `inboundReactions: false`.
+
+Telegram limits bots to its standard reaction set, about seventy emoji. If the agent picks one outside it (✅ is the usual suspect), the tool tells it which ones are allowed and it picks another.
+
+## Topic workspaces
+
+A Telegram group with topics turned on is a list of separate message streams. Talon now treats each topic as its own conversation, with its own session and memory, and answers in the topic the message came from.
+
+That turns one group into a workspace: a Groceries topic, a Calendar topic, a Homelab topic, none of them aware of the others.
+
+Setting it up takes three steps.
+
+**1. Create the group.** Turn on Topics, add your bot, and make it an administrator. Telegram only delivers ordinary group messages to bots that are admins.
+
+**2. Find the group ID.** Send `/chatid@YourBotName` in the group. Talon answers itself, before the agent sees anything:
+
+```text
+Chat ID: -1004452318413
+Topic ID: 42
+Talon thread: -1004452318413:42
+```
+
+**3. Configure it.**
+
+```yaml
+channels:
+  - name: my-telegram
+    type: telegram
+    config:
+      botToken: ${TELEGRAM_BOT_TOKEN}
+      allowGroupChats: true
+      allowedChatIds:
+        - '123456789'        # your private chat
+        - '-1004452318413'   # the forum group
+      chats:
+        '-1004452318413':
+          requireMention: false   # answer every message, no @mention
+          replyToTrigger: never   # plain answers, no quoting
+```
+
+`chats` holds overrides for one chat, so a topic workspace can answer everything without quoting while an ordinary group on the same bot keeps the defaults.
+
+## One bot with several personas, or several bots
+
+There are two ways to make topics behave differently.
+
+**One bot, a persona per topic.** Bind a persona to a topic's thread and that topic gets its own system prompt, skills, tools and model:
+
+```bash
+npx talonctl bind --persona groceries --channel my-telegram --thread '-1004452318413:42'
+```
+
+Unbound topics use the channel's default persona. Everything speaks through the same bot account.
+
+**Several bots in one group.** Each bot is its own channel and lists only its own topic:
+
+```yaml
+chats:
+  '-1004452318413:42':
+    requireMention: false
+```
+
+Each bot answers unprompted in its own topic and needs an @mention anywhere else. A bot that answers everything still stays out of a message that mentions or replies to a different bot.
+
+One bot with personas is less to maintain: one token, one config block. Use several bots when you want a different name and avatar per topic.
+
+## Moving a conversation into a topic
+
+A new topic starts with no memory. If you have been talking to the agent about groceries in your private chat for months, `talonctl move-context` carries that over:
+
+```bash
+# preview
+npx talonctl move-context --channel my-telegram --from 123456789 --to '-1004452318413:42' --dry-run
+
+# move, or add --copy to keep the original as it is
+npx talonctl move-context --channel my-telegram --from 123456789 --to '-1004452318413:42'
+```
+
+It takes the memory items, the message history and the notebook files. Talon does not need a restart: the next message in the topic starts a fresh session that reads the migrated context. Images are not carried over.
+
+## Upgrading
+
+- **Topics.** Messages inside a topic used to share the group's single conversation and were answered in General. Each topic now starts fresh.
+- **Capability.** Add `channel.react:*` to personas that should react. It is not part of `channel.send`.
+- **Database.** Two migrations run on startup.
+- **Reactions in groups.** Telegram only delivers them when the bot is an administrator.
+
+## Further reading
+
+- [Telegram topic workspaces](/docs/guides/telegram-topics): the full walkthrough, including troubleshooting
+- [Channels](/docs/guides/channels): every connector setting
+- [Host tools](/docs/reference/host-tools): `channel_react` and `channel_send`
+- [talonctl](/docs/reference/talonctl): `bind --thread` and `move-context`
