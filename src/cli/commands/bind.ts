@@ -18,12 +18,19 @@ import {
 export interface BindOptions {
   persona: string;
   channel: string;
+  /**
+   * Bind one conversation of the channel instead of the whole channel: the
+   * channel-specific thread ID, e.g. a Telegram forum topic
+   * (`-1001234567890:42`).
+   */
+  thread?: string;
   configPath?: string;
 }
 
 export interface BindResult {
   persona: string;
   channel: string;
+  thread?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -63,9 +70,29 @@ export async function bind(options: BindOptions): Promise<BindResult> {
     doc.bindings = [];
   }
 
+  // A thread-scoped binding routes one conversation; it is never a default
+  // and a conversation can have only one persona.
+  const thread = options.thread?.trim();
+  if (options.thread !== undefined) {
+    if (!thread) {
+      throw new Error('Thread must be a non-empty thread ID.');
+    }
+    const bound = doc.bindings.find(
+      (b) => b.channel === options.channel && String(b.thread ?? '') === thread,
+    );
+    if (bound) {
+      throw new Error(
+        `Thread "${thread}" on channel "${options.channel}" is already bound to persona "${bound.persona}". Unbind it first.`,
+      );
+    }
+    doc.bindings.push({ persona: options.persona, channel: options.channel, thread });
+    await writeConfigAtomic(configPath, doc);
+    return { persona: options.persona, channel: options.channel, thread };
+  }
+
   // Check for duplicate binding.
   const existing = doc.bindings.find(
-    (b) => b.persona === options.persona && b.channel === options.channel,
+    (b) => b.persona === options.persona && b.channel === options.channel && b.thread === undefined,
   );
   if (existing) {
     throw new Error(
@@ -73,8 +100,11 @@ export async function bind(options: BindOptions): Promise<BindResult> {
     );
   }
 
-  // Determine if this is the first binding for this channel (make it default).
-  const isDefault = !doc.bindings.some((b) => b.channel === options.channel);
+  // Determine if this is the first channel-level binding for this channel
+  // (make it default). Thread-scoped bindings do not count.
+  const isDefault = !doc.bindings.some(
+    (b) => b.channel === options.channel && b.thread === undefined,
+  );
 
   doc.bindings.push({
     persona: options.persona,
@@ -94,7 +124,11 @@ export async function bind(options: BindOptions): Promise<BindResult> {
 export async function bindCommand(options: BindOptions): Promise<void> {
   try {
     const result = await bind(options);
-    console.log(`Bound persona "${result.persona}" to channel "${result.channel}".`);
+    console.log(
+      result.thread !== undefined
+        ? `Bound persona "${result.persona}" to thread "${result.thread}" on channel "${result.channel}". Restart talond to apply.`
+        : `Bound persona "${result.persona}" to channel "${result.channel}".`,
+    );
   } catch (error) {
     console.error(`Error: ${(error as Error).message}`);
     process.exit(1);

@@ -61,6 +61,10 @@ const DEFAULT_POLLING_TIMEOUT_SEC = 30;
 const INITIAL_BACKOFF_MS = 1_000;
 /** Maximum backoff after repeated poll errors, in milliseconds. */
 const MAX_BACKOFF_MS = 60_000;
+/** `/chatid` or `/chatid@botname`, alone in the message. */
+const CHAT_ID_COMMAND = /^\/chatid(?:@([A-Za-z0-9_]+))?\s*$/i;
+/** Upper bound on the group chats remembered for the once-per-chat warning. */
+const MAX_WARNED_GROUP_CHATS = 1_000;
 /** Timeout for the getMe identity resolution call, in milliseconds. */
 const GET_ME_TIMEOUT_MS = 10_000;
 
@@ -112,6 +116,14 @@ export class TelegramConnector implements ChannelConnector {
   private pollLoopPromise?: Promise<void>;
 
   private readonly imageSettings: ImageSelectionSettings;
+  /**
+   * Group chats already warned about while `allowGroupChats` is off. The drop
+   * itself is routine, but a group that is silently ignored looks exactly
+   * like Telegram not delivering, so each chat is reported once per process.
+   */
+  private readonly warnedGroupChats = new Set<string>();
+  /** Threads whose typing indicator Telegram already refused once. */
+  private readonly warnedTypingThreads = new Set<string>();
 
   constructor(
     private readonly config: TelegramConfig,
@@ -156,6 +168,17 @@ export class TelegramConnector implements ChannelConnector {
     this._botUserId = undefined; // Clear stale value from previous start cycle.
     this.abortController = new AbortController();
     this.logger.info({ channelName: this.name }, 'telegram connector starting');
+
+    if (
+      this.config.allowGroupChats === true &&
+      this.config.requireMention === false &&
+      (this.config.allowedChatIds === undefined || this.config.allowedChatIds.length === 0)
+    ) {
+      this.logger.warn(
+        { channelName: this.name },
+        'telegram requireMention is false without allowedChatIds: the bot answers every message in every group it is added to',
+      );
+    }
 
     // Resolve bot identity so we can filter our own messages.
     try {
@@ -305,7 +328,9 @@ export class TelegramConnector implements ChannelConnector {
    * rather than failing the delivery.
    */
   private replyMessageId(output: AgentOutput, chatId: string): number | undefined {
-    const mode = resolveReplyToTriggerMode(this.config.replyToTrigger);
+    const mode = resolveReplyToTriggerMode(
+      this.config.chats?.[chatId]?.replyToTrigger ?? this.config.replyToTrigger,
+    );
     if (!shouldSendAsReply(output.replyTo, mode, isTelegramGroupChatId(chatId))) {
       return undefined;
     }
@@ -390,7 +415,7 @@ export class TelegramConnector implements ChannelConnector {
   async sendTyping(externalThreadId: string): Promise<void> {
     const { chatId, topicId } = parseTelegramThreadId(externalThreadId);
     try {
-      await fetch(this.apiUrl('sendChatAction'), {
+      const response = await fetch(this.apiUrl('sendChatAction'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -399,8 +424,33 @@ export class TelegramConnector implements ChannelConnector {
           ...(topicId !== undefined ? { message_thread_id: topicId } : {}),
         }),
       });
+      // The indicator is best effort, but a refusal must not be invisible: a
+      // rejected action looks to the user exactly like a bot that is not
+      // working. Report it once per thread; repeats stay at debug.
+      const data = (await response.json()) as TelegramBooleanResult;
+      if (data.ok !== true) {
+        const details = {
+          channelName: this.name,
+          chatId,
+          ...(topicId !== undefined ? { topicId } : {}),
+          errorCode: data.error_code ?? response.status,
+          description: data.description ?? 'unknown error',
+        };
+        if (
+          !this.warnedTypingThreads.has(externalThreadId) &&
+          this.warnedTypingThreads.size < MAX_WARNED_GROUP_CHATS
+        ) {
+          this.warnedTypingThreads.add(externalThreadId);
+          this.logger.warn(
+            details,
+            'telegram refused the typing indicator (reported once per thread)',
+          );
+        } else {
+          this.logger.debug(details, 'telegram refused the typing indicator');
+        }
+      }
     } catch {
-      // Non-critical — swallow errors silently.
+      // Non-critical — network or parse failures are swallowed.
     }
   }
 
@@ -503,6 +553,30 @@ export class TelegramConnector implements ChannelConnector {
    * `telegram-media.ts` for the selection/download contract.
    */
   private async handleUpdate(update: TelegramUpdate): Promise<void> {
+    // One line per delivered update, before any filter, so "Telegram never
+    // sent it" and "the connector dropped it" can be told apart. Identifiers
+    // only — never message text.
+    const updateChat = update.message?.chat ?? update.message_reaction?.chat;
+    this.logger.debug(
+      {
+        channelName: this.name,
+        updateId: update.update_id,
+        kind:
+          update.message_reaction !== undefined
+            ? 'message_reaction'
+            : update.message !== undefined
+              ? 'message'
+              : 'other',
+        ...(updateChat !== undefined
+          ? { chatId: String(updateChat.id), chatType: updateChat.type }
+          : {}),
+        ...(update.message?.is_topic_message === true
+          ? { topicId: update.message.message_thread_id }
+          : {}),
+      },
+      'telegram update received',
+    );
+
     if (update.message_reaction !== undefined) {
       await this.handleReactionUpdate(update, update.message_reaction);
       return;
@@ -514,6 +588,13 @@ export class TelegramConnector implements ChannelConnector {
         { channelName: this.name, updateId: update.update_id },
         'telegram update has no message, skipping',
       );
+      return;
+    }
+
+    // The /chatid setup command is answered by the connector itself and never
+    // reaches the agent. It runs before the group gates on purpose: its job
+    // is to reveal the IDs needed to configure a chat that is not allowed yet.
+    if (await this.handleChatIdCommand(message)) {
       return;
     }
 
@@ -545,10 +626,21 @@ export class TelegramConnector implements ChannelConnector {
 
     // Drop group messages unless explicitly enabled.
     if (isGroup && !this.config.allowGroupChats) {
-      this.logger.debug(
-        { channelName: this.name, chatId, chatType: message.chat.type },
-        'telegram group message received but allowGroupChats is not enabled, dropping',
-      );
+      if (
+        !this.warnedGroupChats.has(chatId) &&
+        this.warnedGroupChats.size < MAX_WARNED_GROUP_CHATS
+      ) {
+        this.warnedGroupChats.add(chatId);
+        this.logger.warn(
+          { channelName: this.name, chatId, chatType: message.chat.type },
+          'telegram group chat is ignored because allowGroupChats is not enabled; set allowGroupChats: true on this channel to answer in groups (reported once per chat)',
+        );
+      } else {
+        this.logger.debug(
+          { channelName: this.name, chatId, chatType: message.chat.type },
+          'telegram group message received but allowGroupChats is not enabled, dropping',
+        );
+      }
       return;
     }
 
@@ -599,6 +691,12 @@ export class TelegramConnector implements ChannelConnector {
       // Strip the matched prefix before forwarding.
       let result = this.extractGroupContent(sourceText ?? '', entities ?? []);
       if (result === null && replyTo?.fromSelf === true) {
+        result = sourceText ?? '';
+      }
+      // requireMention: false — every message in an allowed group addresses
+      // the bot. A mention or trigger word that IS present was still
+      // stripped above.
+      if (result === null && !this.requiresMention(chatId)) {
         result = sourceText ?? '';
       }
       if (result === null) {
@@ -711,6 +809,95 @@ export class TelegramConnector implements ChannelConnector {
       fromSelf: repliedFromId !== undefined && repliedFromId === this._botUserId,
       ...(typeof quoted === 'string' && quoted !== '' ? { text: quoted } : {}),
     };
+  }
+
+  /**
+   * Whether a group message in this chat must address the bot. The per-chat
+   * setting wins over the connector-wide one; the default is true.
+   */
+  private requiresMention(chatId: string): boolean {
+    return (this.config.chats?.[chatId]?.requireMention ?? this.config.requireMention) !== false;
+  }
+
+  /**
+   * Answers the `/chatid` setup command with the chat's ID, the topic ID when
+   * the command was sent inside a topic, and the Talon thread key built from
+   * them — the values `allowedChatIds`, `chats` and a per-topic binding need.
+   *
+   * Authorization: when `allowedChatIds` is set, the SENDER must be listed in
+   * it (a private chat's ID is the user's own ID, so the owner who can
+   * already talk to the bot directly is recognised in any group), or the chat
+   * itself must be. Without `allowedChatIds` the bot is open and anyone may
+   * ask. A command addressed to another bot (`/chatid@other`) is ignored.
+   *
+   * @returns true when the message was the command and was consumed —
+   *          including when the sender was not authorized, so an
+   *          unauthorized `/chatid` is never forwarded to the agent.
+   */
+  private async handleChatIdCommand(message: TelegramMessage): Promise<boolean> {
+    const match = CHAT_ID_COMMAND.exec(message.text ?? '');
+    if (match === null) {
+      return false;
+    }
+    const addressedTo = match[1];
+    if (
+      addressedTo !== undefined &&
+      addressedTo.toLowerCase() !== this._botUsername?.toLowerCase()
+    ) {
+      return false;
+    }
+    if (message.from?.is_bot === true) {
+      return true;
+    }
+
+    const chatId = String(message.chat.id);
+    const senderId = message.from ? String(message.from.id) : undefined;
+    const allowed = this.config.allowedChatIds;
+    const authorized =
+      allowed === undefined ||
+      allowed.length === 0 ||
+      allowed.includes(chatId) ||
+      (senderId !== undefined && allowed.includes(senderId));
+    if (!authorized) {
+      this.logger.warn(
+        { channelName: this.name, chatId, senderId },
+        'telegram /chatid from a sender not in allowedChatIds, ignoring',
+      );
+      return true;
+    }
+
+    const topicId =
+      message.is_topic_message === true && typeof message.message_thread_id === 'number'
+        ? message.message_thread_id
+        : undefined;
+    const lines = [`Chat ID: ${chatId}`];
+    if (topicId !== undefined) {
+      lines.push(`Topic ID: ${topicId}`);
+    }
+    lines.push(`Talon thread: ${telegramThreadIdForMessage(message)}`);
+
+    try {
+      // Plain text on purpose: no parse_mode, so nothing needs escaping.
+      await fetch(this.apiUrl('sendMessage'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: chatId,
+          text: lines.join('\n'),
+          ...(topicId !== undefined ? { message_thread_id: topicId } : {}),
+        }),
+      });
+    } catch (sendErr) {
+      this.logger.warn(
+        { channelName: this.name, chatId, err: sendErr },
+        'telegram /chatid reply could not be sent',
+      );
+    }
+    this.logger.info(
+      { channelName: this.name, chatId, ...(topicId !== undefined ? { topicId } : {}) },
+      'telegram /chatid answered',
+    );
+    return true;
   }
 
   /** Whether user reactions are forwarded (`inboundReactions`, default true). */

@@ -46,6 +46,7 @@ import { setDefaultProviderCommand } from './commands/set-default-provider.js';
 import { testProviderCommand } from './commands/test-provider.js';
 import { listThreadsCommand } from './commands/list-threads.js';
 import { resetProviderAffinityCommand } from './commands/reset-provider-affinity.js';
+import { moveContextCommand } from './commands/move-context.js';
 import { whatsappAuthCommand } from './commands/whatsapp-auth.js';
 import { setCapabilitiesCommand } from './commands/set-capabilities.js';
 import { a2aCancelCommand, a2aListCommand, a2aSendCommand } from './commands/a2a.js';
@@ -375,22 +376,37 @@ program
 
 program
   .command('bind')
-  .description('Bind a persona to a channel')
+  .description('Bind a persona to a channel, or to one conversation on it with --thread')
   .requiredOption('--persona <name>', 'Persona name')
   .requiredOption('--channel <name>', 'Channel name')
+  .option(
+    '--thread <id>',
+    'Bind only this conversation, e.g. a Telegram forum topic "-1001234567890:42" (send /chatid in the topic to get it)',
+  )
   .option('--config <path>', 'Path to talond.yaml', DEFAULT_CONFIG_PATH)
-  .action(async (opts: { persona: string; channel: string; config: string }) => {
-    await bindCommand({ persona: opts.persona, channel: opts.channel, configPath: opts.config });
+  .action(async (opts: { persona: string; channel: string; thread?: string; config: string }) => {
+    await bindCommand({
+      persona: opts.persona,
+      channel: opts.channel,
+      ...(opts.thread !== undefined ? { thread: opts.thread } : {}),
+      configPath: opts.config,
+    });
   });
 
 program
   .command('unbind')
-  .description('Remove a persona-channel binding')
+  .description('Remove a persona-channel binding, or one conversation binding with --thread')
   .requiredOption('--persona <name>', 'Persona name')
   .requiredOption('--channel <name>', 'Channel name')
+  .option('--thread <id>', 'Remove the binding of this one conversation only')
   .option('--config <path>', 'Path to talond.yaml', DEFAULT_CONFIG_PATH)
-  .action(async (opts: { persona: string; channel: string; config: string }) => {
-    await unbindCommand({ persona: opts.persona, channel: opts.channel, configPath: opts.config });
+  .action(async (opts: { persona: string; channel: string; thread?: string; config: string }) => {
+    await unbindCommand({
+      persona: opts.persona,
+      channel: opts.channel,
+      ...(opts.thread !== undefined ? { thread: opts.thread } : {}),
+      configPath: opts.config,
+    });
   });
 
 program
@@ -835,6 +851,52 @@ program
       configPath: opts.config,
     });
   });
+
+program
+  .command('move-context')
+  .description(
+    'Move (or with --copy, copy) memory and message history from one conversation to another, e.g. from a main chat into a Telegram topic',
+  )
+  .requiredOption('--channel <name>', 'Channel name of the source conversation')
+  .requiredOption(
+    '--from <id>',
+    'Source thread external ID. Use `talonctl list-threads --channel <name>` to discover values.',
+  )
+  .requiredOption(
+    '--to <id>',
+    'Target thread external ID, e.g. a Telegram topic "-1001234567890:42" (send /chatid in the topic)',
+  )
+  .option('--to-channel <name>', 'Channel of the target conversation, when it differs')
+  .option('--copy', 'Leave the source conversation unchanged instead of emptying it')
+  .option('--memory-only', 'Carry memory items and notebook files only, not the message history')
+  .option('--dry-run', 'Show what would be moved without changing anything')
+  .option('--yes', 'Bypass the confirmation prompt')
+  .option('--config <path>', 'Path to talond.yaml', DEFAULT_CONFIG_PATH)
+  .action(
+    async (opts: {
+      channel: string;
+      from: string;
+      to: string;
+      toChannel?: string;
+      copy?: boolean;
+      memoryOnly?: boolean;
+      dryRun?: boolean;
+      yes?: boolean;
+      config: string;
+    }) => {
+      await moveContextCommand({
+        channel: opts.channel,
+        from: opts.from,
+        to: opts.to,
+        ...(opts.toChannel !== undefined ? { toChannel: opts.toChannel } : {}),
+        copy: opts.copy === true,
+        memoryOnly: opts.memoryOnly === true,
+        dryRun: opts.dryRun === true,
+        yes: opts.yes === true,
+        configPath: opts.config,
+      });
+    },
+  );
 
 program
   .command('reset-provider-affinity')

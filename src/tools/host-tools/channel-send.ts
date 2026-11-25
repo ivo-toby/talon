@@ -342,7 +342,20 @@ export class ChannelSendHandler {
     this.deps.logger.info(
       voiceObservation
         ? voiceDiagnosticFields(voiceObservation, { event: 'message_sent' })
-        : { requestId, channelId, threadId: context.threadId },
+        : {
+            requestId,
+            channelId,
+            threadId: context.threadId,
+            // Where the message went and why. An agent-supplied recipient
+            // overrides a schedule's origin, so a reminder that lands in the
+            // wrong chat or topic is explained by this line.
+            recipient: externalThreadId,
+            recipientSource: explicitChatId
+              ? 'externalChatId argument'
+              : scheduleOriginId
+                ? 'schedule origin'
+                : 'current thread',
+          },
       'channel.send: message sent successfully',
     );
     this.persistOutboundMessage({

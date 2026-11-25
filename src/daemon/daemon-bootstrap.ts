@@ -1146,6 +1146,7 @@ export async function bootstrap(
     personaRepo: repos.persona,
     messagePipeline,
     logger,
+    threadRepo: repos.thread,
   });
   if (voiceSessionService && voiceChannelId) {
     const voiceConnector = registerVoiceConnector({

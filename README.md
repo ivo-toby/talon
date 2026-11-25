@@ -697,6 +697,58 @@ To acknowledge without sending text, the agent reacts and then makes its whole r
 
 > **Upgrading:** topic messages previously shared the chat's single thread and were answered in the General topic. After this change each topic starts a fresh conversation; the old shared thread keeps serving messages outside topics.
 
+#### Telegram Topic Workspaces
+
+One forum group can serve as a workspace of separate conversations: a "Groceries" topic, a "Calendar" topic, each with its own history and optionally its own persona. The full walkthrough is in [docs/guides/telegram-topics.mdx](docs/guides/telegram-topics.mdx); the short version:
+
+1. Create a group, turn on **Topics**, add the bot and make it an **administrator**.
+2. Send `/chatid@YourBotName` in the group. The bot answers with the chat ID (and, inside a topic, the topic ID and the `Talon thread` key). The command is answered by the connector, never reaches the agent, and works before the group is configured. With `allowedChatIds` set, only a listed sender gets an answer.
+3. Configure the group:
+
+```yaml
+channels:
+  - name: my-telegram
+    type: telegram
+    config:
+      botToken: ${TELEGRAM_BOT_TOKEN}
+      allowGroupChats: true
+      allowedChatIds:
+        - '123456789' # your private chat
+        - '-1004452318413' # the forum group
+      chats:
+        '-1004452318413':
+          requireMention: false # answer every message, no @mention
+          replyToTrigger: never # plain answers, no quoting
+```
+
+`chats` holds per-chat overrides of `requireMention` and `replyToTrigger`, so a topic workspace and an ordinary multi-person group can behave differently on the same bot. Listing a chat there does not admit it; `allowGroupChats` and `allowedChatIds` still decide that.
+
+4. Optionally give a topic its own persona with a thread-scoped binding:
+
+```bash
+npx talonctl bind --persona groceries --channel my-telegram --thread '-1004452318413:42'
+```
+
+```yaml
+bindings:
+  - persona: assistant
+    channel: my-telegram
+    isDefault: true
+  - persona: groceries
+    channel: my-telegram
+    thread: '-1004452318413:42'
+```
+
+A thread-scoped binding wins over the channel default. Unbound topics and General use the default persona. All personas speak through the same bot account. Bindings are applied at startup; removing the entry returns the topic to the default.
+
+To bring an existing conversation into a topic, so the agent there does not start from nothing, use [`talonctl move-context`](#thread-and-provider-affinity):
+
+```bash
+npx talonctl move-context --channel my-telegram --from 123456789 --to '-1004452318413:42'
+```
+
+A reminder or schedule created inside a topic is delivered into that topic, unless the scheduled run passes an explicit `externalChatId`. The `channel.send: message sent successfully` log line names the `recipient` and the `recipientSource` (`schedule origin`, `externalChatId argument` or `current thread`).
+
 ### Telegram
 
 Long-polling connector using the Telegram Bot API.
@@ -711,6 +763,10 @@ channels:
       pollingTimeoutSec: 30
       allowedChatIds:
         - 123456789
+      allowGroupChats: false # default: false — answer in group chats
+      requireMention: true # default: true — see "Group chats" below
+      # chats: per-chat overrides of requireMention / replyToTrigger,
+      #        see "Telegram Topic Workspaces"
       replyToTrigger: groups # never | groups (default) | always
       inboundReactions: true # default: true
 ```
@@ -719,7 +775,10 @@ channels:
 - **Outbound**: `sendMessage` with MarkdownV2 parse mode; native replies via `reply_parameters`; reactions via `setMessageReaction`
 - **Idempotency key**: `update_id`
 - **Thread mapping**: `chat_id`, or `chat_id:message_thread_id` for a message inside a topic
-- **Group chats**: with `allowGroupChats: true` the bot answers an @mention, a trigger word, or a native reply to one of its own messages
+- **Group chats**: off by default. With `allowGroupChats: true` the bot answers an @mention, a trigger word, or a native reply to one of its own messages. Add `requireMention: false` to answer every message in the group, which suits a forum group where each topic is a conversation with the bot. Three things to know:
+  - Telegram only delivers every group message when the bot is a group administrator or has Group Privacy turned off in BotFather.
+  - Set `allowedChatIds` alongside it. Without an allow-list the bot answers everything in any group it is added to, and logs a warning at startup.
+  - Every member of an allowed group can talk to the bot, and each message is one agent run.
 - **Reactions**: Telegram delivers user reactions in private chats and in groups where the bot is an administrator. See [Replies, Threads and Reactions](#replies-threads-and-reactions)
 
 ### Slack
@@ -2305,6 +2364,7 @@ npx talonctl config-show --show-secrets
 | ------------------------- | ------------------------------------------------------------------------------ |
 | `list-threads`            | List persisted threads for a channel, including external IDs and provider info |
 | `reset-provider-affinity` | Reset provider affinity for one channel thread                                 |
+| `move-context`            | Move or copy memory and message history from one conversation to another       |
 
 **`list-threads`** options:
 
@@ -2337,6 +2397,37 @@ npx talonctl list-threads --channel my-telegram
 npx talonctl reset-provider-affinity --channel my-telegram --external-id 123456789
 npx talonctl reset-provider-affinity --channel my-telegram --external-id 123456789 --yes
 ```
+
+**`move-context`** options:
+
+| Option                | Description                                                                 | Default       |
+| --------------------- | --------------------------------------------------------------------------- | ------------- |
+| `--channel <name>`    | Channel of the source conversation (required)                               | —             |
+| `--from <id>`         | Source thread external ID (required). Use `list-threads` to discover values | —             |
+| `--to <id>`           | Target thread external ID (required), e.g. a Telegram topic `<chat>:<topic>` | —             |
+| `--to-channel <name>` | Channel of the target conversation, when it differs                         | `--channel`   |
+| `--copy`              | Leave the source unchanged instead of emptying it                           | off (move)    |
+| `--memory-only`       | Carry memory items and notebook files only, not the message history         | off           |
+| `--dry-run`           | Show what would be moved without changing anything                          | off           |
+| `--yes`               | Bypass the confirmation prompt                                              | off           |
+| `--config <path>`     | Path to talond.yaml                                                         | `talond.yaml` |
+
+`move-context` carries what makes a conversation remember — memory items (facts, notes, summaries, observations), message history, and the notebook files in the thread's `memory/` directory — to another conversation. The usual case is promoting a subject from a main chat into its own Telegram topic:
+
+```bash
+# Preview, then move the main chat's context into a topic
+npx talonctl move-context --channel my-telegram --from 123456789 --to '-1004452318413:42' --dry-run
+npx talonctl move-context --channel my-telegram --from 123456789 --to '-1004452318413:42'
+
+# Keep the main chat as it is and give the topic a copy
+npx talonctl move-context --channel my-telegram --from 123456789 --to '-1004452318413:42' --copy
+```
+
+- **Move** empties the source: it starts fresh afterwards. **Copy** leaves the source unchanged, and running the same copy twice adds nothing.
+- The target is created when the conversation has no history yet. A target that already has history is merged by time; the preview warns about it.
+- The daemon can keep running. Both affected conversations get a session reset, so the next message starts a fresh session that reads the migrated context.
+- It refuses while either conversation has queued or running work.
+- Not carried over: Images and Findings (they belong to the conversation they were sent in, so in move mode a message with images stays in the source), the reply/reaction message ledger, runs, schedules and bindings.
 
 ### Provider Management
 

@@ -17,29 +17,42 @@ export interface BindingRow {
   thread_id: string | null;
   persona_id: string;
   is_default: number;
+  /**
+   * Who owns the row: `config` for a thread-scoped binding declared in the
+   * YAML `bindings` list (reconciliation may update and remove it), `runtime`
+   * for everything else.
+   */
+  source: BindingSource;
   created_at: number;
   updated_at: number;
 }
 
-/** Fields accepted when inserting a new binding. */
-export type InsertBindingInput = Omit<BindingRow, 'created_at' | 'updated_at'>;
+/** Owner of a binding row. */
+export type BindingSource = 'runtime' | 'config';
+
+/** Fields accepted when inserting a new binding. `source` defaults to `runtime`. */
+export type InsertBindingInput = Omit<BindingRow, 'created_at' | 'updated_at' | 'source'> & {
+  source?: BindingSource;
+};
 
 /** Repository for reading and writing binding records. */
 export class BindingRepository extends BaseRepository {
   private readonly insertStmt: Database.Statement;
   private readonly findByChannelAndThreadStmt: Database.Statement;
+  private readonly findThreadScopedForChannelStmt: Database.Statement;
   private readonly findDefaultForChannelStmt: Database.Statement;
   private readonly findByPersonaStmt: Database.Statement;
   private readonly deleteStmt: Database.Statement;
   private readonly deleteDefaultForChannelStmt: Database.Statement;
   private readonly updatePersonaStmt: Database.Statement;
+  private readonly claimForConfigStmt: Database.Statement;
 
   constructor(db: Database.Database) {
     super(db);
 
     this.insertStmt = db.prepare(`
-      INSERT INTO bindings (id, channel_id, thread_id, persona_id, is_default, created_at, updated_at)
-      VALUES (@id, @channel_id, @thread_id, @persona_id, @is_default, @created_at, @updated_at)
+      INSERT INTO bindings (id, channel_id, thread_id, persona_id, is_default, source, created_at, updated_at)
+      VALUES (@id, @channel_id, @thread_id, @persona_id, @is_default, @source, @created_at, @updated_at)
     `);
 
     this.findByChannelAndThreadStmt = db.prepare(`
@@ -54,6 +67,10 @@ export class BindingRepository extends BaseRepository {
       SELECT * FROM bindings WHERE persona_id = ?
     `);
 
+    this.findThreadScopedForChannelStmt = db.prepare(`
+      SELECT * FROM bindings WHERE channel_id = ? AND thread_id IS NOT NULL
+    `);
+
     this.deleteStmt = db.prepare(`DELETE FROM bindings WHERE id = ?`);
 
     this.deleteDefaultForChannelStmt = db.prepare(
@@ -63,13 +80,22 @@ export class BindingRepository extends BaseRepository {
     this.updatePersonaStmt = db.prepare(
       `UPDATE bindings SET persona_id = ?, updated_at = ? WHERE id = ?`,
     );
+
+    this.claimForConfigStmt = db.prepare(
+      `UPDATE bindings SET persona_id = ?, source = 'config', updated_at = ? WHERE id = ?`,
+    );
   }
 
   /** Inserts a new binding. */
   insert(input: InsertBindingInput): Result<BindingRow, DbError> {
     try {
       const ts = this.now();
-      const row: BindingRow = { ...input, created_at: ts, updated_at: ts };
+      const row: BindingRow = {
+        ...input,
+        source: input.source ?? 'runtime',
+        created_at: ts,
+        updated_at: ts,
+      };
       this.insertStmt.run(row);
       return ok(row);
     } catch (cause) {
@@ -84,6 +110,38 @@ export class BindingRepository extends BaseRepository {
       return ok(row ?? null);
     } catch (cause) {
       return err(new DbError(`Failed to find binding by channel+thread: ${String(cause)}`, cause instanceof Error ? cause : undefined));
+    }
+  }
+
+  /** Returns every thread-scoped binding of a channel. */
+  findThreadScopedForChannel(channelId: string): Result<BindingRow[], DbError> {
+    try {
+      return ok(this.findThreadScopedForChannelStmt.all(channelId) as BindingRow[]);
+    } catch (cause) {
+      return err(
+        new DbError(
+          `Failed to find thread-scoped bindings for channel: ${String(cause)}`,
+          cause instanceof Error ? cause : undefined,
+        ),
+      );
+    }
+  }
+
+  /**
+   * Points a binding at a persona and marks it as owned by the YAML config,
+   * so a later reconciliation may remove it.
+   */
+  claimForConfig(bindingId: string, personaId: string): Result<void, DbError> {
+    try {
+      this.claimForConfigStmt.run(personaId, this.now(), bindingId);
+      return ok(undefined);
+    } catch (cause) {
+      return err(
+        new DbError(
+          `Failed to claim binding for config: ${String(cause)}`,
+          cause instanceof Error ? cause : undefined,
+        ),
+      );
     }
   }
 

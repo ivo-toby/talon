@@ -11,6 +11,17 @@
 // ---------------------------------------------------------------------------
 
 /**
+ * Settings that can be overridden for one chat (`TelegramConfig.chats`).
+ * An absent field falls back to the connector-wide setting.
+ */
+export interface TelegramChatSettings {
+  /** Per-chat override of {@link TelegramConfig.requireMention}. */
+  requireMention?: boolean;
+  /** Per-chat override of {@link TelegramConfig.replyToTrigger}. */
+  replyToTrigger?: 'never' | 'groups' | 'always';
+}
+
+/**
  * Configuration for a TelegramConnector instance.
  */
 export interface TelegramConfig {
@@ -28,11 +39,24 @@ export interface TelegramConfig {
   allowedChatIds?: string[];
   /**
    * Allow messages from group and supergroup chats.
-   * In group chats the bot only responds when @mentioned by username or when
-   * a message starts with one of the configured triggerWords.
+   * In group chats the bot only responds when @mentioned by username, when
+   * a message starts with one of the configured triggerWords, or when a
+   * message replies to one of the bot's own messages — unless
+   * `requireMention` is false.
    * Defaults to false.
    */
   allowGroupChats?: boolean;
+  /**
+   * Whether a group message must address the bot (an @mention, a trigger
+   * word, or a reply to the bot) to be answered. Defaults to true. Set to
+   * false to answer every message in the allowed group chats, e.g. a forum
+   * group where each topic is a conversation with the bot. Telegram only
+   * delivers every group message when the bot is a group administrator or
+   * has Group Privacy turned off. Combine with `allowedChatIds`: without it
+   * the bot answers everything in any group it is added to. Direct chats are
+   * not affected.
+   */
+  requireMention?: boolean;
   /**
    * Optional trigger words. A message must start with one of these (case-
    * insensitive) for the bot to respond. The matched prefix is stripped before
@@ -51,6 +75,15 @@ export interface TelegramConfig {
    * chats and in groups where the bot is an administrator.
    */
   inboundReactions?: boolean;
+  /**
+   * Per-chat overrides, keyed by chat ID (as a string). Lets one bot treat
+   * chats differently: a forum group used as a topic workspace can answer
+   * every message without quoting (`requireMention: false`,
+   * `replyToTrigger: never`) while an ordinary multi-person group keeps the
+   * defaults. A chat listed here is still subject to `allowGroupChats` and
+   * `allowedChatIds`; listing it does not admit it.
+   */
+  chats?: Record<string, TelegramChatSettings>;
 }
 
 // ---------------------------------------------------------------------------
