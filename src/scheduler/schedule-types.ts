@@ -5,6 +5,9 @@
  * schedule types so consumers only need to import from this module.
  */
 
+import type { Result } from 'neverthrow';
+import type { ScriptError, ScriptRunReport } from '../scripts/types.js';
+
 export type { ScheduleType, ScheduleRow } from '../core/database/repositories/schedule-repository.js';
 
 // ---------------------------------------------------------------------------
@@ -19,6 +22,21 @@ export interface SchedulePayload {
   prompt?: string;
   /** Persona-relative prompt file alias from `prompts/*.md`. */
   promptFile?: string;
+  /** Name of an approved script. Excludes `prompt` and `promptFile`. */
+  script?: string;
+}
+
+/** What the scheduler needs from the script service. */
+export interface ScriptScheduleRunner {
+  runScheduled(input: {
+    personaId: string;
+    threadId: string;
+    scriptName: string;
+    scheduleId: string;
+  }): Promise<Result<ScriptRunReport | 'skipped', ScriptError>>;
+  notifyFailure(input: { threadId: string; scriptName: string; errorCode: string }): Promise<void>;
+  /** True if the last finished scheduled run of this script was a failure. */
+  lastScheduledRunFailed(personaId: string, scriptName: string): boolean;
 }
 
 // ---------------------------------------------------------------------------
