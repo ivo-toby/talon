@@ -11,7 +11,7 @@ import { ScriptRepository } from '../../../src/core/database/repositories/script
 import { ScriptsConfigSchema } from '../../../src/core/config/config-schema.js';
 import type { InboundEvent } from '../../../src/channels/channel-types.js';
 import { createApprovalService } from '../../../src/scripts/approval.js';
-import { createScriptService } from '../../../src/scripts/service.js';
+import { createScriptService, ScriptNotRunError } from '../../../src/scripts/service.js';
 import type { ScriptServiceDeps } from '../../../src/scripts/service.js';
 import { createScriptStore } from '../../../src/scripts/store.js';
 import type { ScriptFile } from '../../../src/scripts/store.js';
@@ -759,6 +759,79 @@ describe('runScheduled', () => {
     const r = await s.service.runScheduled(s.live);
     expect(r._unsafeUnwrapErr().scriptCode).toBe('SANDBOX');
     expect(s.service.lastScheduledRunFailed('p1', 'mail-intake')).toBe(true);
+  });
+});
+
+describe('failure streaks and the memory thread', () => {
+  /** What the scheduler does at one firing: read the state, run, notify on a new failure. */
+  async function firing(s: ReturnType<typeof setup>, live: typeof s.live): Promise<void> {
+    const failedBefore = s.service.lastScheduledRunFailed(live.personaId, live.scriptName);
+    const result = await s.service.runScheduled(live);
+    const failed = result.isErr() || (result.value !== 'skipped' && !result.value.ok);
+    if (failed && !failedBefore) {
+      const reason = result.isErr() ? (result.error as ScriptNotRunError).reason : undefined;
+      await s.service.notifyFailure({
+        threadId: live.threadId,
+        scriptName: live.scriptName,
+        errorCode: result.isErr() ? result.error.scriptCode : 'SCRIPT_FAILED',
+        ...(reason ? { reason } : {}),
+      });
+    }
+  }
+  const sched = { personaId: 'p1', threadId: 'sched', scriptName: 'mail-intake', scheduleId: 's1' };
+
+  it('sends one notice for five firings with no approved version', async () => {
+    const s = setup();
+    for (let i = 0; i < 5; i++) await firing(s, sched);
+    expect(s.send).toHaveBeenCalledTimes(1);
+    expect(s.send).toHaveBeenCalledWith(
+      'tg',
+      'sched-chat',
+      'Script "mail-intake" did not run: it has no approved version.',
+    );
+    expect(s.service.lastScheduledRunFailed('p1', 'mail-intake')).toBe(true);
+    expect(s.service.lastScheduledRunFailed('p1', 'other')).toBe(false);
+  });
+
+  it('clears the flag on a success, so the next failure is told again', async () => {
+    const s = setup();
+    await firing(s, sched);
+    await s.toApproved();
+    s.send.mockClear();
+    play(s.backend, SCRIPT_CALLS, { ok: true, result: { sent: 1 } });
+    await firing(s, sched);
+    expect(s.service.lastScheduledRunFailed('p1', 'mail-intake')).toBe(false);
+    expect(s.send).not.toHaveBeenCalled();
+    play(s.backend, [], { ok: false, message: 'boom' });
+    await firing(s, sched);
+    await firing(s, sched);
+    expect(s.send).toHaveBeenCalledTimes(1);
+    expect(s.send.mock.calls[0][2]).toContain('failed (SCRIPT_FAILED)');
+  });
+
+  it('names a change of the files after the approval', async () => {
+    const s = setup();
+    const { version } = await s.toApproved();
+    s.send.mockClear();
+    writeFileSync(join(version.dir, 'script.ts'), '// tampered\n');
+    await firing(s, sched);
+    await firing(s, sched);
+    expect(s.send).toHaveBeenCalledTimes(1);
+    expect(s.send.mock.calls[0][2]).toBe(
+      'Script "mail-intake" did not run: its files changed after the approval.',
+    );
+  });
+
+  it('gives the dry run and the scheduled run the same memory thread', async () => {
+    const s = setup();
+    await s.toApproved();
+    const dryThread = (s.createProvider.mock.calls[0][0] as { threadId: string }).threadId;
+    play(s.backend, SCRIPT_CALLS, { ok: true, result: { sent: 1 } });
+    s.createProvider.mockClear();
+    await s.service.runScheduled(sched);
+    const liveThread = (s.createProvider.mock.calls[0][0] as { threadId: string }).threadId;
+    expect(dryThread).toBe('th1');
+    expect(liveThread).toBe(dryThread);
   });
 });
 

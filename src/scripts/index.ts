@@ -21,5 +21,5 @@ export type { RunDeps, UnitOutcome, DryRunOutcome } from './test-runner.js';
 export { buildApprovalSummary } from './summary.js';
 export { createApprovalService } from './approval.js';
 export type { ApprovalService } from './approval.js';
-export { createScriptService } from './service.js';
-export type { ScriptService, ScriptServiceDeps } from './service.js';
+export { createScriptService, ScriptNotRunError } from './service.js';
+export type { ScriptService, ScriptServiceDeps, ScriptNotRunReason } from './service.js';

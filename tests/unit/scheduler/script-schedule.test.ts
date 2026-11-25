@@ -7,6 +7,7 @@ import type { ScriptScheduleRunner } from '../../../src/scheduler/schedule-types
 import type { PersonaLoader } from '../../../src/personas/persona-loader.js';
 import type { QueueManager } from '../../../src/queue/queue-manager.js';
 import { ScriptError } from '../../../src/scripts/types.js';
+import { ScriptNotRunError } from '../../../src/scripts/service.js';
 import { createTestDb, seedDueSchedule, seedPersona, seedThread } from './helpers.js';
 
 const wait = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
@@ -175,6 +176,23 @@ describe('Scheduler script schedules', () => {
       scriptName: 'mail-intake',
       errorCode: 'TIMEOUT',
     });
+  });
+
+  it('passes the reason of a run that did not start', async () => {
+    runner.runScheduled.mockResolvedValue(err(new ScriptNotRunError('not-approved')));
+    await fire({ label: 'l', script: 'mail-intake' });
+    expect(runner.notifyFailure).toHaveBeenCalledWith({
+      threadId,
+      scriptName: 'mail-intake',
+      errorCode: 'SCRIPT_FAILED',
+      reason: 'not-approved',
+    });
+    runner.notifyFailure.mockClear();
+    runner.runScheduled.mockResolvedValue(err(new ScriptNotRunError('changed')));
+    await fire({ label: 'l', script: 'mail-intake' }, 'one_shot');
+    expect(runner.notifyFailure).toHaveBeenCalledWith(
+      expect.objectContaining({ errorCode: 'SCRIPT_FAILED', reason: 'changed' }),
+    );
   });
 
   it('notifies for a report with ok false, using its error code', async () => {

@@ -8,7 +8,10 @@
 import type { Result } from 'neverthrow';
 import type { ScriptError, ScriptRunReport } from '../scripts/types.js';
 
-export type { ScheduleType, ScheduleRow } from '../core/database/repositories/schedule-repository.js';
+export type {
+  ScheduleType,
+  ScheduleRow,
+} from '../core/database/repositories/schedule-repository.js';
 
 // ---------------------------------------------------------------------------
 // Schedule payload
@@ -34,8 +37,14 @@ export interface ScriptScheduleRunner {
     scriptName: string;
     scheduleId: string;
   }): Promise<Result<ScriptRunReport | 'skipped', ScriptError>>;
-  notifyFailure(input: { threadId: string; scriptName: string; errorCode: string }): Promise<void>;
-  /** True if the last finished scheduled run of this script was a failure. */
+  /** `reason` is set when the run did not start: its files changed, or no version is approved. */
+  notifyFailure(input: {
+    threadId: string;
+    scriptName: string;
+    errorCode: string;
+    reason?: 'changed' | 'not-approved';
+  }): Promise<void>;
+  /** True if the last scheduled run of this script failed or did not start. */
   lastScheduledRunFailed(personaId: string, scriptName: string): boolean;
 }
 

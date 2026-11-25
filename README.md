@@ -3221,12 +3221,14 @@ The manifest lists the tools of the script. A tool that is not in the approved m
 
 | Tool name | Class | Notes |
 | --------- | ----- | ----- |
-| `talon.memory_read`, `talon.memory_list` | read | Memory of the thread of the run |
+| `talon.memory_read`, `talon.memory_list` | read | Memory of the thread that saved the script |
 | `talon.memory_write`, `talon.memory_delete` | write | |
 | `talon.channel_list` | read | |
 | `talon.channel_send` | write | The channel must be in `channels` of the manifest |
 | `model.judge` | model | One model request with no tools. Only for a persona on an `openai-compatible` provider |
 | `<server>.<tool>` | read or write | A tool of an MCP server of the persona |
+
+The memory tools use the memory of the thread that saved the script, in the dry run and in each scheduled run.
 
 A persona capability check applies to each host tool call, the same as for an agent run. A tool that needs `requireApproval` is refused.
 
@@ -3262,7 +3264,7 @@ A schedule payload with a `script` field runs the approved version of that scrip
 { "label": "Mail intake", "script": "mail-intake" }
 ```
 
-A payload cannot contain `script` together with `prompt` or `promptFile`. One run per script is active at a time: if a run is still active at the next tick, Talon skips that tick. If a run fails after a success, Talon sends one message to the chat of the schedule. Talon does not send a second message until the script succeeds again.
+A payload cannot contain `script` together with `prompt` or `promptFile`. One run per script is active at a time: if a run is still active at the next tick, Talon skips that tick. If a run fails after a success, Talon sends one message to the chat of the schedule. Talon does not send a second message until the script succeeds again. A run that cannot start counts as a failure too: if the script has no approved version, or its files changed after the approval, the message says so.
 
 Each run, each executed write and each approval decision gets a row in `audit_log`. The audit rows do not contain tool input.
 

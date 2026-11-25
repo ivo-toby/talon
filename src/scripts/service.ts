@@ -104,12 +104,36 @@ export interface ScriptService {
     scriptName: string;
     scheduleId: string;
   }): Promise<Result<ScriptRunReport | 'skipped', ScriptError>>;
-  notifyFailure(input: { threadId: string; scriptName: string; errorCode: string }): Promise<void>;
+  notifyFailure(input: {
+    threadId: string;
+    scriptName: string;
+    errorCode: string;
+    reason?: ScriptNotRunReason;
+  }): Promise<void>;
   hasApproved(personaId: string, scriptName: string): boolean;
   /** True if the last finished scheduled run of this script was a failure. */
   lastScheduledRunFailed(personaId: string, scriptName: string): boolean;
   /** Marks runs that a crashed daemon left open as failed. Call one time at start. */
   recoverStaleRuns(): Result<number, ScriptError>;
+}
+
+/** Why a scheduled run did not start: the files changed, or no version is approved. */
+export type ScriptNotRunReason = 'changed' | 'not-approved';
+
+/** A `SCRIPT_FAILED` error of `runScheduled` for a run that did not start. */
+export class ScriptNotRunError extends ScriptError {
+  readonly reason: ScriptNotRunReason;
+
+  constructor(reason: ScriptNotRunReason, cause?: Error) {
+    super(
+      'SCRIPT_FAILED',
+      reason === 'changed'
+        ? 'the files changed after the approval'
+        : 'no approved version of this script',
+      cause,
+    );
+    this.reason = reason;
+  }
 }
 
 const MAX_REPORT_CHARS = 1_000_000;
@@ -153,6 +177,8 @@ export function createScriptService(deps: ScriptServiceDeps): ScriptService {
   const now = deps.now ?? ((): number => Date.now());
   const logger = deps.logger ?? createLogger({ level: 'info', pretty: false });
   const active = new Set<string>();
+  /** `personaId \0 scriptName` of scripts whose last scheduled run failed or did not start. */
+  const failedScripts = new Set<string>();
   /** Version ids with a `test` in flight. */
   const testing = new Set<string>();
 
@@ -547,8 +573,7 @@ export function createScriptService(deps: ScriptServiceDeps): ScriptService {
     scriptName: string;
     scheduleId: string;
   }): Promise<Result<ScriptRunReport | 'skipped', ScriptError>> {
-    const noApproved = (): ScriptError =>
-      new ScriptError('SCRIPT_FAILED', 'no approved version of this script');
+    const noApproved = (): ScriptError => new ScriptNotRunError('not-approved');
     const script = repo.findScript(input.personaId, input.scriptName);
     if (script.isErr()) return err(sandbox(script.error));
     if (!script.value) return err(noApproved());
@@ -635,14 +660,15 @@ export function createScriptService(deps: ScriptServiceDeps): ScriptService {
           runId,
           details: { script: input.scriptName, version: version.version },
         });
-        return err(verified.error);
+        return err(new ScriptNotRunError('changed', verified.error));
       }
 
       const manifest = version.manifest;
       const created = await deps.createProvider(
         {
           personaId: input.personaId,
-          threadId: input.threadId,
+          // The thread that saved the version, as in the dry run, so memory tools see the same memory.
+          threadId: version.threadId,
           scriptRunId: runId,
           scriptName: manifest.name,
           channels: manifest.channels,
@@ -736,19 +762,30 @@ export function createScriptService(deps: ScriptServiceDeps): ScriptService {
       }
     },
 
-    runScheduled: (input) => guard(() => runScheduledImpl(input)),
+    async runScheduled(input): Promise<Result<ScriptRunReport | 'skipped', ScriptError>> {
+      const result = await guard(() => runScheduledImpl(input));
+      const key = `${input.personaId}\0${input.scriptName}`;
+      if (result.isErr() || (result.value !== 'skipped' && !result.value.ok)) {
+        failedScripts.add(key);
+      } else if (result.value !== 'skipped') {
+        failedScripts.delete(key);
+      }
+      return result;
+    },
 
     async notifyFailure(input): Promise<void> {
       try {
         const code = KNOWN_CODES.has(input.errorCode) ? input.errorCode : 'SCRIPT_FAILED';
         const name = cleanName(input.scriptName);
+        const text =
+          input.reason === 'changed'
+            ? `Script "${name}" did not run: its files changed after the approval.`
+            : input.reason === 'not-approved'
+              ? `Script "${name}" did not run: it has no approved version.`
+              : `Script "${name}" failed (${code}). It stays scheduled. I will tell you again only if it fails after a success.`;
         const chat = deps.resolveChat(input.threadId);
         const sent = chat
-          ? await deps.send(
-              chat.channelName,
-              chat.externalThreadId,
-              `Script "${name}" failed (${code}). It stays scheduled. I will tell you again only if it fails after a success.`,
-            )
+          ? await deps.send(chat.channelName, chat.externalThreadId, text)
           : err(new ScriptError('TOOL_FAILED', 'the thread of the script has no chat'));
         if (sent.isErr()) {
           logger.error({ scriptCode: sent.error.scriptCode }, 'script failure notice not sent');
@@ -770,6 +807,8 @@ export function createScriptService(deps: ScriptServiceDeps): ScriptService {
     },
 
     lastScheduledRunFailed(personaId, scriptName): boolean {
+      // A run that did not start writes no row, so the database alone cannot tell.
+      if (failedScripts.has(`${personaId}\0${scriptName}`)) return true;
       try {
         const script = repo.findScript(personaId, scriptName);
         if (script.isErr() || !script.value) return false;

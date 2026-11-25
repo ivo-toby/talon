@@ -179,8 +179,7 @@ export class Scheduler {
       const schedulePayload = rawPayload as SchedulePayload & Record<string, unknown>;
       let promptFile =
         typeof schedulePayload.promptFile === 'string' ? schedulePayload.promptFile : undefined;
-      let content =
-        typeof schedulePayload.prompt === 'string' ? schedulePayload.prompt : '';
+      let content = typeof schedulePayload.prompt === 'string' ? schedulePayload.prompt : '';
 
       // Defensive: agents and humans sometimes invent `prompt: "file:NAME"`
       // as if it were a documented convention (it isn't). Without this
@@ -213,7 +212,10 @@ export class Scheduler {
       }
 
       if (promptFile) {
-        const promptResult = await this.personaLoader.resolveTaskPrompt(schedule.persona_id, promptFile);
+        const promptResult = await this.personaLoader.resolveTaskPrompt(
+          schedule.persona_id,
+          promptFile,
+        );
         if (promptResult.isErr()) {
           this.logger.error(
             {
@@ -337,9 +339,10 @@ export class Scheduler {
       return;
     }
 
-    const notify = (errorCode: string): void => {
+    const notify = (errorCode: string, reason?: 'changed' | 'not-approved'): void => {
       try {
-        runner.notifyFailure({ threadId, scriptName, errorCode }).catch((error: unknown) => {
+        const input = { threadId, scriptName, errorCode, ...(reason ? { reason } : {}) };
+        runner.notifyFailure(input).catch((error: unknown) => {
           this.logger.error({ ...logCtx, err: error }, 'scheduler: script failure notice failed');
         });
       } catch (error) {
@@ -358,13 +361,16 @@ export class Scheduler {
         })
         .then((result) => {
           let errorCode: string | undefined;
+          let reason: 'changed' | 'not-approved' | undefined;
           if (result.isErr()) {
             errorCode = result.error.scriptCode;
+            const given = (result.error as { reason?: unknown }).reason;
+            if (given === 'changed' || given === 'not-approved') reason = given;
           } else if (result.value !== 'skipped' && !result.value.ok) {
             errorCode = result.value.errorCode ?? 'SCRIPT_FAILED';
           }
           if (errorCode !== undefined && !failedBefore) {
-            notify(errorCode);
+            notify(errorCode, reason);
           }
         })
         .catch((error: unknown) => {
