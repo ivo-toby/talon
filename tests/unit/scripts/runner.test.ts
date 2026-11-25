@@ -278,4 +278,100 @@ describe('runScript', () => {
     const result = await runScript(broker as never, request());
     expect(result.isErr()).toBe(true);
   });
+
+  it.each([
+    ['rejects', () => Promise.reject(new Error('x'))],
+    [
+      'throws',
+      () => {
+        throw new Error('x');
+      },
+    ],
+  ])('revokes the lease when executeStream %s', async (_label, fail) => {
+    const { broker } = setup();
+    const revoke = vi.fn((id: string) => broker.revoke(id));
+    const wrapped = {
+      createLease: broker.createLease.bind(broker),
+      executeStream: fail as never,
+      revoke,
+    };
+    const result = await runScript(wrapped, request());
+    expect(result._unsafeUnwrapErr().scriptCode).toBe('SANDBOX');
+    expect(revoke).toHaveBeenCalledTimes(1);
+    expect(typeof revoke.mock.calls[0][0]).toBe('string');
+  });
+
+  it('settles PROTOCOL when output arrives synchronously before start was sent', async () => {
+    const { backend, broker } = setup();
+    backend.setExecStreamHandler((call) => {
+      call.emitStdout(line({ t: 'call', id: 1, name: 'mail.read', input: {} }));
+      return new Promise(() => {});
+    });
+    const report = (await runScript(broker, request()))._unsafeUnwrap();
+    expect(report).toMatchObject({ ok: false, errorCode: 'PROTOCOL' });
+    expect(report.calls).toHaveLength(0);
+    await expectLeaseGone(backend, broker);
+  });
+
+  it('sends input null in start when the request input is undefined', async () => {
+    const { backend, broker } = setup();
+    const received: string[] = [];
+    backend.setExecStreamHandler((call) => {
+      call.onStdin((t) => {
+        received.push(t);
+        call.emitStdout(line({ t: 'done', ok: true, result: null }));
+      });
+      return new Promise(() => {});
+    });
+    await runScript(broker, request({ input: undefined }));
+    expect(JSON.parse(received[0])).toEqual({ t: 'start', mode: 'live', input: null });
+  });
+
+  it('keeps the report when revoke rejects', async () => {
+    const { backend, broker } = setup();
+    backend.setExecStreamHandler((call) => {
+      call.onStdin(() => call.emitStdout(line({ t: 'done', ok: true, result: 7 })));
+      return new Promise(() => {});
+    });
+    const wrapped = {
+      createLease: broker.createLease.bind(broker),
+      executeStream: broker.executeStream.bind(broker),
+      revoke: async (id: string) => {
+        await broker.revoke(id);
+        throw new Error('revoke failed');
+      },
+    };
+    const report = (await runScript(wrapped, request()))._unsafeUnwrap();
+    expect(report).toMatchObject({ ok: true, result: 7 });
+  });
+
+  it('writes no reply for a provider call that resolves after the run finished', async () => {
+    const { backend, broker } = setup();
+    let release!: () => void;
+    const slow: ToolProvider = {
+      describe: () => ({ toolClass: 'read' }),
+      call: () =>
+        new Promise((resolve) => {
+          release = () => resolve(ok('late'));
+        }),
+    };
+    const received: string[] = [];
+    backend.setExecStreamHandler((call) => {
+      call.onStdin((t) => {
+        received.push(t);
+        if (received.length === 1) {
+          call.emitStdout(
+            line({ t: 'call', id: 1, name: 'mail.read', input: {} }) +
+              line({ t: 'done', ok: true, result: 1 }),
+          );
+        }
+      });
+      return new Promise(() => {});
+    });
+    const report = (await runScript(broker, request({ provider: slow })))._unsafeUnwrap();
+    expect(report.ok).toBe(true);
+    release();
+    await tick();
+    expect(received).toHaveLength(1);
+  });
 });

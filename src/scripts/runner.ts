@@ -135,9 +135,16 @@ async function run(
       .catch(() => settle({ kind: 'failed', code: 'SCRIPT_FAILED' }));
   };
 
+  let startSent = false;
+
   const onStdout = (text: string): void => {
     try {
       if (outcome) {
+        return;
+      }
+      if (!startSent) {
+        // The script must not speak before it has been sent `start`.
+        settle({ kind: 'failed', code: 'PROTOCOL' });
         return;
       }
       const decoded = decoder.push(text);
@@ -160,17 +167,23 @@ async function run(
     }
   };
 
-  const started = await broker.executeStream(
-    {
-      leaseId,
-      taskId,
-      personaId,
-      argv: ['node', '/scripts/node_modules/talon/run.js', request.scriptPath],
-      cwd: '',
-      timeoutMs: request.timeoutMs,
-    },
-    { onStdout },
-  );
+  let started: Awaited<ReturnType<Broker['executeStream']>>;
+  try {
+    started = await broker.executeStream(
+      {
+        leaseId,
+        taskId,
+        personaId,
+        argv: ['node', '/scripts/node_modules/talon/run.js', request.scriptPath],
+        cwd: '',
+        timeoutMs: request.timeoutMs,
+      },
+      { onStdout },
+    );
+  } catch {
+    await safeRevoke(broker, leaseId);
+    return err(new ScriptError('SANDBOX', 'sandbox exec could not be started'));
+  }
   if (started.isErr()) {
     await safeRevoke(broker, leaseId);
     return err(new ScriptError('SANDBOX', 'sandbox exec was refused', started.error));
@@ -186,9 +199,12 @@ async function run(
   );
 
   try {
-    started.value.writeStdin(
-      encodeMessage({ t: 'start', mode: request.mode, input: request.input }),
-    );
+    if (!outcome) {
+      startSent = true;
+      started.value.writeStdin(
+        encodeMessage({ t: 'start', mode: request.mode, input: request.input ?? null }),
+      );
+    }
   } catch {
     settle({ kind: 'failed', code: 'SCRIPT_FAILED' });
   }
