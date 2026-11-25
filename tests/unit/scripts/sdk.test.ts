@@ -303,6 +303,103 @@ describe('talon script SDK', () => {
     expect(run.lines[1]).toEqual({ t: 'done', ok: true, result: 'yes' });
   }, 20_000);
 
+  describe('helpers', () => {
+    const cases: Array<{ label: string; body: string; name: string; input: Msg }> = [
+      {
+        label: 'memory.read',
+        body: "memory.read('k', 'ns')",
+        name: 'talon.memory_read',
+        input: { key: 'k', namespace: 'ns' },
+      },
+      {
+        label: 'memory.list',
+        body: "memory.list('ns')",
+        name: 'talon.memory_list',
+        input: { namespace: 'ns' },
+      },
+      {
+        label: 'memory.write',
+        body: "memory.write('k', { a: 1 }, 'ns')",
+        name: 'talon.memory_write',
+        input: { key: 'k', value: { a: 1 }, namespace: 'ns' },
+      },
+      {
+        label: 'memory.delete',
+        body: "memory.delete('k', 'ns')",
+        name: 'talon.memory_delete',
+        input: { key: 'k', namespace: 'ns' },
+      },
+      {
+        label: 'notify',
+        body: "notify('c1', 'hello', 'chat9')",
+        name: 'talon.channel_send',
+        input: { channelId: 'c1', content: 'hello', externalChatId: 'chat9' },
+      },
+      {
+        label: 'model.judge',
+        body: "model.judge({ prompt: 'p', input: [1], schema: { type: 'object' } })",
+        name: 'model.judge',
+        input: { prompt: 'p', input: [1], schema: { type: 'object' } },
+      },
+    ];
+
+    for (const c of cases) {
+      it(`${c.label} sends the right call and resolves with the value`, async () => {
+        const run = start(
+          `import { memory, notify, model } from 'talon';
+           export default async function () { return await ${c.body}; }`,
+        );
+        await run.waitFor(1);
+        expect(run.lines[0]).toEqual({ t: 'call', id: 1, name: c.name, input: c.input });
+        run.send({ t: 'result', id: 1, ok: true, value: 'v' });
+        await run.waitFor(2);
+        expect(run.lines[1]).toEqual({ t: 'done', ok: true, result: 'v' });
+      }, 20_000);
+    }
+
+    it('leaves out an optional argument that was not passed', async () => {
+      const run = start(
+        `import { memory, notify } from 'talon';
+         export default async function () {
+           await memory.read('k');
+           await memory.list();
+           await memory.write('k', 1);
+           await memory.delete('k');
+           await notify('c1', 'hi');
+         }`,
+      );
+      const expected = [
+        ['talon.memory_read', ['key']],
+        ['talon.memory_list', []],
+        ['talon.memory_write', ['key', 'value']],
+        ['talon.memory_delete', ['key']],
+        ['talon.channel_send', ['channelId', 'content']],
+      ] as const;
+      for (const [i, [name, keys]] of expected.entries()) {
+        await run.waitFor(i + 1);
+        const line = run.lines[i] as { name: string; input: Record<string, unknown> };
+        expect(line.name).toBe(name);
+        expect(Object.keys(line.input)).toEqual([...keys]);
+        run.send({ t: 'result', id: i + 1, ok: true, value: null });
+      }
+    }, 20_000);
+
+    it('exposes frozen plain objects', async () => {
+      const run = start(
+        `import { memory, model } from 'talon';
+         export default async function () {
+           return [Object.isFrozen(memory), Object.isFrozen(model), Object.keys(memory), Object.keys(model)];
+         }`,
+      );
+      await run.waitFor(1);
+      expect(run.lines[0]).toEqual({
+        t: 'done',
+        ok: true,
+        result: [true, true, ['read', 'list', 'write', 'delete'], ['judge']],
+      });
+    }, 20_000);
+  });
+
   it('runs a script with TypeScript type annotations', async () => {
     const run = start(
       `interface Out { n: number }

@@ -141,6 +141,57 @@ export const tools = new Proxy(
   },
 );
 
+// The helpers below are thin wrappers over `call`. A key whose value is `undefined`
+// is dropped by JSON.stringify, so an omitted optional argument is absent on the wire.
+
+/** Read and write the persona's memory. */
+export const memory = Object.freeze({
+  /**
+   * @param {string} key
+   * @param {string} [namespace]
+   * @returns {Promise<unknown>}
+   */
+  read: (key, namespace) => call('talon.memory_read', { key, namespace }),
+  /**
+   * @param {string} [namespace]
+   * @returns {Promise<unknown>}
+   */
+  list: (namespace) => call('talon.memory_list', { namespace }),
+  /**
+   * @param {string} key
+   * @param {unknown} value
+   * @param {string} [namespace]
+   * @returns {Promise<unknown>}
+   */
+  write: (key, value, namespace) => call('talon.memory_write', { key, value, namespace }),
+  /**
+   * @param {string} key
+   * @param {string} [namespace]
+   * @returns {Promise<unknown>}
+   */
+  delete: (key, namespace) => call('talon.memory_delete', { key, namespace }),
+});
+
+/**
+ * Send a message to a channel.
+ * @param {string} channelId
+ * @param {string} content
+ * @param {string} [externalChatId]
+ * @returns {Promise<unknown>}
+ */
+export function notify(channelId, content, externalChatId) {
+  return call('talon.channel_send', { channelId, content, externalChatId });
+}
+
+/** Ask a model for a judgment. */
+export const model = Object.freeze({
+  /**
+   * @param {{ prompt: string, input: unknown, schema: object }} request
+   * @returns {Promise<unknown>}
+   */
+  judge: ({ prompt, input, schema }) => call('model.judge', { prompt, input, schema }),
+});
+
 /**
  * Internal, used by run.js only. Not part of the public API.
  * @returns {Promise<{ mode: string, input: unknown }>}
