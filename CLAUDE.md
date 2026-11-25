@@ -54,12 +54,15 @@ Channel Connector → MessagePipeline (normalize, dedup, route, persist)
 | Database  | `src/core/database/`       | better-sqlite3 wrapper, 21 repositories, SQL migrations                                                                                                       |
 | IPC       | `src/ipc/`                 | Unix socket daemon↔CLI communication                                                                                                                          |
 | CLI       | `src/cli/`                 | 37 talonctl commands (Commander.js)                                                                                                                           |
+| Broker    | `src/execution-broker/`    | Runs commands in disposable hardened Docker containers under a lease: operator allowlist, time limits, buffered and streaming exec. Not wired into the daemon yet |
+| Scripts   | `src/scripts/`             | Script runtime (code mode): runs a TypeScript script in a broker container and routes its tool calls through a gateway in `unit`, `dry-run` or `live` mode. Not wired into the daemon yet |
 
 ### Key Architectural Decisions
 
 - **neverthrow `Result<T, E>`** everywhere — expected errors are typed, no raw throws across module boundaries. All repository methods return `Result`.
 - **SQLite (better-sqlite3)** with WAL mode — single-file, no external DB dependency. Repository pattern allows future migration.
 - **Provider runtime runs on host** (not in container) — AgentRunner executes the configured provider strategy. Claude uses the SDK path with `sessionId` persistence; Gemini and Codex use CLI strategies.
+- **Script runtime (not wired in yet)** — a script is model-written TypeScript that calls tools without a model step between calls (`docs/superpowers/specs/2026-11-25-talon-scripts-design.md`). It runs in a broker container with no network and talks to Talon over standard input and output, one JSON message per line. The gateway in `src/scripts/gateway.ts` is the only path to a tool: the tool must be in the approved manifest, a tool with no class is a `write` tool, and a `write` tool runs only in `live` mode. Script code never runs inside the Talon process. The `talon` module the script imports is plain JavaScript in `src/scripts/sdk-assets/`, copied by the build and installed into the scripts root.
 - **Capability-based security** — default-deny. Persona `capabilities.allow` lists what tools/channels are accessible. `requireApproval` triggers human confirmation.
 - **Skills are declarative** — two formats: `skill.yaml` + `prompts/*.md` (legacy) or single `SKILL.md` with YAML frontmatter (preferred). No executable code in skills.
 - **Lazy skill loading** — only skill name + description injected into system prompts. Full content loaded on demand via `skill_load` tool (in-process MCP server for Claude SDK, external MCP server for Gemini CLI, Codex CLI, and openai-compatible). Per-skill `eager: true` opt-in in frontmatter forces the body into the system prompt at startup (use for reflexive skills on small models). Background agents use eager loading.
