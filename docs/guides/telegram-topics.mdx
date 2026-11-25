@@ -222,6 +222,8 @@ channel.send: message sent successfully
 
 `recipientSource` is `schedule origin` when Talon chose the conversation, and `externalChatId argument` when the agent named one itself. In the second case the persona's prompt or memory is telling it to use a fixed chat ID.
 
+Schedules created with `talonctl add-schedule` have no origin conversation: their thread is named `schedule:<persona>:<channel>`, and the agent has to pass `externalChatId` for them to be delivered at all. A persona that has such schedules tends to learn one fixed chat ID and use it everywhere. To deliver a CLI-created schedule into a topic, put the topic's thread key in its prompt, for example "send the result with `externalChatId` `-1004452318413:42`". A schedule thread without an origin gets no typing indicator, since there is no chat to show it in.
+
 ## Troubleshooting
 
 | Problem | Cause and fix |
