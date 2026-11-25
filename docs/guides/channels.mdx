@@ -90,7 +90,7 @@ channels:
 | `triggerWords` | Optional case-insensitive prefixes that address the bot; the prefix is stripped |
 | `replyToTrigger` | When an answer is sent as a native reply to the message that triggered it: `groups` (default), `always`, or `never` |
 | `inboundReactions` | Forward user reactions on Talon's messages to the agent. Default: `true` |
-| `chats` | Per-chat overrides, keyed by chat ID: `requireMention` and `replyToTrigger` for that one chat. Does not admit the chat |
+| `chats` | Per-chat overrides of `requireMention` and `replyToTrigger`, keyed by chat ID or by `<chat_id>:<topic_id>` for one topic. The topic entry wins over the chat entry. Does not admit the chat |
 
 Notes:
 

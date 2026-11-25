@@ -200,6 +200,9 @@ Rules:
 - Chat IDs are quoted strings.
 - Put `requireMention` and `replyToTrigger` under `chats.<group chat ID>`, not at the top level of `config`, so other chats on the same bot keep their behaviour.
 - A chat listed under `chats` is not admitted by that alone: `allowGroupChats` and `allowedChatIds` are both still needed.
+- A key under `chats` can also be one topic: `'<group chat ID>:<topic ID>'` (the `Talon thread` value from `/chatid` sent inside the topic). The topic entry wins over the chat entry.
+
+**Several bots in one group.** If the user wants two or more bots in the same group, each answering without a mention in its own topic: add each bot as its own Telegram channel (Phases 2-5), make each one a group administrator, and give each channel a `chats` entry for **its topic only** with `requireMention: false`. Do not set `requireMention: false` on the group's chat ID for more than one bot, or every bot answers everything. Each bot still answers an @mention in any topic. If the user only wants different behaviour per topic and does not need different bot names, recommend one bot with a persona per topic (T6) instead: it is one token and one config block.
 
 ### T6: Persona per topic (optional)
 

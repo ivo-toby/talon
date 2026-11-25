@@ -76,12 +76,15 @@ export interface TelegramConfig {
    */
   inboundReactions?: boolean;
   /**
-   * Per-chat overrides, keyed by chat ID (as a string). Lets one bot treat
-   * chats differently: a forum group used as a topic workspace can answer
-   * every message without quoting (`requireMention: false`,
+   * Per-chat overrides, keyed by chat ID (as a string), or by
+   * `<chat_id>:<topic_id>` for one topic of a forum group. Lets one bot
+   * treat chats differently: a forum group used as a topic workspace can
+   * answer every message without quoting (`requireMention: false`,
    * `replyToTrigger: never`) while an ordinary multi-person group keeps the
-   * defaults. A chat listed here is still subject to `allowGroupChats` and
-   * `allowedChatIds`; listing it does not admit it.
+   * defaults. A topic entry wins over its chat's entry, which wins over the
+   * connector-wide setting; that is how several bots share one group, each
+   * answering unprompted in its own topic. An entry here is still subject to
+   * `allowGroupChats` and `allowedChatIds`; listing it does not admit it.
    */
   chats?: Record<string, TelegramChatSettings>;
 }
