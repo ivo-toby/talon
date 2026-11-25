@@ -67,7 +67,9 @@ export type PipelineResult = 'enqueued' | 'duplicate' | 'no_persona' | 'ignored'
  * reach a thread, the message store or an agent.
  */
 export interface InboundCommandHandler {
-  /** Returns the reply text if the event was a command, or undefined. Never throws. */
+  /** Synchronous and cheap. True only for a message that is a command. Must not throw. */
+  matches(event: InboundEvent): boolean;
+  /** Called only after matches() returned true. Returns the reply text. Never throws. */
   handle(event: InboundEvent): Promise<string | undefined>;
 }
 

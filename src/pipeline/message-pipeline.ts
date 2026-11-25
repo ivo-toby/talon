@@ -38,10 +38,7 @@ import type { QueueManager } from '../queue/queue-manager.js';
 import type { AuditLogger } from '../core/logging/audit-logger.js';
 import type { InboundEvent } from '../channels/channel-types.js';
 import { MessageNormalizer } from './message-normalizer.js';
-import type {
-  ImageIngestionRequest,
-  ImageIngestionService,
-} from '../images/image-ingestion.js';
+import type { ImageIngestionRequest, ImageIngestionService } from '../images/image-ingestion.js';
 import type {
   InboundCommandHandler,
   InboundReplySender,
@@ -116,26 +113,52 @@ export class MessagePipeline {
   }
 
   /**
-   * Offers a short slash-text event to the command handler. Returns true when
-   * the handler claimed it (reply sent or attempted); the event is then
-   * consumed. A claimed command is deliberately not recorded in the
-   * idempotency store: a connector redelivery reaches the handler again, so
-   * the handler is responsible for one-time use. Never logs event content.
+   * Synchronous claim: true only when a handler is set, the event carries no
+   * attachments, its trimmed content is a short slash-text and the handler's
+   * `matches` agrees. Nothing is awaited for any other event, so ordinary
+   * messages reach the thread lookup exactly as without a handler. Never
+   * logs event content.
    */
-  private async tryHandleCommand(event: InboundEvent): Promise<boolean> {
+  private isCommand(event: InboundEvent): boolean {
     const handler = this.commandHandler;
-    const sendReply = this.sendReply;
-    if (handler === null || sendReply === null) return false;
+    if (handler === null || this.sendReply === null) return false;
     if (event.attachments !== undefined && event.attachments.length > 0) return false;
     const text = event.content.trim();
     if (!text.startsWith('/') || text.length > COMMAND_MAX_LENGTH) return false;
+    try {
+      return handler.matches(event);
+    } catch (cause) {
+      this.logger.error(
+        {
+          errName: cause instanceof Error ? cause.name : 'unknown',
+          channelName: event.channelName,
+        },
+        'pipeline: inbound command matcher failed; continuing as a normal message',
+      );
+      return false;
+    }
+  }
+
+  /**
+   * Runs a claimed command. Returns true when the event was consumed (reply
+   * sent or attempted). A claimed command is deliberately not recorded in the
+   * idempotency store: a connector redelivery reaches the handler again, so
+   * the handler is responsible for one-time use.
+   */
+  private async runCommand(event: InboundEvent): Promise<boolean> {
+    const handler = this.commandHandler;
+    const sendReply = this.sendReply;
+    if (handler === null || sendReply === null) return false;
 
     let reply: string | undefined;
     try {
       reply = await handler.handle(event);
     } catch (cause) {
       this.logger.error(
-        { err: cause, channelName: event.channelName },
+        {
+          errName: cause instanceof Error ? cause.name : 'unknown',
+          channelName: event.channelName,
+        },
         'pipeline: inbound command handler failed; continuing as a normal message',
       );
       return false;
@@ -166,6 +189,8 @@ export class MessagePipeline {
    *  1. Resolve channel by name.
    *  1a. Reaction events: resolve the reacted-to message through the ledger
    *      and continue at step 4 on that message's thread, or ignore the event.
+   *  1b. Commands claimed by the inbound command handler (synchronous
+   *      `matches`) are answered directly and stop here.
    *  2. Resolve (or create) thread by external ID.
    *  2a. Native replies: prefix the content with the resolved reply header.
    *  3. Normalize event to canonical NormalizedMessage.
@@ -216,7 +241,7 @@ export class MessagePipeline {
       // Step 1b: Commands are consumed here, before any thread or message
       // row exists, so an agent can never read or produce them.
       // ------------------------------------------------------------------
-      if (await this.tryHandleCommand(event)) {
+      if (this.isCommand(event) && (await this.runCommand(event))) {
         return ok('ignored');
       }
 
@@ -278,11 +303,7 @@ export class MessagePipeline {
       // events; the text steps below must not double-write them.
       // ------------------------------------------------------------------
       const ingestion = this.imageIngestion;
-      if (
-        ingestion !== null &&
-        event.attachments !== undefined &&
-        event.attachments.length > 0
-      ) {
+      if (ingestion !== null && event.attachments !== undefined && event.attachments.length > 0) {
         const imageResult = await this.handleImageEvent(
           event,
           ingestion,
@@ -322,7 +343,6 @@ export class MessagePipeline {
     threadId: string,
     normalized: NormalizedMessage,
   ): Result<PipelineResult, PipelineError> {
-
     // ------------------------------------------------------------------
     // Step 4: Persist with INSERT OR IGNORE deduplication.
     // Check before inserting to distinguish duplicate from first insert.
