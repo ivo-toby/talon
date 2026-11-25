@@ -94,7 +94,7 @@ describe('MessagePipeline inbound command hook', () => {
   });
 
   it('sends the reply and persists and enqueues nothing for a handled command', async () => {
-    s.handle.mockResolvedValue('Approved.');
+    s.handle.mockResolvedValue({ reply: 'Approved.' });
     const result = await s.pipeline.handleInboundEvent(makeEvent());
     expect(result._unsafeUnwrap()).toBe('ignored');
     expect(s.sendReply).toHaveBeenCalledWith('test-bot', 'ext-1', 'Approved.');
@@ -126,22 +126,40 @@ describe('MessagePipeline inbound command hook', () => {
     expect(s.handle).not.toHaveBeenCalled();
   });
 
-  it('never offers an event with an attachment', async () => {
+  it('consumes an event with an attachment whose caption is a command', async () => {
+    s.handle.mockResolvedValue({ reply: 'Approved.' });
     const event = makeEvent({
       attachments: [{ kind: 'image', mimeType: 'image/png' }],
     } as never);
-    await s.pipeline.handleInboundEvent(event);
-    expect(s.handle).not.toHaveBeenCalled();
+    const result = await s.pipeline.handleInboundEvent(event);
+    expect(result._unsafeUnwrap()).toBe('ignored');
+    expect(s.handle).toHaveBeenCalledWith(event);
+    expect(s.messageRepo.insert).not.toHaveBeenCalled();
+    expect(s.queueManager.enqueue).not.toHaveBeenCalled();
   });
 
-  it('does not offer a long message or one without a leading slash', async () => {
-    await s.pipeline.handleInboundEvent(makeEvent({ content: '/' + 'a'.repeat(64) }));
-    await s.pipeline.handleInboundEvent(makeEvent({ content: 'hello /approve X' }));
-    expect(s.handle).not.toHaveBeenCalled();
+  it('offers a long message and one without a leading slash', async () => {
+    s.matches.mockReturnValue(false);
+    const long = makeEvent({ content: 'quote ' + 'a'.repeat(5000) });
+    const plain = makeEvent({ content: 'hello /approve X' });
+    await s.pipeline.handleInboundEvent(long);
+    await s.pipeline.handleInboundEvent(plain);
+    expect(s.matches).toHaveBeenCalledWith(long);
+    expect(s.matches).toHaveBeenCalledWith(plain);
+  });
+
+  it('consumes silently when the handler returns an object with no reply', async () => {
+    s.handle.mockResolvedValue({});
+    const result = await s.pipeline.handleInboundEvent(makeEvent());
+    expect(result._unsafeUnwrap()).toBe('ignored');
+    expect(s.sendReply).not.toHaveBeenCalled();
+    expect(s.threadRepo.findByExternalId).not.toHaveBeenCalled();
+    expect(s.messageRepo.insert).not.toHaveBeenCalled();
+    expect(s.queueManager.enqueue).not.toHaveBeenCalled();
   });
 
   it('still stops the pipeline when the send fails or throws', async () => {
-    s.handle.mockResolvedValue('Approved.');
+    s.handle.mockResolvedValue({ reply: 'Approved.' });
     s.sendReply.mockResolvedValueOnce(err('no connector'));
     expect((await s.pipeline.handleInboundEvent(makeEvent()))._unsafeUnwrap()).toBe('ignored');
     s.sendReply.mockRejectedValueOnce(new Error('x'));

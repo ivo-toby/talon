@@ -177,9 +177,9 @@ describe('approval service', () => {
         expect(decide('ZZZZZZZZ')._unsafeUnwrap().outcome).toBe('refused');
       }
       clock += 1000;
-      expect(decide(code)._unsafeUnwrap()).toEqual({ outcome: 'refused' });
+      expect(decide(code)._unsafeUnwrap()).toEqual({ outcome: 'blocked' });
       clock += 10 * MIN - 2000;
-      expect(decide(code)._unsafeUnwrap()).toEqual({ outcome: 'refused' });
+      expect(decide(code)._unsafeUnwrap()).toEqual({ outcome: 'blocked' });
       clock += 2000;
       expect(decide(code)._unsafeUnwrap().outcome).toBe('approved');
     });
@@ -189,7 +189,7 @@ describe('approval service', () => {
         decide('ZZZZZZZZ');
       }
       db.exec('DROP TABLE script_approvals');
-      expect(decide('ZZZZZZZZ')._unsafeUnwrap().outcome).toBe('refused');
+      expect(decide('ZZZZZZZZ')._unsafeUnwrap().outcome).toBe('blocked');
     });
 
     it('counts per channel and thread', () => {
@@ -238,18 +238,180 @@ describe('approval service', () => {
     });
 
     it.each([
+      '/Approve abcd2345',
+      '/approve@my_bot ABCD2345',
+      '/APPROVE ABCD2345.',
+      '/approve ABCD2345!',
+    ])('accepts %j', (text) => {
+      expect(svc.parseCommand(text)).toEqual({ decision: 'approved', code: 'ABCD2345' });
+    });
+
+    it.each([
       '/approve',
       '/approve ABCD234',
       '/approve ABCD23456',
       '/approve ABCD2345 now',
       '/approve ABCD2345\nhello',
-      '/approve@bot ABCD2345',
-      '/Approve ABCD2345',
+      '/approve@ ABCD2345',
+      '/approve ABCD2345..',
+      'approve ABCD2345',
       'please /approve ABCD2345',
       '/approve ABCD-345',
       '',
     ])('returns undefined for %j', (text) => {
       expect(svc.parseCommand(text)).toBeUndefined();
+    });
+  });
+
+  describe('classify', () => {
+    const msg = (content: unknown, externalThreadId = 't1') => ({
+      channelName: 'tg',
+      externalThreadId,
+      content,
+    });
+    let hashes: number;
+    beforeEach(() => {
+      hashes = 0;
+      svc = createApprovalService({
+        repo,
+        ttlMinutes: 30,
+        logger: pino({ level: 'silent' }),
+        now: () => clock,
+        randomBytes: (n) => Buffer.from(Array.from({ length: n }, (_, i) => seed + i)),
+        hashCode: (code) => {
+          hashes++;
+          return createHash('sha256').update(code.toUpperCase()).digest('hex');
+        },
+      });
+    });
+    const quoted = (code: string): string =>
+      `Thanks.\n\n${'> On Monday Talon wrote a long message\n'.repeat(120)}> /approve ${code}\n> /reject ${code}\n`;
+
+    it('classifies each kind in a chat with an open approval', () => {
+      const code = ask();
+      expect(quoted(code).length).toBeGreaterThan(4000);
+      const cases: Array<[unknown, string]> = [
+        [`/approve ${code}`, 'command'],
+        [`/Approve ${code}`, 'command'],
+        [`/approve@my_bot ${code}`, 'command'],
+        [`/approve ${code}.`, 'command'],
+        [`  /reject ${code.toLowerCase()}  `, 'command'],
+        ['/approve ZZZZZZZZ', 'command'],
+        [`approve ${code}`, 'leak'],
+        [`/approve ${code} please`, 'leak'],
+        [quoted(code), 'leak'],
+        [`code:${code.toLowerCase()}!`, 'leak'],
+        ['/approve', 'malformed'],
+        ['/reject@my_bot not a code', 'malformed'],
+        ['/approve ZZZ', 'malformed'],
+        ['hello there', 'none'],
+        ['approve ZZZZZZZZ', 'none'],
+        [42, 'none'],
+      ];
+      for (const [content, kind] of cases) {
+        expect([content, svc.classify(msg(content))]).toEqual([content, kind]);
+      }
+    });
+
+    it('returns none with no hashing in a chat with no open approval', () => {
+      const code = ask();
+      hashes = 0;
+      for (const content of [
+        `/approve ${code}`,
+        `approve ${code}`,
+        quoted(code),
+        '/approve',
+        'hello',
+      ]) {
+        expect(svc.classify(msg(content, 'other'))).toBe('none');
+      }
+      expect(hashes).toBe(0);
+    });
+
+    it('scans only the first 8,000 characters and 400 code-sized tokens', () => {
+      const code = ask();
+      expect(svc.classify(msg(`${'x'.repeat(7995)} ${code}`))).toBe('none');
+      expect(svc.classify(msg(`${'x'.repeat(7990)} ${code}`))).toBe('leak');
+      expect(svc.classify(msg(`${'ZZZZZZZZ '.repeat(400)}${code}`))).toBe('none');
+      expect(svc.classify(msg(`${'ZZZZZZZZ '.repeat(399)}${code}`))).toBe('leak');
+    });
+
+    it('prunes an expired code, then the chat is none', () => {
+      const code = ask();
+      clock += 31 * MIN;
+      hashes = 0;
+      expect(svc.classify(msg(`approve ${code}`))).toBe('none');
+      expect(svc.classify(msg(`/approve ${code}`))).toBe('none');
+      expect(hashes).toBe(0);
+    });
+
+    it('drops a code from the index when it is decided', () => {
+      const code = ask();
+      expect(decide(code)._unsafeUnwrap().outcome).toBe('approved');
+      expect(svc.classify(msg(`/approve ${code}`))).toBe('none');
+    });
+
+    it('rebuilds the index from the database in a new service', () => {
+      const code = ask();
+      const fresh = createApprovalService({
+        repo,
+        ttlMinutes: 30,
+        logger: pino({ level: 'silent' }),
+        now: () => clock,
+      });
+      expect(fresh.classify(msg(`approve ${code}`))).toBe('leak');
+      expect(fresh.classify(msg(`/approve ${code}`))).toBe('command');
+      expect(fresh.classify(msg(`/approve ${code}`, 'other'))).toBe('none');
+      clock += 31 * MIN;
+      const later = createApprovalService({
+        repo,
+        ttlMinutes: 30,
+        logger: pino({ level: 'silent' }),
+        now: () => clock,
+      });
+      expect(later.classify(msg(`approve ${code}`))).toBe('none');
+    });
+
+    it('cancelLeaked expires the code, moves the version back and the code is refused later', () => {
+      const code = ask();
+      const other = makeVersion();
+      seed = 8;
+      const keep = ask(other);
+      const cancelled = svc.cancelLeaked(msg(`approve ${code}`))._unsafeUnwrap();
+      expect(cancelled.map((c) => c.versionId)).toEqual([versionId]);
+      expect(repo.getVersion(versionId)._unsafeUnwrap()?.state).toBe('tested');
+      expect(repo.getVersion(other)._unsafeUnwrap()?.state).toBe('awaiting-approval');
+      // the chat still has an open approval, so the old code is a command that is refused
+      expect(svc.classify(msg(`/approve ${code}`))).toBe('command');
+      expect(decide(code)._unsafeUnwrap().outcome).toBe('refused');
+      expect(decide(keep)._unsafeUnwrap().outcome).toBe('approved');
+    });
+
+    it('expireVersion drops the codes of the version', () => {
+      const code = ask();
+      svc.expireVersion(versionId)._unsafeUnwrap();
+      expect(svc.classify(msg(`approve ${code}`))).toBe('none');
+      expect(decide(code)._unsafeUnwrap().outcome).toBe('refused');
+    });
+  });
+
+  describe('decide after the commit', () => {
+    it('keeps the outcome when the script row cannot be read', () => {
+      const code = ask();
+      const failing = new ScriptRepository(db);
+      failing.getScript = () =>
+        ({ isErr: () => true, isOk: () => false, error: new Error('down') }) as never;
+      const s2 = createApprovalService({
+        repo: failing,
+        ttlMinutes: 30,
+        logger: pino({ level: 'silent' }),
+        now: () => clock,
+      });
+      const r = s2
+        .decide({ code, decision: 'rejected', channelName: 'tg', externalThreadId: 't1' })
+        ._unsafeUnwrap();
+      expect(r).toMatchObject({ outcome: 'rejected', scriptName: 'daily', version: 1, versionId });
+      expect(r.personaId).toBeUndefined();
     });
   });
 });

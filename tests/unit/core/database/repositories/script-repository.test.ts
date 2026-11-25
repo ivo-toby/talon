@@ -180,6 +180,18 @@ describe('ScriptRepository', () => {
       );
     });
 
+    it('listOpenApprovals lists only undecided approvals that have not expired', () => {
+      const a = makeAwaiting();
+      const b = makeAwaiting();
+      const c = makeAwaiting();
+      repo.decideApproval(b.approvalId, 'approved', 100);
+      repo.expireOpenApprovals(c.version.id, 42)._unsafeUnwrap();
+      const open = repo.listOpenApprovals(500)._unsafeUnwrap();
+      expect(open.map((row) => row.id)).toEqual([a.approvalId]);
+      expect(open[0]).toMatchObject({ channel_name: 'tg', external_thread_id: 't1' });
+      expect(repo.listOpenApprovals(10_000)._unsafeUnwrap()).toEqual([]);
+    });
+
     it('expireOpenApprovals leaves a decided approval alone', () => {
       const a = makeAwaiting();
       repo.decideApproval(a.approvalId, 'approved', 100);

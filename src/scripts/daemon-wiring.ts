@@ -69,6 +69,25 @@ export function createChannelSender(channelRegistry: Pick<ChannelRegistry, 'get'
   };
 }
 
+/** The chat of a thread: its channel name and recipient. Never throws. */
+export function createChatResolver(
+  threadRepo: Pick<ThreadRepository, 'findById'>,
+  channelRepo: Pick<ChannelRepository, 'findById'>,
+): (threadId: string) => { channelName: string; externalThreadId: string } | undefined {
+  return (threadId) => {
+    try {
+      const thread = threadRepo.findById(threadId);
+      if (thread.isErr() || !thread.value) return undefined;
+      const channel = channelRepo.findById(thread.value.channel_id);
+      const recipient = resolveThreadRecipient(thread.value);
+      if (channel.isErr() || !channel.value || recipient === null) return undefined;
+      return { channelName: channel.value.name, externalThreadId: recipient };
+    } catch {
+      return undefined;
+    }
+  };
+}
+
 export function buildScriptRuntime(deps: ScriptRuntimeDeps): Result<ScriptService, ScriptError> {
   const { config, logger } = deps;
   const root = resolve(config.root);
@@ -109,18 +128,7 @@ export function buildScriptRuntime(deps: ScriptRuntimeDeps): Result<ScriptServic
     config,
     createProvider: createDaemonProviderFactory({ ...deps.provider, logger }),
     send,
-    async notifyThread(threadId, body) {
-      const thread = deps.threadRepo.findById(threadId);
-      if (thread.isErr() || !thread.value) {
-        return err(new ScriptError('TOOL_FAILED', 'the thread of the script is not known'));
-      }
-      const channel = deps.channelRepo.findById(thread.value.channel_id);
-      const recipient = resolveThreadRecipient(thread.value);
-      if (channel.isErr() || !channel.value || recipient === null) {
-        return err(new ScriptError('TOOL_FAILED', 'the thread of the script has no chat'));
-      }
-      return send(channel.value.name, recipient, body);
-    },
+    resolveChat: createChatResolver(deps.threadRepo, deps.channelRepo),
     audit(entry) {
       if (entry.action === 'script.approval') deps.auditLogger.logApprovalDecision(entry);
       else deps.auditLogger.logToolExecution(entry);

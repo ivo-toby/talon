@@ -129,13 +129,14 @@ function setup(over: Partial<ScriptServiceDeps> = {}) {
   const backend = new InMemoryContainerBackend({ diskQuotaEnforced: true });
   const broker = new ExecutionBroker({ allowlist, backend });
   let t = 1_000_000;
+  let codeSeed = 1;
   const now = (): number => (t += 1000);
   const store = createScriptStore({ root, repo, logger });
   const approval = createApprovalService({
     repo,
     ttlMinutes: 60,
     now,
-    randomBytes: () => Buffer.from([0, 1, 2, 3, 4, 5, 6, 7]),
+    randomBytes: () => Buffer.from(Array.from({ length: 8 }, () => codeSeed++ % 32)),
     logger,
   });
   const providers: Array<{ close: ReturnType<typeof vi.fn>; calls: Call[] }> = [];
@@ -158,7 +159,12 @@ function setup(over: Partial<ScriptServiceDeps> = {}) {
     sent.push({ channel, thread, body });
     return Promise.resolve(ok(undefined));
   });
-  const notifyThread = vi.fn(() => Promise.resolve(ok(undefined)));
+  const chats: Record<string, { channelName: string; externalThreadId: string }> = {
+    th1: { channelName: 'tg', externalThreadId: 'chat-1' },
+    th2: { channelName: 'tg', externalThreadId: 'other-chat' },
+    sched: { channelName: 'tg', externalThreadId: 'sched-chat' },
+  };
+  const resolveChat = vi.fn((threadId: string) => chats[threadId]);
   const audits: Array<Record<string, unknown>> = [];
   const deps: ScriptServiceDeps = {
     store,
@@ -168,7 +174,7 @@ function setup(over: Partial<ScriptServiceDeps> = {}) {
     config: ScriptsConfigSchema.parse({ runTimeoutMs: 5000, maxCallsPerRun: 50 }),
     createProvider,
     send,
-    notifyThread,
+    resolveChat,
     audit: (e) => audits.push(e),
     now,
     logger,
@@ -189,9 +195,9 @@ function setup(over: Partial<ScriptServiceDeps> = {}) {
   const codeOf = (): string => /\/approve ([A-Z0-9]{8})/.exec(sent[sent.length - 1].body)![1];
 
   /** save, test, request approval; returns the version. */
-  async function toAwaiting(f: ScriptFile[] = files()) {
+  async function toAwaiting(f: ScriptFile[] = files(), threadId = 'th1') {
     play(backend, SCRIPT_CALLS, { ok: true, result: { sent: 1 } });
-    const version = service.save({ personaId: 'p1', threadId: 'th1', files: f })._unsafeUnwrap();
+    const version = service.save({ personaId: 'p1', threadId, files: f })._unsafeUnwrap();
     const tested = (
       await service.test({ personaId: 'p1', versionId: version.versionId })
     )._unsafeUnwrap();
@@ -200,8 +206,6 @@ function setup(over: Partial<ScriptServiceDeps> = {}) {
       await service.requestApproval({
         personaId: 'p1',
         versionId: version.versionId,
-        channelName: 'tg',
-        externalThreadId: 'chat-1',
       })
     )._unsafeUnwrap();
     return version;
@@ -221,7 +225,7 @@ function setup(over: Partial<ScriptServiceDeps> = {}) {
     root,
     sent,
     send,
-    notifyThread,
+    resolveChat,
     audits,
     providers,
     providerCalls,
@@ -239,7 +243,9 @@ describe('full flow', () => {
   it('goes from save to an approved live run', async () => {
     const s = setup();
     const { version, reply } = await s.toApproved();
-    expect(reply).toBe('Approved: script "mail-intake" v1. It can now run on a schedule.');
+    expect(reply).toEqual({
+      reply: 'Approved: script "mail-intake" v1. It can now run on a schedule.',
+    });
     expect(s.stateOf(version.versionId)).toBe('approved');
     expect(s.service.hasApproved('p1', 'mail-intake')).toBe(true);
     expect(s.service.hasApproved('p2', 'mail-intake')).toBe(false);
@@ -297,8 +303,6 @@ describe('save, test and requestApproval refusals', () => {
     const req = await s.service.requestApproval({
       personaId: 'p2',
       versionId: version.versionId,
-      channelName: 'tg',
-      externalThreadId: 'c',
     });
     expect(req._unsafeUnwrapErr().message).toBe(unknown._unsafeUnwrapErr().message);
     expect(s.sent).toHaveLength(0);
@@ -317,16 +321,12 @@ describe('save, test and requestApproval refusals', () => {
     const draft = await s.service.requestApproval({
       personaId: 'p1',
       versionId: v.versionId,
-      channelName: 'tg',
-      externalThreadId: 'c',
     });
     expect(draft._unsafeUnwrapErr().scriptCode).toBe('INVALID_ARGUMENT');
     s.db.prepare(`UPDATE script_versions SET state = 'tested' WHERE id = ?`).run(v.versionId);
     const noReport = await s.service.requestApproval({
       personaId: 'p1',
       versionId: v.versionId,
-      channelName: 'tg',
-      externalThreadId: 'c',
     });
     expect(noReport._unsafeUnwrapErr().scriptCode).toBe('INVALID_ARGUMENT');
     s.db
@@ -335,8 +335,6 @@ describe('save, test and requestApproval refusals', () => {
     const bad = await s.service.requestApproval({
       personaId: 'p1',
       versionId: v.versionId,
-      channelName: 'tg',
-      externalThreadId: 'c',
     });
     expect(bad._unsafeUnwrapErr().scriptCode).toBe('INVALID_ARGUMENT');
     expect(s.sent).toHaveLength(0);
@@ -451,17 +449,15 @@ describe('approval', () => {
     const r = await s.service.requestApproval({
       personaId: 'p1',
       versionId: v.versionId,
-      channelName: 'tg',
-      externalThreadId: 'chat-1',
     });
     const error = r._unsafeUnwrapErr();
     expect(error.scriptCode).toBe('TOOL_FAILED');
     const code = /\/approve ([A-Z0-9]{8})/.exec(body)![1];
     expect(error.message).not.toContain(code);
     expect(s.stateOf(v.versionId)).toBe('tested');
-    expect(await s.service.handleInbound(s.event(`/approve ${code}`))).toBe(
-      'This code is not valid.',
-    );
+    // the chat has no open approval any more, so nothing is claimed and nothing is decided
+    expect(s.service.matchesInbound(s.event(`/approve ${code}`))).toBe(false);
+    expect(await s.service.handleInbound(s.event(`/approve ${code}`))).toBeUndefined();
     expect(s.stateOf(v.versionId)).toBe('tested');
   });
 
@@ -501,8 +497,6 @@ describe('approval', () => {
     const r = await s.service.requestApproval({
       personaId: 'p1',
       versionId: v.versionId,
-      channelName: 'tg',
-      externalThreadId: 'chat-1',
     });
     expect(r._unsafeUnwrapErr().scriptCode).toBe('RESULT_TOO_LARGE');
     expect(r._unsafeUnwrapErr().message).toContain('do not fit in the approval message');
@@ -511,20 +505,111 @@ describe('approval', () => {
     expect(s.db.prepare(`SELECT COUNT(*) AS n FROM script_approvals`).get()).toEqual({ n: 0 });
   });
 
-  it('refuses /approve from a different thread and keeps the state', async () => {
+  it('claims nothing in a chat with no open approval', async () => {
     const s = setup();
     const v = await s.toAwaiting();
     const reply = await s.service.handleInbound(s.event(`/approve ${s.codeOf()}`, 'other-chat'));
-    expect(reply).toBe('This code is not valid.');
+    expect(reply).toBeUndefined();
+    expect(s.service.matchesInbound(s.event(`/approve ${s.codeOf()}`, 'other-chat'))).toBe(false);
+    expect(s.stateOf(v.versionId)).toBe('awaiting-approval');
+  });
+
+  it('refuses /approve with the code of another chat and keeps the state', async () => {
+    const s = setup();
+    const v = await s.toAwaiting();
+    const codeA = s.codeOf();
+    await s.toAwaiting(files({ name: 'other-script' }), 'th2');
+    const reply = await s.service.handleInbound(s.event(`/approve ${codeA}`, 'other-chat'));
+    expect(reply).toEqual({ reply: 'This code is not valid.' });
     expect(s.stateOf(v.versionId)).toBe('awaiting-approval');
     expect(s.audits.filter((a) => a.action === 'script.approval')).toHaveLength(0);
+  });
+
+  it('accepts the command forms of the classifier', async () => {
+    for (const form of [
+      '/Approve CODE',
+      '/approve@my_bot CODE',
+      '  /approve CODE.  ',
+      '/APPROVE code!',
+    ]) {
+      const s = setup();
+      const v = await s.toAwaiting();
+      const text = form.replace(/code/i, (m) =>
+        m === 'code' ? s.codeOf().toLowerCase() : s.codeOf(),
+      );
+      expect(s.service.matchesInbound(s.event(text))).toBe(true);
+      expect((await s.service.handleInbound(s.event(text)))?.reply).toMatch(/^Approved:/);
+      expect(s.stateOf(v.versionId)).toBe('approved');
+    }
+  });
+
+  it('cancels a code that came in a message that is not a command', async () => {
+    for (const text of [
+      (code: string) => `approve ${code}`,
+      (code: string) =>
+        `Re: your message\n${'> quoted line of the mail reply\n'.repeat(150)}> /approve ${code}\n> /reject ${code}\n`,
+    ]) {
+      const s = setup();
+      const v = await s.toAwaiting();
+      const code = s.codeOf();
+      const message = text(code);
+      expect(s.service.matchesInbound(s.event(message))).toBe(true);
+      expect(await s.service.handleInbound(s.event(message))).toEqual({
+        reply: 'The code was not in a valid command, so I cancelled it. Ask for a new approval.',
+      });
+      expect(s.stateOf(v.versionId)).toBe('tested');
+      expect(s.audits.find((a) => a.action === 'script.approval.expired')).toMatchObject({
+        personaId: 'p1',
+        threadId: 'th1',
+        details: { versionId: v.versionId, reason: 'leak', channelName: 'tg' },
+      });
+      // the old code is dead: with no open approval left, nothing is claimed
+      expect(await s.service.handleInbound(s.event(`/approve ${code}`))).toBeUndefined();
+      expect(s.stateOf(v.versionId)).toBe('tested');
+    }
+  });
+
+  it('answers a malformed command with the usage text', async () => {
+    const s = setup();
+    await s.toAwaiting();
+    for (const text of ['/approve', '/reject ABC', '/approve@my_bot please']) {
+      expect(s.service.matchesInbound(s.event(text))).toBe(true);
+      expect(await s.service.handleInbound(s.event(text))).toEqual({
+        reply: 'Use: /approve CODE or /reject CODE',
+      });
+    }
+    expect(s.service.matchesInbound(s.event('hello there'))).toBe(false);
+  });
+
+  it('consumes a command from a chat that the attempt limiter holds, without a reply', async () => {
+    const s = setup();
+    const v = await s.toAwaiting();
+    for (let i = 0; i < 5; i++) {
+      expect(await s.service.handleInbound(s.event('/approve ZZZZZZZZ'))).toEqual({
+        reply: 'This code is not valid.',
+      });
+    }
+    expect(s.service.matchesInbound(s.event(`/approve ${s.codeOf()}`))).toBe(true);
+    expect(await s.service.handleInbound(s.event(`/approve ${s.codeOf()}`))).toEqual({});
+    expect(s.stateOf(v.versionId)).toBe('awaiting-approval');
+  });
+
+  it('still says approved when the script row cannot be read after the decision', async () => {
+    const s = setup();
+    const v = await s.toAwaiting();
+    vi.spyOn(s.repo, 'getScript').mockImplementation(() => err(new Error('db down') as never));
+    const reply = await s.service.handleInbound(s.event(`/approve ${s.codeOf()}`));
+    expect(reply).toEqual({
+      reply: 'Approved: script "mail-intake" v1. It can now run on a schedule.',
+    });
+    expect(s.stateOf(v.versionId)).toBe('approved');
   });
 
   it('rejects with a fixed text and audits the decision', async () => {
     const s = setup();
     const v = await s.toAwaiting();
     const reply = await s.service.handleInbound(s.event(`/reject ${s.codeOf()}`));
-    expect(reply).toBe('Rejected: script "mail-intake" v1.');
+    expect(reply).toEqual({ reply: 'Rejected: script "mail-intake" v1.' });
     expect(s.stateOf(v.versionId)).toBe('rejected');
     expect(s.audits.find((a) => a.action === 'script.approval')).toMatchObject({
       personaId: 'p1',
@@ -539,10 +624,10 @@ describe('approval', () => {
     expect(await s.service.handleInbound(s.event(42))).toBeUndefined();
   });
 
-  it('matchesInbound is true only for a valid command', () => {
+  it('matchesInbound is false for every message in a chat with no open approval', () => {
     const s = setup();
-    expect(s.service.matchesInbound(s.event('/approve ABCDEFGH'))).toBe(true);
-    expect(s.service.matchesInbound(s.event('/reject abcdefgh'))).toBe(true);
+    expect(s.service.matchesInbound(s.event('/approve ABCDEFGH'))).toBe(false);
+    expect(s.service.matchesInbound(s.event('/reject abcdefgh'))).toBe(false);
     expect(s.service.matchesInbound(s.event('hello there'))).toBe(false);
     expect(s.service.matchesInbound(s.event(undefined))).toBe(false);
     expect(s.service.matchesInbound(s.event({ x: 1 }))).toBe(false);
@@ -678,30 +763,34 @@ describe('runScheduled', () => {
 });
 
 describe('notifyFailure, recovery', () => {
-  it('sends the fixed text and falls back to SCRIPT_FAILED for an unknown code', async () => {
+  it('sends the fixed text to the chat of the thread and falls back to SCRIPT_FAILED', async () => {
     const s = setup();
     await s.service.notifyFailure({
-      threadId: 't',
+      threadId: 'sched',
       scriptName: 'mail-intake',
       errorCode: 'TIMEOUT',
     });
     await s.service.notifyFailure({
-      threadId: 't',
+      threadId: 'sched',
       scriptName: 'mail-intake',
       errorCode: 'weird <b>',
     });
-    expect(s.notifyThread).toHaveBeenNthCalledWith(
+    expect(s.send).toHaveBeenNthCalledWith(
       1,
-      't',
+      'tg',
+      'sched-chat',
       'Script "mail-intake" failed (TIMEOUT). It stays scheduled. I will tell you again only if it fails after a success.',
     );
-    expect(s.notifyThread.mock.calls[1][1]).toContain('(SCRIPT_FAILED)');
+    expect(s.send.mock.calls[1][2]).toContain('(SCRIPT_FAILED)');
+    // a thread with no chat sends nothing
+    await s.service.notifyFailure({ threadId: 'gone', scriptName: 'a', errorCode: 'TIMEOUT' });
+    expect(s.send).toHaveBeenCalledTimes(2);
   });
 
   it('never throws', async () => {
-    const s = setup({ notifyThread: () => Promise.reject(new Error('x')) });
+    const s = setup({ send: () => Promise.reject(new Error('x')) });
     await expect(
-      s.service.notifyFailure({ threadId: 't', scriptName: 'a', errorCode: 'TIMEOUT' }),
+      s.service.notifyFailure({ threadId: 'sched', scriptName: 'a', errorCode: 'TIMEOUT' }),
     ).resolves.toBeUndefined();
   });
 
@@ -825,8 +914,6 @@ describe('a test that overlaps other changes', () => {
     const req = await s.service.requestApproval({
       personaId: 'p1',
       versionId: v.versionId,
-      channelName: 'tg',
-      externalThreadId: 'c',
     });
     expect(req._unsafeUnwrapErr().message).toContain('being tested');
     expect(s.sent).toHaveLength(0);

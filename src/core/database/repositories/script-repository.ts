@@ -108,6 +108,7 @@ export class ScriptRepository extends BaseRepository {
   private readonly setDryRunReportStmt: Database.Statement;
   private readonly insertApprovalStmt: Database.Statement;
   private readonly findOpenApprovalStmt: Database.Statement;
+  private readonly listOpenApprovalsStmt: Database.Statement;
   private readonly getApprovalStmt: Database.Statement;
   private readonly expireOpenApprovalsStmt: Database.Statement;
   private readonly decideApprovalStmt: Database.Statement;
@@ -165,6 +166,9 @@ export class ScriptRepository extends BaseRepository {
     `);
     this.findOpenApprovalStmt = db.prepare(
       `SELECT * FROM script_approvals WHERE code_hash = ? AND decided_at IS NULL`,
+    );
+    this.listOpenApprovalsStmt = db.prepare(
+      `SELECT * FROM script_approvals WHERE decided_at IS NULL AND expires_at > ? ORDER BY created_at`,
     );
     this.getApprovalStmt = db.prepare(`SELECT * FROM script_approvals WHERE id = ?`);
     this.expireOpenApprovalsStmt = db.prepare(
@@ -378,6 +382,15 @@ export class ScriptRepository extends BaseRepository {
       return ok((this.findOpenApprovalStmt.get(codeHash) as ScriptApprovalRow | undefined) ?? null);
     } catch (cause) {
       return err(this.fail('find open script approval', cause));
+    }
+  }
+
+  /** The undecided approvals that have not expired at `now`. */
+  listOpenApprovals(now: number): Result<ScriptApprovalRow[], DbError> {
+    try {
+      return ok(this.listOpenApprovalsStmt.all(now) as ScriptApprovalRow[]);
+    } catch (cause) {
+      return err(this.fail('list open script approvals', cause));
     }
   }
 

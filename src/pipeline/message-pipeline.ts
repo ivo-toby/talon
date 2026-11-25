@@ -56,9 +56,6 @@ import {
 /** Ledger excerpt recorded for a message that carried media but no text. */
 const MEDIA_ONLY_EXCERPT = '[image]';
 
-/** Only short messages starting with '/' are offered to the command handler. */
-const COMMAND_MAX_LENGTH = 64;
-
 /**
  * Orchestrates the full inbound message lifecycle from raw InboundEvent
  * through to a work item on the durable queue.
@@ -113,18 +110,16 @@ export class MessagePipeline {
   }
 
   /**
-   * Synchronous claim: true only when a handler is set, the event carries no
-   * attachments, its trimmed content is a short slash-text and the handler's
-   * `matches` agrees. Nothing is awaited for any other event, so ordinary
-   * messages reach the thread lookup exactly as without a handler. Never
-   * logs event content.
+   * Synchronous claim: true only when a handler is set and the handler's
+   * `matches` agrees. Every non-reaction event is offered, also a long one or
+   * one with attachments, because the handler must see each message that can
+   * hold an approval code. Nothing is awaited when `matches` is false, so
+   * ordinary messages reach the thread lookup exactly as without a handler.
+   * Never logs event content.
    */
   private isCommand(event: InboundEvent): boolean {
     const handler = this.commandHandler;
     if (handler === null || this.sendReply === null) return false;
-    if (event.attachments !== undefined && event.attachments.length > 0) return false;
-    const text = event.content.trim();
-    if (!text.startsWith('/') || text.length > COMMAND_MAX_LENGTH) return false;
     try {
       return handler.matches(event);
     } catch (cause) {
@@ -141,7 +136,7 @@ export class MessagePipeline {
 
   /**
    * Runs a claimed command. Returns true when the event was consumed (reply
-   * sent or attempted). A claimed command is deliberately not recorded in the
+   * sent, attempted, or none to send). A claimed command is deliberately not recorded in the
    * idempotency store: a connector redelivery reaches the handler again, so
    * the handler is responsible for one-time use.
    */
@@ -150,9 +145,9 @@ export class MessagePipeline {
     const sendReply = this.sendReply;
     if (handler === null || sendReply === null) return false;
 
-    let reply: string | undefined;
+    let handled: { reply?: string } | undefined;
     try {
-      reply = await handler.handle(event);
+      handled = await handler.handle(event);
     } catch (cause) {
       this.logger.error(
         {
@@ -163,7 +158,9 @@ export class MessagePipeline {
       );
       return false;
     }
-    if (typeof reply !== 'string') return false;
+    if (handled === undefined || handled === null) return false;
+    const reply = handled.reply;
+    if (typeof reply !== 'string') return true;
 
     try {
       const sent = await sendReply(event.channelName, event.externalThreadId, reply);

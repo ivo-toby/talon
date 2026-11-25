@@ -194,7 +194,8 @@ describe.skipIf(!enabled)('script flow against a real Docker daemon', () => {
         sent.push({ channel, thread, body });
         return Promise.resolve(ok(undefined));
       },
-      notifyThread: () => Promise.resolve(ok(undefined)),
+      resolveChat: (threadId) =>
+        threadId === 'thread-1' ? { channelName: CHANNEL, externalThreadId: CHAT } : undefined,
       audit: () => {},
       logger,
     });
@@ -234,16 +235,12 @@ describe.skipIf(!enabled)('script flow against a real Docker daemon', () => {
   }, 60_000);
 
   it('sends an approval message that shows the skipped writes and holds the code', async () => {
-    const requested = await service.requestApproval({
-      personaId: PERSONA,
-      versionId,
-      channelName: CHANNEL,
-      externalThreadId: CHAT,
-    });
+    const requested = await service.requestApproval({ personaId: PERSONA, versionId });
     expect(requested.isOk()).toBe(true);
     expect(requested._unsafeUnwrap()).toBeUndefined();
     expect(sent).toHaveLength(1);
     expect(sent[0]).toMatchObject({ channel: CHANNEL, thread: CHAT });
+    expect(sent[0].body).toContain('May write with: mailbox.label\n');
     expect(sent[0].body).toContain('Would write (2):');
     expect(sent[0].body).toContain('"label":"finance"');
     expect(sent[0].body).toMatch(/^\/approve [A-Z2-9]{8}$/m);
@@ -255,20 +252,17 @@ describe.skipIf(!enabled)('script flow against a real Docker daemon', () => {
     expect(service.matchesInbound(inbound(`/approve ${code}`))).toBe(true);
     expect(service.matchesInbound(inbound('hello'))).toBe(false);
 
-    expect(await service.handleInbound(inbound(`/approve ${code}`, 'other-chat'))).toBe(
-      'This code is not valid.',
-    );
+    // The other chat has no open approval: nothing is claimed there.
+    expect(await service.handleInbound(inbound(`/approve ${code}`, 'other-chat'))).toBeUndefined();
     expect(service.hasApproved(PERSONA, 'mail-intake')).toBe(false);
 
-    expect(await service.handleInbound(inbound(`/approve ${code.toLowerCase()}`))).toBe(
-      'Approved: script "mail-intake" v1. It can now run on a schedule.',
-    );
+    expect(await service.handleInbound(inbound(`/approve ${code.toLowerCase()}`))).toEqual({
+      reply: 'Approved: script "mail-intake" v1. It can now run on a schedule.',
+    });
     expect(service.hasApproved(PERSONA, 'mail-intake')).toBe(true);
 
-    // One-time use.
-    expect(await service.handleInbound(inbound(`/approve ${code}`))).toBe(
-      'This code is not valid.',
-    );
+    // One-time use: the chat has no open approval any more.
+    expect(service.matchesInbound(inbound(`/approve ${code}`))).toBe(false);
   });
 
   it('runs the approved version in live mode and the writes run', async () => {

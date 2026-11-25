@@ -67,10 +67,18 @@ export type PipelineResult = 'enqueued' | 'duplicate' | 'no_persona' | 'ignored'
  * reach a thread, the message store or an agent.
  */
 export interface InboundCommandHandler {
-  /** Synchronous and cheap. True only for a message that is a command. Must not throw. */
+  /**
+   * Synchronous and cheap. Offered every non-reaction event, whatever its
+   * length or attachments. True only for a message that the handler claims.
+   * Must not throw.
+   */
   matches(event: InboundEvent): boolean;
-  /** Called only after matches() returned true. Returns the reply text. Never throws. */
-  handle(event: InboundEvent): Promise<string | undefined>;
+  /**
+   * Called only after matches() returned true. An object means the event is
+   * consumed: the pipeline sends `reply` if present and stops. `undefined`
+   * means not handled: the event continues as a normal message. Never throws.
+   */
+  handle(event: InboundEvent): Promise<{ reply?: string } | undefined>;
 }
 
 /**

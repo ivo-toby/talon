@@ -3197,7 +3197,9 @@ This release contains the runtime, the approval flow and the schedule link. The 
 5. You answer `/approve <code>` or `/reject <code>` in the same chat. The message pipeline handles this answer before a thread or an agent sees it, so a model cannot approve a script.
 6. A schedule that names the script runs the approved version.
 
-The code is valid for `approvalTtlMinutes` and works one time, only in the chat that got the message. In a group chat, each member can approve. After five wrong codes in ten minutes, Talon refuses each code from that chat for ten minutes.
+The code is valid for `approvalTtlMinutes` and works one time, only in the chat that got the message. In a group chat, each member can approve. After five wrong codes in ten minutes, Talon refuses each code from that chat for ten minutes and does not answer.
+
+The command is not case-sensitive, can carry a bot name (`/approve@my_bot <code>`) and can end with `.` or `!`. While a chat has an open approval, Talon checks each message of that chat, also a long one or one with an attachment. A message that holds the code but is not a valid command never reaches the agent: Talon cancels the code and the version goes back to `tested`. A message that starts with `/approve` or `/reject` but is not a valid command gets a short usage answer.
 
 Before each scheduled run, Talon makes sure that the files on disk still match the approved hash. If a file changed, the run does not start.
 

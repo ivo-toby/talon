@@ -53,14 +53,14 @@ export interface ScriptServiceDeps {
     context: RunContext,
     manifest: AuthoredManifest,
   ): Promise<Result<RunProvider, ScriptError>>;
-  /** Sends a text to a chat. Used only for the approval message. */
+  /** Sends a text to a chat: the approval message and failure notices. */
   send(
     channelName: string,
     externalThreadId: string,
     body: string,
   ): Promise<Result<void, ScriptError>>;
-  /** Sends a text to the chat that a thread belongs to. Used for failure notices. */
-  notifyThread(threadId: string, body: string): Promise<Result<void, ScriptError>>;
+  /** The chat that a thread belongs to, or `undefined`. Synchronous. */
+  resolveChat(threadId: string): { channelName: string; externalThreadId: string } | undefined;
   audit(entry: {
     action: string;
     personaId: string;
@@ -85,15 +85,19 @@ export interface ScriptService {
   }): Promise<
     Result<{ unit: UnitOutcome[]; dryRun?: DryRunOutcome; state: VersionState }, ScriptError>
   >;
+  /** Sends the approval message to the chat of the thread that saved the version. */
   requestApproval(input: {
     personaId: string;
     versionId: string;
-    channelName: string;
-    externalThreadId: string;
   }): Promise<Result<void, ScriptError>>;
-  /** True if the event is an approval command. Synchronous, never throws. */
+  /**
+   * True if the event is an approval command, holds a valid code of its chat,
+   * or starts like a command, in a chat with an open approval. Synchronous,
+   * never throws.
+   */
   matchesInbound(event: InboundEvent): boolean;
-  handleInbound(event: InboundEvent): Promise<string | undefined>;
+  /** An object means the event is consumed. Never rejects. */
+  handleInbound(event: InboundEvent): Promise<{ reply?: string } | undefined>;
   runScheduled(input: {
     personaId: string;
     threadId: string;
@@ -378,12 +382,14 @@ export function createScriptService(deps: ScriptServiceDeps): ScriptService {
   async function requestApprovalImpl(input: {
     personaId: string;
     versionId: string;
-    channelName: string;
-    externalThreadId: string;
   }): Promise<Result<void, ScriptError>> {
     const owned = loadOwned(input.personaId, input.versionId);
     if (owned.isErr()) return err(owned.error);
     const { version, row } = owned.value;
+    const chat = deps.resolveChat(version.threadId);
+    if (!chat) {
+      return err(new ScriptError('INVALID_ARGUMENT', 'the thread of the version has no chat'));
+    }
     if (testing.has(version.versionId)) {
       return err(new ScriptError('INVALID_ARGUMENT', 'the version is being tested'));
     }
@@ -428,8 +434,8 @@ export function createScriptService(deps: ScriptServiceDeps): ScriptService {
 
     const requested = approval.request({
       versionId: version.versionId,
-      channelName: input.channelName,
-      externalThreadId: input.externalThreadId,
+      channelName: chat.channelName,
+      externalThreadId: chat.externalThreadId,
     });
     if (requested.isErr()) return err(requested.error);
 
@@ -438,12 +444,12 @@ export function createScriptService(deps: ScriptServiceDeps): ScriptService {
     try {
       sent = summary.isErr()
         ? err(summary.error)
-        : await deps.send(input.channelName, input.externalThreadId, summary.value);
+        : await deps.send(chat.channelName, chat.externalThreadId, summary.value);
     } catch {
       sent = err(new ScriptError('TOOL_FAILED', 'send threw'));
     }
     if (sent.isErr()) {
-      const expired = repo.expireOpenApprovals(version.versionId, now());
+      const expired = approval.expireVersion(version.versionId);
       const back = repo.setVersionState(version.versionId, ['awaiting-approval'], 'tested');
       if (expired.isErr() || back.isErr()) {
         logger.error(
@@ -456,9 +462,10 @@ export function createScriptService(deps: ScriptServiceDeps): ScriptService {
     return ok(undefined);
   }
 
-  function handleInboundImpl(event: InboundEvent): string | undefined {
-    const command = approval.parseCommand(event.content);
-    if (!command) return undefined;
+  function decideCommand(event: InboundEvent): { reply?: string } {
+    const command =
+      typeof event.content === 'string' ? approval.parseCommand(event.content) : undefined;
+    if (!command) return { reply: 'This code is not valid.' };
 
     const decided = approval.decide({
       code: command.code,
@@ -468,10 +475,12 @@ export function createScriptService(deps: ScriptServiceDeps): ScriptService {
     });
     if (decided.isErr()) {
       logger.error({ scriptCode: decided.error.scriptCode }, 'script approval decision failed');
-      return 'This code is not valid.';
+      return { reply: 'This code is not valid.' };
     }
     const outcome = decided.value;
-    if (outcome.outcome === 'refused') return 'This code is not valid.';
+    // A chat held by the attempt limiter gets no answer at all.
+    if (outcome.outcome === 'blocked') return {};
+    if (outcome.outcome === 'refused') return { reply: 'This code is not valid.' };
 
     if (outcome.versionId !== undefined && outcome.personaId !== undefined) {
       audit({
@@ -487,10 +496,49 @@ export function createScriptService(deps: ScriptServiceDeps): ScriptService {
       });
     }
     const name = cleanName(outcome.scriptName);
-    const version = outcome.version ?? 0;
+    const label =
+      name !== '' && outcome.version !== undefined
+        ? ` script "${name}" v${outcome.version}.`
+        : ' the script.';
     return outcome.outcome === 'approved'
-      ? `Approved: script "${name}" v${version}. It can now run on a schedule.`
-      : `Rejected: script "${name}" v${version}.`;
+      ? { reply: `Approved:${label} It can now run on a schedule.` }
+      : { reply: `Rejected:${label}` };
+  }
+
+  function cancelLeak(event: InboundEvent): { reply?: string } {
+    const cancelled = approval.cancelLeaked(event);
+    if (cancelled.isErr()) {
+      logger.error(
+        { scriptCode: cancelled.error.scriptCode },
+        'a leaked approval code was not cancelled',
+      );
+    } else {
+      for (const item of cancelled.value) {
+        audit({
+          action: 'script.approval.expired',
+          personaId: item.personaId ?? '',
+          threadId: item.threadId ?? '',
+          runId: randomUUID(),
+          details: { versionId: item.versionId, reason: 'leak', channelName: event.channelName },
+        });
+      }
+    }
+    return {
+      reply: 'The code was not in a valid command, so I cancelled it. Ask for a new approval.',
+    };
+  }
+
+  function handleInboundImpl(event: InboundEvent): { reply?: string } | undefined {
+    switch (approval.classify(event)) {
+      case 'command':
+        return decideCommand(event);
+      case 'leak':
+        return cancelLeak(event);
+      case 'malformed':
+        return { reply: 'Use: /approve CODE or /reject CODE' };
+      case 'none':
+        return undefined;
+    }
   }
 
   async function runScheduledImpl(input: {
@@ -669,18 +717,22 @@ export function createScriptService(deps: ScriptServiceDeps): ScriptService {
 
     matchesInbound(event): boolean {
       try {
-        return approval.parseCommand(event.content) !== undefined;
+        return approval.classify(event) !== 'none';
       } catch {
         return false;
       }
     },
 
-    handleInbound(event): Promise<string | undefined> {
+    handleInbound(event): Promise<{ reply?: string } | undefined> {
       try {
         return Promise.resolve(handleInboundImpl(event));
       } catch (error) {
-        logger.error({ err: error }, 'script approval handling failed unexpectedly');
-        return Promise.resolve(undefined);
+        // `matches` claimed the event, so it can hold a code: keep it away from the agent.
+        logger.error(
+          { errName: error instanceof Error ? error.name : 'unknown' },
+          'script approval handling failed unexpectedly',
+        );
+        return Promise.resolve({});
       }
     },
 
@@ -690,10 +742,14 @@ export function createScriptService(deps: ScriptServiceDeps): ScriptService {
       try {
         const code = KNOWN_CODES.has(input.errorCode) ? input.errorCode : 'SCRIPT_FAILED';
         const name = cleanName(input.scriptName);
-        const sent = await deps.notifyThread(
-          input.threadId,
-          `Script "${name}" failed (${code}). It stays scheduled. I will tell you again only if it fails after a success.`,
-        );
+        const chat = deps.resolveChat(input.threadId);
+        const sent = chat
+          ? await deps.send(
+              chat.channelName,
+              chat.externalThreadId,
+              `Script "${name}" failed (${code}). It stays scheduled. I will tell you again only if it fails after a success.`,
+            )
+          : err(new ScriptError('TOOL_FAILED', 'the thread of the script has no chat'));
         if (sent.isErr()) {
           logger.error({ scriptCode: sent.error.scriptCode }, 'script failure notice not sent');
         }
