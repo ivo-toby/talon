@@ -167,6 +167,8 @@ vi.mock('../../../src/tools/host-tools-bridge.js', () => ({
     path: '/tmp/host-tools.sock',
     start: vi.fn(),
     stop: vi.fn(),
+    setScriptGuide: vi.fn(),
+    setScriptService: vi.fn(),
   })),
 }));
 
@@ -2631,6 +2633,11 @@ describe('bootstrap with scripts enabled', () => {
     expect(typeof sendReply).toBe('function');
     expect(handler.matches({ channelName: 'c', externalThreadId: 't', content: 'hi' })).toBe(false);
     expect(setScriptRunner).toHaveBeenCalledWith(ctx.scriptService);
+    // script_manage reads the service through the bridge, and the guide loads from templates/.
+    expect(ctx.hostToolsBridge.setScriptService).toHaveBeenCalledWith(ctx.scriptService);
+    expect(ctx.hostToolsBridge.setScriptGuide).toHaveBeenCalledWith(
+      expect.stringContaining('script'),
+    );
   });
 
   it('fails when the image is not pinned by digest', async () => {

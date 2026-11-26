@@ -27,6 +27,9 @@ export { PersonaListHandler } from './persona-list.js';
 export type { ScheduleManageTool, ScheduleManageArgs } from './schedule-manage.js';
 export { ScheduleManageHandler } from './schedule-manage.js';
 
+export type { ScriptManageTool, ScriptManageArgs } from './script-manage.js';
+export { ScriptManageHandler } from './script-manage.js';
+
 export type { MemoryAccessTool, MemoryAccessArgs } from './memory-access.js';
 export { MemoryAccessHandler } from './memory-access.js';
 

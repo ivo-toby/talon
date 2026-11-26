@@ -321,6 +321,50 @@ const TOOLS = [
     },
   },
   {
+    name: 'script_manage',
+    description:
+      'Writes, tests and sends scripts for approval. A script is a routine with fixed steps that repeats. You MUST call action "guide" before you write a script: it holds the file formats, the SDK and an example. Nothing runs live until the user approves the script.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        action: {
+          type: 'string' as const,
+          enum: ['guide', 'tools', 'save', 'test', 'request_approval', 'list', 'show'],
+          description:
+            '"guide" returns the authoring guide. "tools" lists the tools a script can call (with name: the input schema of one). "save" stores a new version from files. "test" runs the unit cases and a dry run of a version. "request_approval" sends a tested version to the user for approval. "list" lists your scripts. "show" returns the files of a script version.',
+        },
+        name: {
+          type: 'string' as const,
+          description: 'tools: the tool name. show: the script name. At most 100 characters.',
+        },
+        files: {
+          type: 'array' as const,
+          maxItems: 20,
+          description: 'save: the files of the script, for example script.ts, manifest.json, tests.json.',
+          items: {
+            type: 'object' as const,
+            properties: {
+              path: { type: 'string' as const, description: 'Relative file path' },
+              content: { type: 'string' as const, description: 'File text' },
+            },
+            required: ['path', 'content'],
+            additionalProperties: false as const,
+          },
+        },
+        versionId: {
+          type: 'string' as const,
+          description: 'test and request_approval: the versionId that save returned.',
+        },
+        version: {
+          type: 'integer' as const,
+          minimum: 1,
+          description: 'show: the version number. Default: the newest.',
+        },
+      },
+      required: ['action'],
+    },
+  },
+  {
     name: 'channel_send',
     description:
 'Sends a message to a channel on behalf of a persona. On a scheduled run, leave `externalChatId` out: the message is then delivered to the conversation where the schedule was created, including the exact Telegram topic. Pass `externalChatId` only to deliver somewhere else on purpose (e.g. a Telegram chat_id, or `<chat_id>:<topic_id>` for one topic); it overrides the schedule\'s origin. If the schedule has no origin (CLI-created schedules) and no `externalChatId` is given, the tool errors — use `channel_list` to discover available chats or `channel_broadcast` to fan out.',

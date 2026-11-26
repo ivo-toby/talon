@@ -357,7 +357,10 @@ export class TalondDaemon {
 
       this.ctx.scheduler.stop();
       // Before the database closes: revoke the leases of active script runs and wait for them.
-      await this.ctx.scriptService?.shutdown();
+      if (this.ctx.scriptService) {
+        await this.ctx.scriptService.shutdown();
+        this.ctx.hostToolsBridge.setScriptService(null);
+      }
 
       await this.ctx.voiceSessionService?.shutdown();
       try {
@@ -479,7 +482,10 @@ export class TalondDaemon {
         );
       }
       context.scheduler.stop();
-      await context.scriptService?.shutdown();
+      if (context.scriptService) {
+        await context.scriptService.shutdown();
+        context.hostToolsBridge.setScriptService(null);
+      }
       try {
         await context.voiceSessionService?.shutdown();
         await context.voiceServer?.stop();

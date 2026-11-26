@@ -299,6 +299,21 @@ describe('full flow', () => {
   });
 });
 
+describe('requestApproval repeats', () => {
+  it('sends a message the first time and sends nothing the second time', async () => {
+    const s = setup();
+    play(s.backend, SCRIPT_CALLS, { ok: true, result: { sent: 1 } });
+    const v = s.service.save({ personaId: 'p1', threadId: 'th1', files: files() })._unsafeUnwrap();
+    await s.service.test({ personaId: 'p1', versionId: v.versionId });
+    const first = await s.service.requestApproval({ personaId: 'p1', versionId: v.versionId });
+    expect(first._unsafeUnwrap()).toBe('sent');
+    expect(s.sent).toHaveLength(1);
+    const second = await s.service.requestApproval({ personaId: 'p1', versionId: v.versionId });
+    expect(second._unsafeUnwrap()).toBe('already-sent');
+    expect(s.sent).toHaveLength(1);
+  });
+});
+
 describe('save, test and requestApproval refusals', () => {
   it('refuses another persona with the unknown-version message', async () => {
     const s = setup();

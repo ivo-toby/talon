@@ -87,7 +87,7 @@ import { recoverFromCrash } from './lifecycle.js';
 import { ContextRoller, normalizeContextRollerDiagnostics } from './context-roller.js';
 import { ContextAssembler } from './context-assembler.js';
 import type { DaemonContext } from './daemon-context.js';
-import { loadToolInstructions } from '../tools/tool-instructions.js';
+import { loadToolInstructions, loadScriptGuide } from '../tools/tool-instructions.js';
 import { createObservabilityService } from '../observability/langfuse/index.js';
 import { NoopObservabilityService } from '../observability/langfuse/noop-observability.js';
 import type { ObservabilityService } from '../observability/langfuse/observability-types.js';
@@ -328,6 +328,15 @@ export async function bootstrap(
     toolInstructions = loadToolInstructions(rootToolInstructionsDir);
   }
   logger.info({ count: toolInstructions.size }, 'bootstrap: tool instructions loaded');
+
+  // 8a'. The script authoring guide, loaded one time. Same lookup order as above.
+  const scriptGuide = loadScriptGuide([
+    join(import.meta.dirname, '../templates/script-authoring.md'),
+    join(process.cwd(), 'templates/script-authoring.md'),
+  ]);
+  if (scriptGuide === undefined) {
+    logger.warn('bootstrap: the script authoring guide was not found');
+  }
 
   // 8b. Load sub-agents (optional — if the directory does not exist, skip)
   //     Load from three sources in priority order (later overrides earlier):
@@ -1243,6 +1252,7 @@ export async function bootstrap(
   });
   backgroundAgentManager?.setHostToolsBridge(hostToolsBridge);
   partialCtx.hostToolsBridge = hostToolsBridge;
+  hostToolsBridge.setScriptGuide(scriptGuide);
 
   // 18. Talon scripts (off by default). The `scripts` section is fixed for the
   // life of the process: the broker allowlist and the scripts root are built
@@ -1275,6 +1285,7 @@ export async function bootstrap(
       );
     }
     scriptService = scriptRuntime.value;
+    hostToolsBridge.setScriptService(scriptService);
     await reapScriptContainers(config.scripts, logger);
     const service = scriptService;
     messagePipeline.setInboundCommandHandler(

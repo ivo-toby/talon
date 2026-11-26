@@ -36,6 +36,8 @@ import {
   type ImageLookupFindings,
 } from './host-tools/image-lookup.js';
 import { ExecutionEnvHandler, type ExecutionEnvArgs } from './host-tools/execution-env.js';
+import { ScriptManageHandler, type ScriptManageArgs } from './host-tools/script-manage.js';
+import type { ScriptService } from '../scripts/service.js';
 import { filterVoiceMcpTools, isToolAllowed, MCP_TO_INTERNAL } from './tool-filter.js';
 import { createDatabase } from '../core/database/connection.js';
 import type { ResolvedCapabilities } from '../personas/persona-types.js';
@@ -130,6 +132,9 @@ export class HostToolsBridge {
   private backgroundAgentHandler: BackgroundAgentHandler | null = null;
   private executionEnvHandler: ExecutionEnvHandler | null = null;
   private imageLookupHandler: ImageLookupHandler | null = null;
+  private scriptService: ScriptService | null = null;
+  private scriptGuide: string | undefined;
+  private scriptManageHandler: ScriptManageHandler;
 
   constructor(
     private readonly ctx: DaemonContext,
@@ -144,6 +149,12 @@ export class HostToolsBridge {
       threadRepository: ctx.repos.thread,
       channelRepository: ctx.repos.channel,
       personaRepository: ctx.repos.persona,
+      logger: handlerLogger,
+    });
+
+    this.scriptManageHandler = new ScriptManageHandler({
+      getService: () => this.scriptService,
+      getGuide: () => this.scriptGuide,
       logger: handlerLogger,
     });
 
@@ -319,6 +330,19 @@ export class HostToolsBridge {
       ...(input.voiceObservation ? { voiceObservation: input.voiceObservation } : {}),
       ...(input.traceparent ? { trustedTraceparent: input.traceparent } : {}),
     });
+  }
+
+  /**
+   * Sets the script service that `script_manage` uses. The service is built after
+   * the bridge, and only with `scripts.enabled`. Null means scripts are off.
+   */
+  setScriptService(service: ScriptService | null): void {
+    this.scriptService = service;
+  }
+
+  /** Sets the text of the script authoring guide. Undefined: the guide is not available. */
+  setScriptGuide(text: string | undefined): void {
+    this.scriptGuide = text;
   }
 
   /** Bind a provider observation parent after the generation span is created. */
@@ -937,6 +961,9 @@ export class HostToolsBridge {
     switch (tool) {
       case 'schedule.manage':
         return this.scheduleHandler.execute(args as unknown as ScheduleManageArgs, context);
+
+      case 'script.manage':
+        return this.scriptManageHandler.execute(args as unknown as ScriptManageArgs, context);
 
       case 'channel.send':
         return this.channelHandler.execute(args as unknown as ChannelSendArgs, context);

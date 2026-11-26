@@ -97,7 +97,7 @@ export interface ScriptService {
   requestApproval(input: {
     personaId: string;
     versionId: string;
-  }): Promise<Result<void, ScriptError>>;
+  }): Promise<Result<'sent' | 'already-sent', ScriptError>>;
   /**
    * True if the event is an approval command, holds a valid code of its chat,
    * or starts like a command, in a chat with an open approval. Synchronous,
@@ -667,7 +667,7 @@ export function createScriptService(deps: ScriptServiceDeps): ScriptService {
   async function requestApprovalImpl(input: {
     personaId: string;
     versionId: string;
-  }): Promise<Result<void, ScriptError>> {
+  }): Promise<Result<'sent' | 'already-sent', ScriptError>> {
     const owned = loadOwned(input.personaId, input.versionId);
     if (owned.isErr()) return err(owned.error);
     const { version, row } = owned.value;
@@ -680,6 +680,12 @@ export function createScriptService(deps: ScriptServiceDeps): ScriptService {
     }
     if (version.state !== 'tested' && version.state !== 'awaiting-approval') {
       return err(new ScriptError('INVALID_ARGUMENT', 'version cannot be put up for approval'));
+    }
+    // An open approval means the message went out already: send nothing again.
+    if (version.state === 'awaiting-approval') {
+      const open = repo.findOpenApprovalFor(version.versionId, 'version', now());
+      if (open.isErr()) return err(new ScriptError('SANDBOX', 'could not read the approvals'));
+      if (open.value !== null) return ok('already-sent');
     }
     let report: unknown;
     try {
@@ -744,7 +750,7 @@ export function createScriptService(deps: ScriptServiceDeps): ScriptService {
       }
       return err(new ScriptError('TOOL_FAILED', 'the approval message could not be sent'));
     }
-    return ok(undefined);
+    return ok('sent');
   }
 
   function decideCommand(event: InboundEvent): { reply?: string } {
