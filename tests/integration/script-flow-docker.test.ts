@@ -33,6 +33,8 @@ import type { ToolCallResult } from '../../src/tools/tool-types.js';
 import type { ResolvedCapabilities } from '../../src/personas/persona-types.js';
 import { createTestDb } from '../unit/core/database/repositories/helpers.js';
 
+const TEST_APPROVAL_KEY = Buffer.alloc(32, 7);
+
 /**
  * Real-Docker run of the full script flow: save, unit cases, dry run, approval
  * message, `/approve` from the chat, and a scheduled run in `live` mode. Then
@@ -334,6 +336,7 @@ describe.skipIf(!enabled)('script flow against a real Docker daemon', () => {
       store: createScriptStore({ root, repo, logger }),
       repo,
       approval: createApprovalService({
+        hashKey: TEST_APPROVAL_KEY,
         repo,
         ttlMinutes: config.approvalTtlMinutes,
         logger,

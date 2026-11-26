@@ -1,12 +1,18 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { err } from 'neverthrow';
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, createHmac, randomBytes } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import pino from 'pino';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { loadApprovalKey } from '../../../src/scripts/approval-key.js';
 import { ScriptRepository } from '../../../src/core/database/repositories/script-repository.js';
 import { PersonaRepository } from '../../../src/core/database/repositories/persona-repository.js';
 import { createApprovalService, type ApprovalService } from '../../../src/scripts/approval.js';
 import { createTestDb, uuid } from '../core/database/repositories/helpers.js';
+
+const TEST_APPROVAL_KEY = Buffer.alloc(32, 7);
 
 const MIN = 60_000;
 
@@ -65,6 +71,7 @@ describe('approval service', () => {
     clock = 1_000_000;
     seed = 0;
     svc = createApprovalService({
+      hashKey: TEST_APPROVAL_KEY,
       repo,
       ttlMinutes: 30,
       logger: pino({ level: 'silent' }),
@@ -74,11 +81,66 @@ describe('approval service', () => {
     versionId = makeVersion();
   });
 
+  describe('hash key', () => {
+    const msgOf = (content: string) =>
+      ({ channelName: 'tg', externalThreadId: 't1', content }) as never;
+
+    it('does not accept the code of a service with another key', () => {
+      const code = ask();
+      const other = createApprovalService({
+        repo,
+        hashKey: Buffer.alloc(32, 9),
+        ttlMinutes: 30,
+        logger: pino({ level: 'silent' }),
+        now: () => clock,
+      })._unsafeUnwrap();
+      // the other key hashes the code to another value: no leak, no decision
+      expect(other.classify(msgOf(`approve ${code}`))).not.toBe('leak');
+      expect(svc.classify(msgOf(`approve ${code}`))).toBe('leak');
+      const decided = other.decide({
+        code,
+        decision: 'approved',
+        channelName: 'tg',
+        externalThreadId: 't1',
+      });
+      expect(decided._unsafeUnwrap().outcome).not.toBe('approved');
+      expect(repo.getVersion(versionId)._unsafeUnwrap()?.state).toBe('awaiting-approval');
+    });
+
+    it('keeps open approvals across a restart with the same key file', () => {
+      const dir = mkdtempSync(join(tmpdir(), 'approval-restart-'));
+      try {
+        const first = createApprovalService({
+          repo,
+          hashKey: loadApprovalKey(join(dir, 'talond.db'))._unsafeUnwrap(),
+          ttlMinutes: 30,
+          logger: pino({ level: 'silent' }),
+          now: () => clock,
+          randomBytes: (n) => Buffer.from(Array.from({ length: n }, (_, i) => 3 + i)),
+        })._unsafeUnwrap();
+        const code = first
+          .request({ versionId, channelName: 'tg', externalThreadId: 't1' })
+          ._unsafeUnwrap().code;
+        const second = createApprovalService({
+          repo,
+          hashKey: loadApprovalKey(join(dir, 'talond.db'))._unsafeUnwrap(),
+          ttlMinutes: 30,
+          logger: pino({ level: 'silent' }),
+          now: () => clock,
+        })._unsafeUnwrap();
+        expect(second.classify(msgOf(`approve ${code}`))).toBe('leak');
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  });
+
   describe('request', () => {
     it('makes an 8 character code from the alphabet and stores only its hash', () => {
       const code = ask();
       expect(code).toBe('ABCDEFGH');
-      const hash = createHash('sha256').update(code).digest('hex');
+      const hash = createHmac('sha256', TEST_APPROVAL_KEY).update(code).digest('hex');
+      expect(hash).not.toBe(createHash('sha256').update(code).digest('hex'));
       const row = repo.findOpenApproval(hash)._unsafeUnwrap();
       expect(row?.code_hash).toBe(hash);
       expect(row?.expires_at).toBe(clock + 30 * MIN);
@@ -275,6 +337,7 @@ describe('approval service', () => {
     beforeEach(() => {
       hashes = 0;
       svc = createApprovalService({
+        hashKey: TEST_APPROVAL_KEY,
         repo,
         ttlMinutes: 30,
         logger: pino({ level: 'silent' }),
@@ -282,7 +345,7 @@ describe('approval service', () => {
         randomBytes: (n) => Buffer.from(Array.from({ length: n }, (_, i) => seed + i)),
         hashCode: (code) => {
           hashes++;
-          return createHash('sha256').update(code.toUpperCase()).digest('hex');
+          return createHmac('sha256', TEST_APPROVAL_KEY).update(code.toUpperCase()).digest('hex');
         },
       })._unsafeUnwrap();
     });
@@ -439,6 +502,7 @@ describe('approval service', () => {
     it('rebuilds the index from the database in a new service', () => {
       const code = ask();
       const fresh = createApprovalService({
+        hashKey: TEST_APPROVAL_KEY,
         repo,
         ttlMinutes: 30,
         logger: pino({ level: 'silent' }),
@@ -449,6 +513,7 @@ describe('approval service', () => {
       expect(fresh.classify(msg(`/approve ${code}`, 'other'))).toBe('wrong-chat');
       clock += 31 * MIN;
       const later = createApprovalService({
+        hashKey: TEST_APPROVAL_KEY,
         repo,
         ttlMinutes: 30,
         logger: pino({ level: 'silent' }),
@@ -599,6 +664,7 @@ describe('approval service', () => {
       approvedVersion();
       const code = askFor('run')._unsafeUnwrap().code;
       const fresh = createApprovalService({
+        hashKey: TEST_APPROVAL_KEY,
         repo,
         ttlMinutes: 30,
         logger: pino({ level: 'silent' }),
@@ -612,6 +678,7 @@ describe('approval service', () => {
     it('a rebuilt index still moves a version-purpose leak back to tested', () => {
       const code = ask();
       const fresh = createApprovalService({
+        hashKey: TEST_APPROVAL_KEY,
         repo,
         ttlMinutes: 30,
         logger: pino({ level: 'silent' }),
@@ -648,6 +715,7 @@ describe('approval service', () => {
       const failing = new ScriptRepository(db);
       failing.listOpenApprovals = () => err(new Error('down') as never);
       const r = createApprovalService({
+        hashKey: TEST_APPROVAL_KEY,
         repo: failing,
         ttlMinutes: 30,
         logger: pino({ level: 'silent' }),
@@ -689,6 +757,7 @@ describe('approval service', () => {
       failing.getScript = () =>
         ({ isErr: () => true, isOk: () => false, error: new Error('down') }) as never;
       const s2 = createApprovalService({
+        hashKey: TEST_APPROVAL_KEY,
         repo: failing,
         ttlMinutes: 30,
         logger: pino({ level: 'silent' }),

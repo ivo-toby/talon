@@ -142,6 +142,8 @@ export interface ScriptService {
     threadId: string;
     scriptName: string;
     change: ScriptScheduleChange;
+    /** For an update: the label of the schedule now, and whether it runs a prompt. */
+    previous?: { label: string; wasPrompt: boolean };
   }): Promise<Result<'awaiting-approval', ScriptError>>;
   /** The input of a schedule, checked against the manifest of the newest approved version. */
   checkScheduleInput(input: {
@@ -795,6 +797,28 @@ export function createScriptService(deps: ScriptServiceDeps): ScriptService {
     return ok('sent');
   }
 
+  /** True if the persona does not hold a `script.run` label for the script right now. */
+  function runDenied(personaId: string, scriptName: string): boolean {
+    try {
+      const capabilities = deps.capabilities(personaId);
+      return capabilities === undefined || scriptRunAccess(capabilities, scriptName) === 'denied';
+    } catch {
+      return true;
+    }
+  }
+
+  /** The thread that asked for a run, from the stored payload, or `undefined`. */
+  function runRequestThread(payload: string | undefined): string | undefined {
+    try {
+      const parsed: unknown = payload === undefined ? undefined : JSON.parse(payload);
+      return isPlainObject(parsed) && typeof parsed.threadId === 'string'
+        ? parsed.threadId
+        : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
   function decideCommand(event: InboundEvent): { reply?: string } {
     const command =
       typeof event.content === 'string' ? approval.parseCommand(event.content) : undefined;
@@ -819,7 +843,10 @@ export function createScriptService(deps: ScriptServiceDeps): ScriptService {
       audit({
         action: 'script.approval',
         personaId: outcome.personaId,
-        threadId: outcome.threadId ?? '',
+        threadId:
+          (outcome.purpose === 'run' ? runRequestThread(outcome.payload) : undefined) ??
+          outcome.threadId ??
+          '',
         runId: randomUUID(),
         details: {
           versionId: outcome.versionId,
@@ -868,13 +895,18 @@ export function createScriptService(deps: ScriptServiceDeps): ScriptService {
     const newest = repo.latestApproved(version.value.script_id);
     if (newest.isErr()) return { reply: `Script ${name} was not started.` };
     if (!newest.value || newest.value.id !== versionId) return changed;
+    if (runDenied(personaId, name)) {
+      return {
+        reply: `Script ${name} was not started: the persona has no script.run capability for it.`,
+      };
+    }
 
     const replyChat = { channelName: event.channelName, externalThreadId: event.externalThreadId };
     const work = (async (): Promise<void> => {
       const result = await tracked(() =>
         agentLive({
           personaId,
-          threadId: outcome.threadId ?? '',
+          threadId: runRequestThread(outcome.payload) ?? outcome.threadId ?? '',
           scriptName: name,
           scriptId: version.value!.script_id,
           versionId,
@@ -950,6 +982,11 @@ export function createScriptService(deps: ScriptServiceDeps): ScriptService {
     if (newest.isErr()) return notSaved;
     if (!newest.value || newest.value.id !== versionId) {
       return { reply: `Script ${name} changed after this request. Ask again.` };
+    }
+    if (runDenied(personaId, name)) {
+      return {
+        reply: `The schedule for script ${name} was not saved: the persona has no script.run capability for it.`,
+      };
     }
     try {
       if ('input' in stored.change) {
@@ -1359,7 +1396,10 @@ export function createScriptService(deps: ScriptServiceDeps): ScriptService {
       );
     }
     const inputText = describeInput(input.input !== undefined, resolved.value);
-    const payload = input.input === undefined ? '{}' : safeStringify({ input: resolved.value });
+    const payload = safeStringify({
+      threadId: input.threadId,
+      ...(input.input === undefined ? {} : { input: resolved.value }),
+    });
     if (inputText === undefined || payload === undefined) {
       return err(new ScriptError('INVALID_ARGUMENT', 'the input cannot be shown as JSON'));
     }
@@ -1388,8 +1428,14 @@ export function createScriptService(deps: ScriptServiceDeps): ScriptService {
    * default of the script, or `none`. `undefined` if the input is not JSON.
    */
   function describeInput(given: boolean, value: unknown): string | undefined {
-    const text = safeStringify(value);
-    if (text === undefined) return undefined;
+    const json = safeStringify(value);
+    if (json === undefined) return undefined;
+    // Unsafe characters become \uXXXX escapes: the text stays valid JSON and cannot break a line.
+    const text = json.replace(
+      // eslint-disable-next-line no-control-regex
+      /[\u0000-\u001f\u007f-\u009f\u2028\u2029\p{Cf}]/gu,
+      (ch) => `\\u${ch.charCodeAt(0).toString(16).padStart(4, '0')}`,
+    );
     return given ? text : value === null ? 'none' : `${text} (default of the script)`;
   }
 
@@ -1471,6 +1517,7 @@ export function createScriptService(deps: ScriptServiceDeps): ScriptService {
     threadId: string;
     scriptName: string;
     change: ScriptScheduleChange;
+    previous?: { label: string; wasPrompt: boolean };
   }): Promise<Result<'awaiting-approval', ScriptError>> {
     const found = loadApproved(input.personaId, input.scriptName);
     if (found.isErr()) return err(found.error);
@@ -1509,9 +1556,20 @@ export function createScriptService(deps: ScriptServiceDeps): ScriptService {
       purpose: 'schedule',
       chat,
       payload,
-      messageOf: (code) =>
-        `The agent wants to run script ${version.manifest.name} on this schedule: ${cronExpr} (${label}).\n` +
-        `Input: ${inputText}\n/approve ${code}\n/reject ${code}`,
+      messageOf: (code) => {
+        const tail = `Input: ${inputText}\n/approve ${code}\n/reject ${code}`;
+        const name = version.manifest.name;
+        if (input.change.action !== 'update') {
+          return `The agent wants to run script ${name} on this schedule: ${cronExpr} (${label}).\n${tail}`;
+        }
+        const old = clean(input.previous?.label ?? '', LABEL_MAX);
+        return (
+          `The agent wants to change schedule ${old} to run script ${name} (version ${version.version}).\n` +
+          `New schedule: ${cronExpr} (${label}).\n` +
+          (input.previous?.wasPrompt === true ? 'The prompt of the schedule is removed.\n' : '') +
+          tail
+        );
+      },
     });
   }
 

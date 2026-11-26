@@ -6,7 +6,7 @@
  * one return of `request`.
  */
 
-import { hash as cryptoHash, randomBytes as cryptoRandomBytes, randomUUID } from 'node:crypto';
+import { createHmac, randomBytes as cryptoRandomBytes, randomUUID } from 'node:crypto';
 import { ok, err, type Result } from 'neverthrow';
 import type { ScriptRepository } from '../core/database/repositories/script-repository.js';
 import type { Logger } from 'pino';
@@ -195,8 +195,9 @@ export function candidateCodes(text: string): Set<string> {
 const chatKey = (channelName: string, externalThreadId: string): string =>
   `${channelName}\0${externalThreadId}`;
 
-function sha256Code(code: string): string {
-  return cryptoHash('sha256', code.toUpperCase(), 'hex');
+/** Keyed hash of an uppercased code or text window, as hex. The key is never stored in the database. */
+function hmacCode(key: Buffer, code: string): string {
+  return createHmac('sha256', key).update(code.toUpperCase()).digest('hex');
 }
 
 function scriptNameOf(manifest: string): string | undefined {
@@ -213,14 +214,16 @@ export function createApprovalService(options: {
   ttlMinutes: number;
   now?: () => number;
   randomBytes?: (n: number) => Buffer;
-  /** Test seam. Default: SHA-256 of the uppercased code, as hex. */
+  /** Secret key (32 bytes) of the code hash. It lives in a file, not in the database. */
+  hashKey: Buffer;
+  /** Test seam. Default: HMAC-SHA-256 of the uppercased code under `hashKey`, as hex. */
   hashCode?: (code: string) => string;
   logger?: Logger;
 }): Result<ApprovalService, ScriptError> {
   const { repo, ttlMinutes } = options;
   const now = options.now ?? ((): number => Date.now());
   const randomBytes = options.randomBytes ?? ((n: number): Buffer => cryptoRandomBytes(n));
-  const hashCode = options.hashCode ?? sha256Code;
+  const hashCode = options.hashCode ?? ((code: string): string => hmacCode(options.hashKey, code));
   const logger = options.logger ?? createLogger({ level: 'info', pretty: false });
 
   const invalid = (): ScriptError =>

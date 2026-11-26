@@ -7,7 +7,7 @@
  */
 
 import { mkdirSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { relative, resolve, isAbsolute } from 'node:path';
 import type Database from 'better-sqlite3';
 import { err, ok, type Result } from 'neverthrow';
 import type { Logger } from 'pino';
@@ -26,6 +26,7 @@ import type { DockerEngineClient } from '../execution-broker/docker-types.js';
 import type { PersonaLoader } from '../personas/persona-loader.js';
 import type { ResolvedCapabilities } from '../personas/persona-types.js';
 import { createApprovalService } from './approval.js';
+import { approvalKeyDir, loadApprovalKey } from './approval-key.js';
 import { buildScriptBroker } from './config.js';
 import { createDaemonProviderFactory, type DaemonProviderDeps } from './daemon-provider.js';
 import { installScriptSdk } from './sdk-install.js';
@@ -194,7 +195,21 @@ export function buildScriptRuntime(deps: ScriptRuntimeDeps): Result<ScriptServic
 
   const repo = new ScriptRepository(deps.db);
   const store = createScriptStore({ root, repo, logger });
-  const approval = createApprovalService({ repo, ttlMinutes: config.approvalTtlMinutes, logger });
+  const keyDir = approvalKeyDir(deps.db.name);
+  if (keyDir !== undefined) {
+    const fromRoot = relative(root, resolve(keyDir));
+    if (fromRoot === '' || (!fromRoot.startsWith('..') && !isAbsolute(fromRoot))) {
+      return err(new ScriptError('INVALID_ARGUMENT', 'the approval key could not be read'));
+    }
+  }
+  const hashKey = loadApprovalKey(deps.db.name);
+  if (hashKey.isErr()) return err(hashKey.error);
+  const approval = createApprovalService({
+    repo,
+    hashKey: hashKey.value,
+    ttlMinutes: config.approvalTtlMinutes,
+    logger,
+  });
   if (approval.isErr()) {
     return err(new ScriptError('SANDBOX', 'the open approvals could not be read', approval.error));
   }

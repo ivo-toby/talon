@@ -188,6 +188,17 @@ describe('reapScriptContainers', () => {
   });
 });
 
+/** The same database under another file name (better-sqlite3 `name` cannot be redefined). */
+function withName(db: ScriptRuntimeDeps['db'], name: string): ScriptRuntimeDeps['db'] {
+  return new Proxy(db, {
+    get(target, key) {
+      if (key === 'name') return name;
+      const value: unknown = Reflect.get(target, key, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+}
+
 function deps(over: Partial<ScriptRuntimeDeps> = {}, withPersona = true): ScriptRuntimeDeps {
   const base = mkdtempSync(join(tmpdir(), 'wiring-'));
   roots.push(base);
@@ -244,6 +255,24 @@ describe('buildScriptRuntime', () => {
     spy.mockRestore();
     expect(result._unsafeUnwrapErr().scriptCode).toBe('SANDBOX');
     expect(result._unsafeUnwrapErr().message).toContain('open approvals');
+  });
+
+  it('fails the boot when the database file is inside the scripts root', () => {
+    const d = deps();
+    const result = buildScriptRuntime({
+      ...d,
+      db: withName(d.db, join(d.config.root, 'talond.db')),
+    });
+    expect(result._unsafeUnwrapErr().message).toContain('the approval key could not be read');
+    expect(existsSync(join(d.config.root, 'script-approval.key'))).toBe(false);
+  });
+
+  it('creates the key file next to a database file outside the root', () => {
+    const d = deps();
+    const dbDir = mkdtempSync(join(tmpdir(), 'wiring-db-'));
+    roots.push(dbDir);
+    buildScriptRuntime({ ...d, db: withName(d.db, join(dbDir, 'talond.db')) })._unsafeUnwrap();
+    expect(existsSync(join(dbDir, 'script-approval.key'))).toBe(true);
   });
 
   it('fails when there is no persona to grant', () => {

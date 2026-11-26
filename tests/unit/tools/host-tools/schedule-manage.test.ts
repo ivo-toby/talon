@@ -1332,6 +1332,7 @@ describe('ScheduleManageHandler — script schedules', () => {
           cronExpr: '5 9 * * 1',
           label: 'Daily standup',
         },
+        previous: { label: 'Daily standup', wasPrompt: true },
       });
       expect(scheduleRepository.update).not.toHaveBeenCalled();
     });
@@ -1361,6 +1362,79 @@ describe('ScheduleManageHandler — script schedules', () => {
         expect(scheduleRepository.update).not.toHaveBeenCalled();
       },
     );
+
+    it('passes the old label and the script fact of a script schedule to the approval', async () => {
+      const { handler, service } = setupScript(approveScript, {
+        ...scriptRow({ input: { a: 1 } }),
+        expression: '0 9 * * 1',
+      });
+      await handler.execute(upd({ label: 'New' }), makeContext());
+      expect(service!.requestScheduleChange).toHaveBeenCalledWith(
+        expect.objectContaining({ previous: { label: 'Mail', wasPrompt: false } }),
+      );
+    });
+
+    it.each([[{ cronExpr: '5 9 * * 1' }], [{ label: 'New' }]])(
+      'writes at once when only %j of a script schedule changes with access allowed',
+      async (extra) => {
+        const { handler, scheduleRepository, service } = setupScript(allowScript, {
+          ...scriptRow({ input: { a: 1 } }),
+          expression: '0 9 * * 1',
+        });
+        const r = await handler.execute(upd(extra), makeContext());
+        expect(r).toMatchObject({ status: 'success', result: { action: 'update', updated: true } });
+        expect(service!.requestScheduleChange).not.toHaveBeenCalled();
+        expect(updatedPayload(scheduleRepository)).toEqual({
+          label: 'label' in extra ? 'New' : 'Mail',
+          script: 'mail-intake',
+          input: { a: 1 },
+        });
+        const written = (scheduleRepository.update as ReturnType<typeof vi.fn>).mock.calls[0][2];
+        if ('cronExpr' in extra) expect(written.expression).toBe('5 9 * * 1');
+        else expect(written.expression ?? '0 9 * * 1').toBe('0 9 * * 1');
+      },
+    );
+
+    it.each([[{ cronExpr: '5 9 * * 1' }], [{ label: 'New' }]])(
+      'asks for approval and writes nothing when only %j changes with access approval',
+      async (extra) => {
+        const { handler, scheduleRepository, service } = setupScript(approveScript, {
+          ...scriptRow({ input: { a: 1 } }),
+          expression: '0 9 * * 1',
+        });
+        const r = await handler.execute(upd(extra), makeContext());
+        expect(r.result).toMatchObject({ status: 'awaiting-approval' });
+        expect(service!.requestScheduleChange).toHaveBeenCalledTimes(1);
+        expect(scheduleRepository.update).not.toHaveBeenCalled();
+      },
+    );
+
+    it('treats script null as no script and refuses a script that is not a string', async () => {
+      const first = setupScript(allowScript, scriptRow({ input: { a: 1 } }));
+      const ok1 = await first.handler.execute(
+        upd({ script: null, label: 'New' } as unknown as Record<string, unknown>),
+        makeContext(),
+      );
+      expect(ok1.status).toBe('success');
+      expect(updatedPayload(first.scheduleRepository)).toMatchObject({ script: 'mail-intake' });
+      const second = setupScript(allowScript, scriptRow());
+      const bad = await second.handler.execute(
+        upd({ script: 5 } as unknown as Record<string, unknown>),
+        makeContext(),
+      );
+      expect(bad).toMatchObject({
+        status: 'error',
+        error: expect.stringContaining('script must be a string'),
+      });
+      expect(second.scheduleRepository.update).not.toHaveBeenCalled();
+      const third = setupScript(allowScript);
+      const bad2 = await third.handler.execute(
+        createArgs({ script: { name: 'x' } }),
+        makeContext(),
+      );
+      expect(bad2.status).toBe('error');
+      expect(third.scheduleRepository.insert).not.toHaveBeenCalled();
+    });
 
     it('keeps the stored input when the script stays the same', async () => {
       const { handler, scheduleRepository } = setupScript(

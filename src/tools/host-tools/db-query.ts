@@ -18,6 +18,7 @@
 
 import type Database from 'better-sqlite3';
 import type pino from 'pino';
+import { err, ok, type Result } from 'neverthrow';
 import type { ToolManifest, ToolCallResult } from '../tool-types.js';
 import { ToolError } from '../../core/errors/error-types.js';
 import type { ToolExecutionContext } from './channel-send.js';
@@ -46,16 +47,17 @@ const MAX_LIMIT = 1_000;
  * Tables with thread_id or persona_id will be auto-scoped.
  */
 const ALLOWED_TABLES: ReadonlyMap<string, { scopeColumn?: string; personaId: boolean }> = new Map([
-  ['memory_items',  { scopeColumn: 'thread_id',  personaId: false }],
-  ['schedules',     { scopeColumn: 'thread_id',  personaId: true  }],
-  ['messages',      { scopeColumn: 'thread_id',  personaId: false }],
-  ['threads',       { scopeColumn: 'id',         personaId: false }],
+  ['memory_items', { scopeColumn: 'thread_id', personaId: false }],
+  ['schedules', { scopeColumn: 'thread_id', personaId: true }],
+  ['messages', { scopeColumn: 'thread_id', personaId: false }],
+  ['threads', { scopeColumn: 'id', personaId: false }],
 ]);
 
 /**
  * SQL safety check: reject any statement that is not a pure SELECT.
  */
-const FORBIDDEN_KEYWORDS = /^\s*(INSERT|UPDATE|DELETE|DROP|CREATE|ALTER|ATTACH|DETACH|PRAGMA|REPLACE|TRUNCATE|GRANT|REVOKE|BEGIN|COMMIT|ROLLBACK|SAVEPOINT|RELEASE)\b/i;
+const FORBIDDEN_KEYWORDS =
+  /^\s*(INSERT|UPDATE|DELETE|DROP|CREATE|ALTER|ATTACH|DETACH|PRAGMA|REPLACE|TRUNCATE|GRANT|REVOKE|BEGIN|COMMIT|ROLLBACK|SAVEPOINT|RELEASE)\b/i;
 
 /**
  * Patterns that indicate complex SQL we don't want to allow.
@@ -65,8 +67,8 @@ const COMPLEX_SQL_PATTERNS = [
   /\bUNION\b/i,
   /\bEXCEPT\b/i,
   /\bINTERSECT\b/i,
-  /\bWITH\b\s+/i,          // CTEs (also catches WITH RECURSIVE)
-  /\(\s*SELECT\b/i,         // subqueries
+  /\bWITH\b\s+/i, // CTEs (also catches WITH RECURSIVE)
+  /\(\s*SELECT\b/i, // subqueries
 ];
 
 /**
@@ -81,7 +83,9 @@ export function extractTableNames(sql: string): string[] {
   // Match FROM clause table(s) — handles "FROM t1, t2" and "FROM t1"
   // Also handles schema-qualified names like "main.tablename" by extracting
   // the part after the dot.
-  const fromMatch = stripped.match(/\bFROM\s+([a-zA-Z_][\w]*(?:\.[a-zA-Z_][\w]*)?(?:\s*,\s*[a-zA-Z_][\w]*(?:\.[a-zA-Z_][\w]*)?)*)/i);
+  const fromMatch = stripped.match(
+    /\bFROM\s+([a-zA-Z_][\w]*(?:\.[a-zA-Z_][\w]*)?(?:\s*,\s*[a-zA-Z_][\w]*(?:\.[a-zA-Z_][\w]*)?)*)/i,
+  );
   if (fromMatch?.[1]) {
     for (const t of fromMatch[1].split(',')) {
       const raw = t.trim().split(/\s+/)[0];
@@ -139,6 +143,49 @@ export class DbQueryHandler {
     return Promise.resolve(this.executeSync(args, context));
   }
 
+  /**
+   * Run EXPLAIN on the final statement and return the names of the tables whose
+   * b-trees it opens. Independent of any SQL parsing in this file.
+   */
+  private openedTables(sql: string, params: unknown[]): Result<string[], string> {
+    const fail = (cause: unknown): Result<string[], string> =>
+      err(
+        `db.query: query execution failed — ${cause instanceof Error ? cause.message : String(cause)}`,
+      );
+    try {
+      const ops = this.deps.db.prepare(`EXPLAIN ${sql}`).all(...params) as Record<
+        string,
+        unknown
+      >[];
+      const pages = new Set<number>();
+      for (const op of ops) {
+        if (op.opcode !== 'OpenRead' && op.opcode !== 'OpenWrite' && op.opcode !== 'ReopenIdx') {
+          continue;
+        }
+        if (op.p3 !== 0) {
+          return err('db.query: table "unknown" is not accessible');
+        }
+        if (typeof op.p2 === 'number') pages.add(op.p2);
+      }
+      if (pages.has(1)) {
+        return err('db.query: table "sqlite_schema" is not accessible');
+      }
+      if (pages.size === 0) return ok([]);
+      const schema = this.deps.db
+        .prepare('SELECT name, tbl_name, rootpage FROM sqlite_schema')
+        .all() as { tbl_name: string; rootpage: number }[];
+      const names = new Set<string>();
+      for (const page of pages) {
+        const row = schema.find((r) => r.rootpage === page);
+        if (!row) return err('db.query: table "unknown" is not accessible');
+        names.add(row.tbl_name.toLowerCase());
+      }
+      return ok([...names]);
+    } catch (cause) {
+      return fail(cause);
+    }
+  }
+
   /** Synchronous implementation — wrapped by execute() to satisfy the async tool interface. */
   private executeSync(args: DbQueryArgs, context: ToolExecutionContext): ToolCallResult {
     const requestId = context.requestId ?? 'unknown';
@@ -187,6 +234,13 @@ export class DbQueryHandler {
         this.deps.logger.warn({ requestId, sql: strippedSql }, error.message);
         return { requestId, tool: 'db.query', status: 'error', error: error.message };
       }
+    }
+
+    // Quoted identifiers hide table names from the regex layer.
+    if (/["`[]/.test(stripSingleQuotedLiterals(strippedSql))) {
+      const error = new ToolError('db.query: quoted identifiers are not supported');
+      this.deps.logger.warn({ requestId }, error.message);
+      return { requestId, tool: 'db.query', status: 'error', error: error.message };
     }
 
     // --- Layer 2: Table whitelist ---
@@ -286,14 +340,29 @@ export class DbQueryHandler {
     // Combine scoping params with user params
     const allParams = [...scopingParams, ...(params ?? [])];
 
+    // --- Layer 5: ask SQLite which tables the final statement opens ---
+    const opened = this.openedTables(limitedSql, allParams);
+    if (opened.isErr()) {
+      this.deps.logger.warn({ requestId }, opened.error);
+      return { requestId, tool: 'db.query', status: 'error', error: opened.error };
+    }
+    for (const table of opened.value) {
+      if (!ALLOWED_TABLES.has(table) || !tables.includes(table)) {
+        const error = new ToolError(
+          `db.query: table "${table}" is not accessible. Allowed tables: ${[...ALLOWED_TABLES.keys()].join(', ')}`,
+        );
+        this.deps.logger.warn({ requestId, table }, error.message);
+        return { requestId, tool: 'db.query', status: 'error', error: error.message };
+      }
+    }
+
     try {
       const stmt = this.deps.db.prepare(limitedSql);
       const rawRows = stmt.all(...allParams);
 
       // Extract column names from the first row.
-      const columns: string[] = rawRows.length > 0
-        ? Object.keys(rawRows[0] as Record<string, unknown>)
-        : [];
+      const columns: string[] =
+        rawRows.length > 0 ? Object.keys(rawRows[0] as Record<string, unknown>) : [];
 
       // Convert rows to arrays for a compact wire format.
       const rows = (rawRows as Record<string, unknown>[]).map((row) =>
@@ -333,4 +402,9 @@ function stripSqlComments(sql: string): string {
   // Remove line comments (-- ...)
   result = result.replace(/--[^\n]*/g, ' ');
   return result.trim();
+}
+
+/** Replace every single-quoted string literal (with '' escapes) by a blank. */
+function stripSingleQuotedLiterals(sql: string): string {
+  return sql.replace(/'(?:[^']|'')*'/g, ' ');
 }

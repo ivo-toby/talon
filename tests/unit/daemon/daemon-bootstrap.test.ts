@@ -428,8 +428,8 @@ function makeMockDb() {
     get: vi.fn().mockReturnValue(undefined),
     all: vi.fn().mockReturnValue([]),
   };
-
   return {
+    name: ':memory:',
     prepare: vi.fn().mockReturnValue(mockStatement),
     pragma: vi.fn().mockReturnValue(0),
     exec: vi.fn(),

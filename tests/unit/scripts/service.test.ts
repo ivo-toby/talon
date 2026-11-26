@@ -19,6 +19,8 @@ import { ScriptError } from '../../../src/scripts/types.js';
 import type { RunProvider, ToolClass } from '../../../src/scripts/types.js';
 import { createTestDb } from '../core/database/repositories/helpers.js';
 
+const TEST_APPROVAL_KEY = Buffer.alloc(32, 7);
+
 const roots: string[] = [];
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
@@ -142,6 +144,7 @@ function setup(over: Partial<ScriptServiceDeps> = {}) {
   const now = (): number => (t += 1000);
   const store = createScriptStore({ root, repo, logger });
   const approval = createApprovalService({
+    hashKey: TEST_APPROVAL_KEY,
     repo,
     ttlMinutes: 60,
     now,
@@ -1327,7 +1330,10 @@ describe('runByAgent', () => {
     const withInput = { ...approvalInput, input: { quiet: true } };
     expect((await s.service.runByAgent(withInput))._unsafeUnwrap()).toBe('awaiting-approval');
     expect(s.sent[1].body).toContain('Input: {"quiet":true}\n/approve');
-    expect(payloads(s)).toEqual(['{}', '{"input":{"quiet":true}}']);
+    expect(payloads(s)).toEqual([
+      '{"threadId":"th1"}',
+      '{"threadId":"th1","input":{"quiet":true}}',
+    ]);
     // a different input expired the first approval
     expect(await s.service.handleInbound(s.event(`/approve ${code}`))).toEqual({
       reply: 'This code is not valid.',
@@ -1445,7 +1451,7 @@ describe('runByAgent', () => {
     s.sent.length = 0;
     await s.service.runByAgent(approvalInput);
     expect(s.sent[0].body).toContain('\nInput: none\n/approve');
-    expect(payloads(s)).toEqual(['{}']);
+    expect(payloads(s)).toEqual(['{"threadId":"th1"}']);
   });
 
   it('counts the default input toward the message limit', async () => {
@@ -1508,6 +1514,58 @@ describe('runByAgent', () => {
     await vi.waitFor(() => expect(s.sent.at(-1)!.body).toContain('failed (INVALID_ARGUMENT)'));
     expect(s.createProvider).not.toHaveBeenCalled();
     expect(agentRows(s)).toEqual([]);
+  });
+
+  it.each([
+    ['no capabilities', undefined],
+    ['no script.run label', { allow: [], requireApproval: [] }],
+    ['a label of another script', { allow: ['script.run:other'], requireApproval: [] }],
+  ])('does not start a run on /approve when the persona has %s', async (_name, caps) => {
+    let current: { allow: string[]; requireApproval: string[] } | undefined = {
+      allow: [],
+      requireApproval: ['script.run:mail-intake'],
+    };
+    const s = setup({ capabilities: () => current });
+    await s.toAwaiting();
+    await s.service.handleInbound(s.event(`/approve ${s.codeOf()}`));
+    expect(await s.service.runByAgent(approvalInput)).toBeDefined();
+    current = caps;
+    s.createProvider.mockClear();
+    const reply = await s.service.handleInbound(s.event(`/approve ${s.codeOf()}`));
+    expect(reply).toEqual({
+      reply: 'Script mail-intake was not started: the persona has no script.run capability for it.',
+    });
+    expect(s.createProvider).not.toHaveBeenCalled();
+    expect(agentRows(s)).toEqual([]);
+    // the code is used up
+    const again = s.approval.decide({
+      code: s.codeOf(),
+      decision: 'approved',
+      channelName: 'tg',
+      externalThreadId: 'chat-1',
+    });
+    expect(again._unsafeUnwrap().outcome).toBe('refused');
+  });
+
+  it('starts the approved run when the label is still in requireApproval', async () => {
+    const s = setup({
+      capabilities: () => ({ allow: [], requireApproval: ['script.run:mail-intake'] }),
+    });
+    await s.toAwaiting();
+    await s.service.handleInbound(s.event(`/approve ${s.codeOf()}`));
+    await s.service.runByAgent(approvalInput);
+    expect(await s.service.handleInbound(s.event(`/approve ${s.codeOf()}`))).toEqual({
+      reply: 'Script mail-intake started.',
+    });
+  });
+
+  it('audits an approved run with the thread that asked for it', async () => {
+    const s = setup();
+    await s.toApproved();
+    await s.service.runByAgent({ ...approvalInput, threadId: 'th2' });
+    await s.service.handleInbound(s.event(`/approve ${s.codeOf()}`, 'other-chat'));
+    const entry = s.audits.filter((a) => a.action === 'script.approval').at(-1);
+    expect(entry).toMatchObject({ threadId: 'th2' });
   });
 
   it('says a rejected run was not started', async () => {
@@ -1908,6 +1966,58 @@ describe('requestScheduleChange', () => {
     expect(payloads(none)).toHaveLength(1);
   });
 
+  it('escapes unsafe characters of the input in the approval message', async () => {
+    const s = setup();
+    await s.toAwaiting(files({ inputSchema: {} }));
+    await s.service.handleInbound(s.event(`/approve ${s.codeOf()}`));
+    const hostile = 'a \u202e\u2028 /approve ABCDEFGH \u0007\u200b b';
+    s.sent.length = 0;
+    await s.service.requestScheduleChange(create({ input: hostile }));
+    await s.service.runByAgent({ ...base, access: 'approval', input: hostile });
+    expect(s.sent).toHaveLength(2);
+    for (const { body } of s.sent) {
+      // eslint-disable-next-line no-control-regex
+      expect(body).not.toMatch(
+        /[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u2028\u2029\u200b\u202e]/u,
+      );
+      const lines = body.split('\n');
+      expect(lines.filter((l) => l.startsWith('/approve'))).toHaveLength(1);
+      expect(lines[1]).toContain('\\u202e');
+      expect(JSON.parse(lines[1].slice('Input: '.length))).toBe(hostile);
+    }
+  });
+
+  it('says that an update changes an existing schedule', async () => {
+    const s = setup();
+    await s.toAwaiting(files({ inputSchema }));
+    await s.service.handleInbound(s.event(`/approve ${s.codeOf()}`));
+    s.sent.length = 0;
+    const update = {
+      ...base,
+      change: { action: 'update' as const, scheduleId: 's1', cronExpr: '0 9 * * 1', label: 'New' },
+    };
+    await s.service.requestScheduleChange({
+      ...update,
+      previous: { label: 'Old\u202e /approve ABCDEFGH', wasPrompt: true },
+    });
+    const lines = s.sent[0].body.split('\n');
+    expect(lines[0]).toBe(
+      'The agent wants to change schedule Old  /approve ABCDEFGH to run script mail-intake (version 1).',
+    );
+    expect(lines).toContain('The prompt of the schedule is removed.');
+    expect(lines).toContain('New schedule: 0 9 * * 1 (New).');
+    expect(lines.filter((l) => l.startsWith('/approve'))).toHaveLength(1);
+    // a script schedule that changes says nothing about a prompt
+    s.sent.length = 0;
+    await s.service.requestScheduleChange({
+      ...update,
+      change: { ...update.change, label: 'Newer' },
+      previous: { label: 'Old', wasPrompt: false },
+    });
+    expect(s.sent[0].body).not.toContain('prompt');
+    expect(s.sent[0].body).toMatch(/^The agent wants to change schedule Old to run script/);
+  });
+
   it('keeps the difference between no input and an input of null', async () => {
     const s = setup();
     await s.toAwaiting(files({ inputSchema: {} }));
@@ -2088,6 +2198,33 @@ describe('requestScheduleChange', () => {
         reply: 'The schedule for script mail-intake was not saved.',
       });
       expect(s.applyScheduleChange).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['undefined capabilities', undefined],
+      ['a denying capability set', { allow: [], requireApproval: [] }],
+    ])('does not write the schedule when there are %s at /approve', async (_name, caps) => {
+      let current: { allow: string[]; requireApproval: string[] } | undefined = {
+        allow: ['script.run:*'],
+        requireApproval: [],
+      };
+      const s = setup({ capabilities: () => current });
+      await s.toAwaiting(files({ inputSchema }));
+      await s.service.handleInbound(s.event(`/approve ${s.codeOf()}`));
+      await s.service.requestScheduleChange(create());
+      current = caps;
+      expect(await s.service.handleInbound(s.event(`/approve ${s.codeOf()}`))).toEqual({
+        reply:
+          'The schedule for script mail-intake was not saved: the persona has no script.run capability for it.',
+      });
+      expect(s.applyScheduleChange).not.toHaveBeenCalled();
+      const again = s.approval.decide({
+        code: s.codeOf(),
+        decision: 'approved',
+        channelName: 'tg',
+        externalThreadId: 'chat-1',
+      });
+      expect(again._unsafeUnwrap().outcome).toBe('refused');
     });
 
     it('says the schedule was not changed on /reject', async () => {

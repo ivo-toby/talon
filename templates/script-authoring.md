@@ -15,7 +15,7 @@ Call `script_manage` with these actions.
 4. `test` with `versionId`. If a unit case fails, read the error, fix the files and save again.
 5. If the dry run was not good, fix the files and save again. A version becomes tested only after a good dry run that skipped a write or used `model.judge`.
 6. `request_approval` with `versionId`. Then stop and wait. The user approves in the chat.
-7. Call `list`. The newest version of your script has a `state`. The value `approved` means approved.
+7. Call `list`. If the script has an `approvedVersion`, an approved version exists. A newer draft does not hide it.
 8. After approval, start the script one time with `script_run` (`name`, optional `input`). Or attach it to a schedule with `schedule_manage`: `action: "create"`, `cronExpr`, `label`, `script: "<name>"` and optional `input`. A schedule with `script` has no `prompt`.
 `show` with `name` shows the files of a script.
 
@@ -26,7 +26,7 @@ Use 3 to 20 files. Three are required: `script.ts`, `manifest.json` and `tests.j
   - `name`: 2 to 49 characters. Lowercase letters, digits and `-`. Starts with a letter.
   - `description`: 1 to 500 characters. The user reads it.
   - `tools`: at most 50 names, each with a dot, no duplicates. The script can call only these. Every stub name in `tests.json` must be here too.
-  - `channels`: at most 5 channel names for `notify`. The `channelId` of `notify` must equal one of them. To find a name, call `talon.channel_list` (a read tool, no arguments, listed in `tools`) in a dry run, or ask the user.
+  - `channels`: at most 5 channel names for `notify`. The `channelId` of `notify` must equal one of them. To find a name, call your own `channel_list` tool. The `channelName` of its result is the value for `channelId` in `talon.channel_send` and for `channels` here. You can also ask the user.
   - `dryRunInput`: required. The input of the dry run.
   - `liveInput`: optional. The input of a scheduled run. Default null.
   - `inputSchema`: optional JSON Schema, at most 4000 characters. Keywords not allowed: `pattern`, `patternProperties`, `format`, `$ref`, `$defs`, `definitions`, `$dynamicRef`, `not`, `if`, `then`, `else`, `dependentSchemas`. At most 12 levels and 500 nodes. Without it a caller cannot pass an input. The script still gets `dryRunInput` in a dry run and `liveInput` (default null) in a live run. A run input is at most 8000 characters.

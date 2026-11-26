@@ -257,6 +257,17 @@ describe('talonctl script', () => {
       ]);
     });
 
+    it('shows control and format characters as visible escapes', () => {
+      mkdirSync(join(root, 'script-1', 'v1'), { recursive: true });
+      writeFileSync(
+        join(root, 'script-1', 'v1', 'a.ts'),
+        'ok\tline\n\u001b[2J\u0007\u202eend\u2028\r\u009b\u{e0041}',
+      );
+      const file = readVersionFiles({ root, scriptId: 'script-1', version: 1 })._unsafeUnwrap()
+        .files[0];
+      expect(file.content).toBe('ok\tline\n\\x1b[2J\\x07\\u202eend\\u2028\\x0d\\x9b\\u{e0041}');
+    });
+
     it('skips symbolic links', () => {
       const dir = join(root, 'script-1', 'v1');
       makeFiles(dir, { 'main.js': 'run()' });

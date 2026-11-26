@@ -139,7 +139,26 @@ export class ScheduleManageHandler {
    * @param context - Execution context (runId, threadId, personaId).
    * @returns ToolCallResult with status 'success' or 'error'.
    */
-  async execute(args: ScheduleManageArgs, context: ToolExecutionContext): Promise<ToolCallResult> {
+  async execute(
+    rawArgs: ScheduleManageArgs,
+    context: ToolExecutionContext,
+  ): Promise<ToolCallResult> {
+    // `script: null` means the same as no script. Any other non-string is an error.
+    let args = rawArgs;
+    const script: unknown = rawArgs.script;
+    if (script === null) {
+      args = { ...rawArgs };
+      delete args.script;
+    } else if (script !== undefined && typeof script !== 'string') {
+      const error = 'schedule.manage: script must be a string';
+      this.deps.logger.warn({ requestId: context.requestId }, error);
+      return {
+        requestId: context.requestId ?? 'unknown',
+        tool: 'schedule.manage',
+        status: 'error',
+        error,
+      };
+    }
     if (this.isScriptRequest(args, context)) {
       try {
         return await this.executeScript(args, context, context.requestId ?? 'unknown');
@@ -641,7 +660,12 @@ export class ScheduleManageHandler {
     const call = { personaId: context.personaId, threadId: context.threadId, scriptName, change };
 
     if (access === 'approval') {
-      const requested = await service.requestScheduleChange(call);
+      const requested = await service.requestScheduleChange({
+        ...call,
+        ...(isUpdate && stored
+          ? { previous: { label: stored.label, wasPrompt: stored.script === undefined } }
+          : {}),
+      });
       if (requested.isErr()) {
         return fail(requested.error.message, {
           scriptCode: requested.error.scriptCode,

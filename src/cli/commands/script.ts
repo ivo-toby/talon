@@ -274,6 +274,21 @@ function toRunEntry(row: ScriptRunRow, version: number): ScriptRunEntry {
 }
 
 /**
+ * Makes model-written text safe for a terminal: every control character except
+ * newline and tab (ESC and C1 included), every format character and U+2028 and
+ * U+2029 become a visible `\xNN` or `\uNNNN` escape.
+ */
+export function escapeForTerminal(text: string): string {
+  // eslint-disable-next-line no-control-regex
+  return text.replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u2028\u2029\p{Cf}]/gu, (ch) => {
+    const code = ch.codePointAt(0)!;
+    if (code <= 0xff) return `\\x${code.toString(16).padStart(2, '0')}`;
+    if (code <= 0xffff) return `\\u${code.toString(16).padStart(4, '0')}`;
+    return `\\u{${code.toString(16)}}`;
+  });
+}
+
+/**
  * Reads the regular files of one stored version from
  * `<root>/<scriptId>/v<version>/`. Symbolic links and other non-regular entries
  * are skipped. At most {@link MAX_CODE_FILES} files are read.
@@ -295,7 +310,10 @@ export function readVersionFiles(options: {
     const paths = collectFiles(versionDir, '').sort();
     const files: ScriptFileText[] = [];
     for (const path of paths.slice(0, MAX_CODE_FILES)) {
-      files.push({ path, content: readFileSync(join(versionDir, path), 'utf8') });
+      files.push({
+        path: escapeForTerminal(path),
+        content: escapeForTerminal(readFileSync(join(versionDir, path), 'utf8')),
+      });
     }
     return ok({ files, truncated: paths.length > MAX_CODE_FILES });
   } catch {
