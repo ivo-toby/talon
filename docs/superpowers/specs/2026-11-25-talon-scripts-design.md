@@ -1,6 +1,6 @@
 # Talon scripts: code mode for routines and for agents
 
-Status: proposed design, 2026-11-25. Not approved. Nothing in this document is built, except the execution broker on branch `feat/execution-broker-contract`.
+Status: approved by Ivo. Part 1 (runtime) and Part 2 (daemon link) are built on branch `feat/talon-scripts`. Part 3 (agent tools) is planned. Where the built parts differ from this document, the README section "Scripts" is correct. The section "Run permissions" was added on 2026-11-26.
 
 ## Intent
 
@@ -148,6 +148,21 @@ If a script fails, Talon records the failure and sends one message to the person
 
 A skill gives the agent the procedure to make a script. Example trigger: "check my email every hour". New host tools let the agent save a script, run its tests, request approval, and attach it to a schedule. Each tool has its own capability.
 
+### Run permissions
+
+Two capabilities control scripts. They use the label form of all other capabilities.
+
+- `script.manage:own` lets the agent write, test and send a script for approval.
+- `script.run:<name>` lets the persona run the approved script with that name. `script.run:*` covers all scripts of the persona.
+
+A live run needs `script.run` for the script in `allow` or in `requireApproval`. This applies to a run that the agent starts and to a run that a schedule starts. With no label, the script does not run, and Talon sends the failure message.
+
+A `script.run` label in `requireApproval` adds one more step for the agent. Each time the agent starts the script with the `script_run` tool, the user must reply with `/approve <code>` before the run starts. A scheduled run never asks. The schedule is the decision of the user.
+
+The agent can attach a script to a schedule. If the script is under `requireApproval`, the user approves that change one time with `/approve <code>`. A schedule that the user makes with `talonctl` needs no approval.
+
+The approval of a version does not change. Each version needs it before any live run, and no label removes it.
+
 ### Errors and audit
 
 A script run has a hard time limit from the broker profile. A time-out ends the run and removes the container. Each run and each write tool call is recorded in `audit_log`. Each model request of `model.judge` is reported to Langfuse with the script name.
@@ -183,6 +198,8 @@ The tools are `memory.access` and `channel.send` (host tools), and the MCP serve
 - The approval decision is a `/approve <code>` reply that the model cannot send.
 - Script authoring by the agent is part of the first slice. This is a platform feature, and the platform does not know the quality of the model that an operator uses. The tests and the approval of the user are the protection against a weak model. The design does not depend on a stronger model.
 
+- Run permissions use the capability lists: `script.run:<name>` or `script.run:*`. In `requireApproval`, the label asks for an approval for each run that the agent starts. A scheduled run never asks, but it needs the capability.
+- The agent writes the mail intake script. No developer writes it.
 - Code in a sandbox, not a declarative format.
 - The model writes the scripts, the unit tests and the integration tests, and runs them.
 - The user approves the result of a dry run. The user does not review code.
