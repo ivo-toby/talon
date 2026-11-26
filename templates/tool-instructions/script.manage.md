@@ -1,3 +1,3 @@
 ## Script Management
 
-Before you write a script, call `script_manage` with `action: "guide"` and read the guide. Then follow its steps. Use `script_manage` to save, test and send a script for approval. The user approves in the chat.
+Before you write a script, call `script_manage` with `action: "guide"` and read the guide. Use `script_manage` to save, test and send a script for approval. The user approves in the chat. You never see an approval code. Never ask the user for it.

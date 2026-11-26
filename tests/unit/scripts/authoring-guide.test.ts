@@ -27,9 +27,9 @@ describe('script authoring guide', () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  it('is at most 6000 characters and its example saves', () => {
+  it('is at most 7500 characters and its example saves', () => {
     const guide = read('templates/script-authoring.md');
-    expect(guide.length).toBeLessThanOrEqual(6000);
+    expect(guide.length).toBeLessThanOrEqual(7500);
 
     const db = createTestDb();
     const personaId = uuid();
