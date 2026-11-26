@@ -13,6 +13,12 @@ import type { Logger } from 'pino';
 import { createLogger } from '../core/logging/index.js';
 import { ScriptError } from './types.js';
 
+/** What an approval decides: one script version, one run or one schedule change. */
+export type ApprovalPurpose = 'version' | 'run' | 'schedule';
+
+/** A payload is at most this many characters. */
+export const MAX_PAYLOAD_CHARS = 12_000;
+
 const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const CODE_LENGTH = 8;
 const MAX_REFUSALS = 5;
@@ -47,11 +53,19 @@ export interface ChatMessage {
 }
 
 export interface ApprovalService {
-  /** Version must be 'tested' (or 'awaiting-approval'). Returns the code one time. */
+  /**
+   * Purpose `version` (default): the version must be 'tested' (or 'awaiting-approval').
+   * Purpose `run` or `schedule`: the version must be 'approved', and its state never changes.
+   * A new request expires the open approvals of the same version and purpose only.
+   * Returns the code one time.
+   */
   request(input: {
     versionId: string;
     channelName: string;
     externalThreadId: string;
+    purpose?: ApprovalPurpose;
+    /** At most 12,000 characters, for example the JSON of a schedule change. */
+    payload?: string;
   }): Result<{ code: string }, ScriptError>;
   decide(input: {
     code: string;
@@ -67,7 +81,7 @@ export interface ApprovalService {
   classify(message: ChatMessage): InboundKind;
   /**
    * Expires the open approvals of the chat whose code the message holds, and
-   * moves their versions back to `tested`. Returns the versions it cancelled.
+   * moves their versions back to `tested` (only for purpose `version`). Returns the versions it cancelled.
    */
   cancelLeaked(message: ChatMessage): CancelOutcome;
   /** The same for a `wrong-chat` command: cancels the approval that its code belongs to. */
@@ -78,7 +92,7 @@ export interface ApprovalService {
    */
   noteAttempt(channelName: string, externalThreadId: string): boolean;
   /**
-   * Expires the open approvals of a version, in the database and in the index.
+   * Expires the open approvals of a version, of every purpose, in the database and in the index.
    * If the database write fails, the index keeps the codes (fail closed).
    */
   expireVersion(versionId: string): Result<void, ScriptError>;
@@ -92,6 +106,10 @@ export interface Decision {
   versionId?: string;
   personaId?: string;
   threadId?: string;
+  /** Set on `approved` and `rejected`. */
+  purpose?: ApprovalPurpose;
+  /** The payload of the approval, if it had one. */
+  payload?: string;
 }
 
 /** `failed`: an expire write failed. That code stays guarded in memory, and it is not in `cancelled`. */
@@ -102,12 +120,14 @@ export interface CancelOutcome {
 
 export interface CancelledApproval {
   versionId: string;
+  purpose: ApprovalPurpose;
   personaId?: string;
   threadId?: string;
 }
 
 interface OpenCode {
   versionId: string;
+  purpose: ApprovalPurpose;
   expiresAt: number;
 }
 
@@ -231,10 +251,10 @@ export function createApprovalService(options: {
     if (codes.size === 0) index.delete(key);
   }
 
-  function dropVersion(versionId: string): void {
+  function dropVersion(versionId: string, purpose?: ApprovalPurpose): void {
     for (const [key, codes] of index) {
       for (const [hash, code] of codes) {
-        if (code.versionId === versionId) {
+        if (code.versionId === versionId && (purpose === undefined || code.purpose === purpose)) {
           codes.delete(hash);
           byHash.delete(hash);
         }
@@ -294,21 +314,29 @@ export function createApprovalService(options: {
     return code ? { key, code } : undefined;
   }
 
-  /** Expires the versions and moves them back to `tested`. A failed write keeps the codes. */
-  function cancelVersions(versionIds: Iterable<string>, at: number): CancelOutcome {
+  /**
+   * Expires the approvals of one purpose of each version. Only purpose `version`
+   * moves the version back to `tested`. A failed write keeps the codes.
+   */
+  function cancelApprovals(
+    targets: Iterable<{ versionId: string; purpose: ApprovalPurpose }>,
+    at: number,
+  ): CancelOutcome {
     const cancelled: CancelledApproval[] = [];
     let failed = false;
-    for (const versionId of versionIds) {
-      const expired = repo.expireOpenApprovals(versionId, at);
+    for (const { versionId, purpose } of targets) {
+      const expired = repo.expireOpenApprovals(versionId, at, purpose);
       if (expired.isErr()) {
         logger.error('script approval: an approval could not be expired; its code stays guarded');
         failed = true;
         continue;
       }
-      dropVersion(versionId);
-      const back = repo.setVersionState(versionId, ['awaiting-approval'], 'tested');
-      if (back.isErr()) {
-        logger.error('script approval: a cancelled version could not move back to tested');
+      dropVersion(versionId, purpose);
+      if (purpose === 'version') {
+        const back = repo.setVersionState(versionId, ['awaiting-approval'], 'tested');
+        if (back.isErr()) {
+          logger.error('script approval: a cancelled version could not move back to tested');
+        }
       }
       const row = repo.getVersion(versionId);
       const version = row.isOk() ? row.value : null;
@@ -316,6 +344,7 @@ export function createApprovalService(options: {
       const persona = script?.isOk() ? script.value?.persona_id : undefined;
       cancelled.push({
         versionId,
+        purpose,
         ...(version ? { threadId: version.thread_id ?? '' } : {}),
         ...(persona !== undefined ? { personaId: persona } : {}),
       });
@@ -330,6 +359,7 @@ export function createApprovalService(options: {
   for (const row of listed.value) {
     addOpen(chatKey(row.channel_name, row.external_thread_id), row.code_hash, {
       versionId: row.version_id,
+      purpose: row.purpose,
       expiresAt: row.expires_at,
     });
   }
@@ -375,24 +405,38 @@ export function createApprovalService(options: {
         return err(sandbox(found.error));
       }
       const version = found.value;
-      if (!version || (version.state !== 'tested' && version.state !== 'awaiting-approval')) {
+      const purpose = input.purpose ?? 'version';
+      if (input.payload !== undefined && input.payload.length > MAX_PAYLOAD_CHARS) {
         return err(invalid());
       }
-      const expired = repo.expireOpenApprovals(input.versionId, at);
+      const allowed =
+        purpose === 'version'
+          ? version?.state === 'tested' || version?.state === 'awaiting-approval'
+          : version?.state === 'approved';
+      if (!version || !allowed) {
+        return err(invalid());
+      }
+      const expired = repo.expireOpenApprovals(
+        input.versionId,
+        at,
+        purpose === 'version' ? undefined : purpose,
+      );
       if (expired.isErr()) {
         return err(sandbox(expired.error));
       }
-      dropVersion(input.versionId);
-      const moved = repo.setVersionState(
-        input.versionId,
-        ['tested', 'awaiting-approval'],
-        'awaiting-approval',
-      );
-      if (moved.isErr()) {
-        return err(sandbox(moved.error));
-      }
-      if (!moved.value) {
-        return err(invalid());
+      dropVersion(input.versionId, purpose === 'version' ? undefined : purpose);
+      if (purpose === 'version') {
+        const moved = repo.setVersionState(
+          input.versionId,
+          ['tested', 'awaiting-approval'],
+          'awaiting-approval',
+        );
+        if (moved.isErr()) {
+          return err(sandbox(moved.error));
+        }
+        if (!moved.value) {
+          return err(invalid());
+        }
       }
       const code = generateCode();
       const codeHash = hashCode(code);
@@ -404,15 +448,18 @@ export function createApprovalService(options: {
         channelName: input.channelName,
         externalThreadId: input.externalThreadId,
         expiresAt,
+        purpose,
+        ...(input.payload !== undefined ? { payload: input.payload } : {}),
       });
       if (inserted.isErr()) {
-        if (version.state === 'tested') {
+        if (purpose === 'version' && version.state === 'tested') {
           repo.setVersionState(input.versionId, ['awaiting-approval'], 'tested');
         }
         return err(sandbox(inserted.error));
       }
       addOpen(chatKey(input.channelName, input.externalThreadId), codeHash, {
         versionId: input.versionId,
+        purpose,
         expiresAt,
       });
       return ok({ code });
@@ -471,6 +518,8 @@ export function createApprovalService(options: {
         ...(scriptName !== undefined ? { scriptName } : {}),
         ...(row ? { version: row.version, versionId: row.id, threadId: row.thread_id ?? '' } : {}),
         ...(persona !== undefined ? { personaId: persona } : {}),
+        purpose: approval.purpose,
+        ...(approval.payload !== null ? { payload: approval.payload } : {}),
       });
     },
 
@@ -502,19 +551,26 @@ export function createApprovalService(options: {
       const at = now();
       const codes = openCodes(chatKey(message.channelName, message.externalThreadId), at);
       if (!codes || typeof message.content !== 'string') return { cancelled: [], failed: false };
-      const versions = new Set<string>();
+      const targets = new Map<string, { versionId: string; purpose: ApprovalPurpose }>();
       for (const hash of leakedHashes(message as ChatMessage & { content: string }, codes)) {
         const code = codes.get(hash);
-        if (code) versions.add(code.versionId);
+        if (code) {
+          targets.set(`${code.versionId}\0${code.purpose}`, {
+            versionId: code.versionId,
+            purpose: code.purpose,
+          });
+        }
       }
-      return cancelVersions(versions, at);
+      return cancelApprovals(targets.values(), at);
     },
 
     cancelWrongChat(message): CancelOutcome {
       const at = now();
       const found =
         typeof message.content === 'string' ? wrongChatCode(message.content, at) : undefined;
-      return found ? cancelVersions([found.code.versionId], at) : { cancelled: [], failed: false };
+      return found
+        ? cancelApprovals([{ versionId: found.code.versionId, purpose: found.code.purpose }], at)
+        : { cancelled: [], failed: false };
     },
 
     noteAttempt(channelName, externalThreadId): boolean {

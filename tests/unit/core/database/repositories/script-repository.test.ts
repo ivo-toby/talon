@@ -203,6 +203,120 @@ describe('ScriptRepository', () => {
     });
   });
 
+  describe('approval purposes', () => {
+    function approvedVersion(): ScriptVersionRow {
+      const version = makeVersion();
+      repo.setVersionState(version.id, ['draft'], 'approved')._unsafeUnwrap();
+      return version;
+    }
+    function insert(
+      versionId: string,
+      purpose: 'version' | 'run' | 'schedule',
+      expiresAt = 10_000,
+      payload?: string,
+    ): string {
+      const id = uuid();
+      repo
+        .insertApproval({
+          id,
+          versionId,
+          codeHash: `code-${id}`,
+          channelName: 'tg',
+          externalThreadId: 't1',
+          expiresAt,
+          purpose,
+          ...(payload !== undefined ? { payload } : {}),
+        })
+        ._unsafeUnwrap();
+      return id;
+    }
+
+    it('defaults to purpose version with no payload', () => {
+      const { approvalId } = makeAwaiting();
+      const row = db
+        .prepare(`SELECT purpose, payload FROM script_approvals WHERE id = ?`)
+        .get(approvalId);
+      expect(row).toEqual({ purpose: 'version', payload: null });
+    });
+
+    it('stores purpose and payload and rejects an unknown purpose', () => {
+      const v = approvedVersion();
+      const id = insert(v.id, 'schedule', 10_000, '{"a":1}');
+      const row = db.prepare(`SELECT * FROM script_approvals WHERE id = ?`).get(id) as {
+        purpose: string;
+        payload: string;
+      };
+      expect(row).toMatchObject({ purpose: 'schedule', payload: '{"a":1}' });
+      expect(() =>
+        db.prepare(`UPDATE script_approvals SET purpose = 'other' WHERE id = ?`).run(id),
+      ).toThrow();
+    });
+
+    it('findOpenApprovalFor returns the newest open, unexpired one of the purpose', () => {
+      const v = approvedVersion();
+      const older = insert(v.id, 'run');
+      const newer = insert(v.id, 'run');
+      insert(v.id, 'schedule');
+      const expired = insert(v.id, 'run', 50);
+      expect(expired).toBeTruthy();
+      expect(repo.findOpenApprovalFor(v.id, 'run', 100)._unsafeUnwrap()?.id).toBe(newer);
+      repo.decideApproval(newer, 'approved', 100)._unsafeUnwrap();
+      expect(repo.findOpenApprovalFor(v.id, 'run', 100)._unsafeUnwrap()?.id).toBe(older);
+      expect(repo.findOpenApprovalFor(v.id, 'schedule', 100)._unsafeUnwrap()?.purpose).toBe(
+        'schedule',
+      );
+      expect(repo.findOpenApprovalFor(v.id, 'version', 100)._unsafeUnwrap()).toBeNull();
+      expect(repo.findOpenApprovalFor(v.id, 'run', 10_000)._unsafeUnwrap()).toBeNull();
+    });
+
+    it('expireOpenApprovals can be limited to one purpose', () => {
+      const v = approvedVersion();
+      const run = insert(v.id, 'run');
+      const schedule = insert(v.id, 'schedule');
+      repo.expireOpenApprovals(v.id, 42, 'run')._unsafeUnwrap();
+      const expiry = (id: string): number =>
+        (
+          db.prepare(`SELECT expires_at FROM script_approvals WHERE id = ?`).get(id) as {
+            expires_at: number;
+          }
+        ).expires_at;
+      expect(expiry(run)).toBe(42);
+      expect(expiry(schedule)).toBe(10_000);
+      repo.expireOpenApprovals(v.id, 43)._unsafeUnwrap();
+      expect(expiry(schedule)).toBe(43);
+    });
+
+    it('deciding a run approval leaves the version approved and retires nothing', () => {
+      const other = approvedVersion();
+      const v = approvedVersion();
+      const id = insert(v.id, 'run');
+      expect(repo.decideApproval(id, 'approved', 5)._unsafeUnwrap()).toBe(true);
+      expect(repo.getVersion(v.id)._unsafeUnwrap()?.state).toBe('approved');
+      expect(repo.getVersion(other.id)._unsafeUnwrap()?.state).toBe('approved');
+    });
+
+    it('refuses to decide a run approval of a version that is not approved', () => {
+      const v = approvedVersion();
+      const id = insert(v.id, 'schedule');
+      repo.setVersionState(v.id, ['approved'], 'retired')._unsafeUnwrap();
+      expect(repo.decideApproval(id, 'approved', 5)._unsafeUnwrap()).toBe(false);
+      const row = db.prepare(`SELECT decided_at FROM script_approvals WHERE id = ?`).get(id);
+      expect(row).toEqual({ decided_at: null });
+    });
+
+    it('accepts the agent trigger on a run', () => {
+      const v = approvedVersion();
+      const run = repo.insertRun({
+        id: uuid(),
+        versionId: v.id,
+        mode: 'live',
+        trigger: 'agent',
+        startedAt: 1,
+      });
+      expect(run.isOk()).toBe(true);
+    });
+  });
+
   describe('decideApproval', () => {
     it('approves, moves the version and retires the older approved one', () => {
       const old = makeVersion();

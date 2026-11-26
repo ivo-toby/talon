@@ -41,7 +41,9 @@ CREATE TABLE script_approvals (
   expires_at          INTEGER NOT NULL,
   decided_at          INTEGER,
   decision            TEXT CHECK (decision IN ('approved', 'rejected')),
-  created_at          INTEGER NOT NULL
+  created_at          INTEGER NOT NULL,
+  purpose             TEXT NOT NULL DEFAULT 'version' CHECK (purpose IN ('version', 'run', 'schedule')),
+  payload             TEXT
 );
 
 CREATE INDEX idx_script_approvals_version ON script_approvals(version_id);
@@ -50,7 +52,7 @@ CREATE TABLE script_runs (
   id          TEXT PRIMARY KEY,
   version_id  TEXT NOT NULL REFERENCES script_versions(id) ON DELETE CASCADE,
   mode        TEXT NOT NULL,
-  trigger     TEXT NOT NULL CHECK (trigger IN ('test', 'dry-run', 'schedule')),
+  trigger     TEXT NOT NULL CHECK (trigger IN ('test', 'dry-run', 'schedule', 'agent')),
   schedule_id TEXT,
   ok          INTEGER,
   error_code  TEXT,

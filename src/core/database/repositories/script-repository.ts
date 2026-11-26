@@ -46,9 +46,15 @@ export interface ScriptApprovalRow {
   decided_at: number | null;
   decision: 'approved' | 'rejected' | null;
   created_at: number;
+  purpose: ScriptApprovalPurpose;
+  /** JSON text of a schedule change, or null. */
+  payload: string | null;
 }
 
-export type ScriptRunTrigger = 'test' | 'dry-run' | 'schedule';
+/** What an approval decides: one version, one run or one schedule change. */
+export type ScriptApprovalPurpose = 'version' | 'run' | 'schedule';
+
+export type ScriptRunTrigger = 'test' | 'dry-run' | 'schedule' | 'agent';
 
 /** Row shape matching the `script_runs` table. */
 export interface ScriptRunRow {
@@ -82,6 +88,9 @@ export interface InsertScriptApprovalInput {
   channelName: string;
   externalThreadId: string;
   expiresAt: number;
+  /** Default `version`. */
+  purpose?: ScriptApprovalPurpose;
+  payload?: string | null;
 }
 
 /** Input for a new run. */
@@ -112,6 +121,8 @@ export class ScriptRepository extends BaseRepository {
   private readonly getApprovalStmt: Database.Statement;
   private readonly expireOpenApprovalsStmt: Database.Statement;
   private readonly decideApprovalStmt: Database.Statement;
+  private readonly findOpenApprovalForStmt: Database.Statement;
+  private readonly expireOpenApprovalsForPurposeStmt: Database.Statement;
   private readonly setVersionStateOnlyStmt: Database.Statement;
   private readonly retireOtherApprovedStmt: Database.Statement;
   private readonly insertRunStmt: Database.Statement;
@@ -161,9 +172,19 @@ export class ScriptRepository extends BaseRepository {
 
     this.insertApprovalStmt = db.prepare(`
       INSERT INTO script_approvals
-        (id, version_id, code_hash, channel_name, external_thread_id, expires_at, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+        (id, version_id, code_hash, channel_name, external_thread_id, expires_at, created_at,
+         purpose, payload)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
+    this.findOpenApprovalForStmt = db.prepare(
+      `SELECT * FROM script_approvals
+       WHERE version_id = ? AND purpose = ? AND decided_at IS NULL AND expires_at > ?
+       ORDER BY created_at DESC, rowid DESC LIMIT 1`,
+    );
+    this.expireOpenApprovalsForPurposeStmt = db.prepare(
+      `UPDATE script_approvals SET expires_at = ?
+       WHERE version_id = ? AND purpose = ? AND decided_at IS NULL`,
+    );
     this.findOpenApprovalStmt = db.prepare(
       `SELECT * FROM script_approvals WHERE code_hash = ? AND decided_at IS NULL`,
     );
@@ -369,6 +390,8 @@ export class ScriptRepository extends BaseRepository {
         input.externalThreadId,
         input.expiresAt,
         this.now(),
+        input.purpose ?? 'version',
+        input.payload ?? null,
       );
       return ok(this.getApprovalStmt.get(input.id) as ScriptApprovalRow);
     } catch (cause) {
@@ -394,10 +417,40 @@ export class ScriptRepository extends BaseRepository {
     }
   }
 
-  /** Sets `expires_at = now` on the undecided approvals of a version. */
-  expireOpenApprovals(versionId: string, now: number): Result<void, DbError> {
+  /**
+   * The newest undecided, unexpired approval of a version for a purpose, or null.
+   * There can be one open approval per purpose at the same time.
+   */
+  findOpenApprovalFor(
+    versionId: string,
+    purpose: ScriptApprovalPurpose,
+    now: number,
+  ): Result<ScriptApprovalRow | null, DbError> {
     try {
-      this.expireOpenApprovalsStmt.run(now, versionId);
+      return ok(
+        (this.findOpenApprovalForStmt.get(versionId, purpose, now) as
+          ScriptApprovalRow | undefined) ?? null,
+      );
+    } catch (cause) {
+      return err(this.fail('find open script approval for a purpose', cause));
+    }
+  }
+
+  /**
+   * Sets `expires_at = now` on the undecided approvals of a version: of every
+   * purpose, or only of `purpose` when it is given.
+   */
+  expireOpenApprovals(
+    versionId: string,
+    now: number,
+    purpose?: ScriptApprovalPurpose,
+  ): Result<void, DbError> {
+    try {
+      if (purpose === undefined) {
+        this.expireOpenApprovalsStmt.run(now, versionId);
+      } else {
+        this.expireOpenApprovalsForPurposeStmt.run(now, versionId, purpose);
+      }
       return ok(undefined);
     } catch (cause) {
       return err(this.fail('expire script approvals', cause));
@@ -408,7 +461,8 @@ export class ScriptRepository extends BaseRepository {
    * Decides an approval and moves its version, in one transaction. Returns
    * false, changing nothing, if the approval is already decided or its version
    * is not `awaiting-approval`. An approval retires every other approved
-   * version of the same script.
+   * version of the same script. An approval for a `run` or a `schedule` change
+   * leaves the version alone and needs it to be `approved`.
    */
   decideApproval(
     id: string,
@@ -423,6 +477,13 @@ export class ScriptRepository extends BaseRepository {
         }
         const version = this.getVersionStmt.get(approval.version_id) as
           ScriptVersionRow | undefined;
+        if (approval.purpose !== 'version') {
+          if (!version || version.state !== 'approved') {
+            return ok(false);
+          }
+          this.decideApprovalStmt.run(now, decision, id);
+          return ok(true);
+        }
         if (!version || version.state !== 'awaiting-approval') {
           return ok(false);
         }

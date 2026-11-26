@@ -134,6 +134,7 @@ describe('approval service', () => {
           .getScript(repo.getVersion(versionId)._unsafeUnwrap()!.script_id)
           ._unsafeUnwrap()!.persona_id,
         threadId: '',
+        purpose: 'version',
       });
       expect(repo.getVersion(versionId)._unsafeUnwrap()?.state).toBe('approved');
     });
@@ -476,6 +477,159 @@ describe('approval service', () => {
       svc.expireVersion(versionId)._unsafeUnwrap();
       expect(svc.classify(msg(`approve ${code}`))).toBe('none');
       expect(decide(code)._unsafeUnwrap().outcome).toBe('refused');
+    });
+  });
+
+  describe('purposes', () => {
+    const msg = (content: unknown, externalThreadId = 't1') => ({
+      channelName: 'tg',
+      externalThreadId,
+      content,
+    });
+    const approvedVersion = (): string => {
+      decide(ask())._unsafeUnwrap();
+      expect(repo.getVersion(versionId)._unsafeUnwrap()?.state).toBe('approved');
+      seed += 8;
+      return versionId;
+    };
+    const askFor = (
+      purpose: 'run' | 'schedule',
+      payload?: string,
+    ): ReturnType<ApprovalService['request']> =>
+      svc.request({
+        versionId,
+        channelName: 'tg',
+        externalThreadId: 't1',
+        purpose,
+        ...(payload !== undefined ? { payload } : {}),
+      });
+
+    it('refuses a run or schedule request unless the version is approved', () => {
+      expect(askFor('run')._unsafeUnwrapErr().scriptCode).toBe('INVALID_ARGUMENT');
+      ask();
+      expect(askFor('schedule')._unsafeUnwrapErr().scriptCode).toBe('INVALID_ARGUMENT');
+      expect(repo.getVersion(versionId)._unsafeUnwrap()?.state).toBe('awaiting-approval');
+    });
+
+    it('a run request leaves the approved version approved', () => {
+      approvedVersion();
+      askFor('run')._unsafeUnwrap();
+      expect(repo.getVersion(versionId)._unsafeUnwrap()?.state).toBe('approved');
+    });
+
+    it('decides a run, returns purpose run and leaves the state alone', () => {
+      approvedVersion();
+      const code = askFor('run')._unsafeUnwrap().code;
+      const r = decide(code)._unsafeUnwrap();
+      expect(r).toMatchObject({ outcome: 'approved', purpose: 'run', versionId });
+      expect(r.payload).toBeUndefined();
+      expect(repo.getVersion(versionId)._unsafeUnwrap()?.state).toBe('approved');
+      seed += 8;
+      const rejected = askFor('run')._unsafeUnwrap().code;
+      expect(decide(rejected, { decision: 'rejected' })._unsafeUnwrap()).toMatchObject({
+        outcome: 'rejected',
+        purpose: 'run',
+      });
+      expect(repo.getVersion(versionId)._unsafeUnwrap()?.state).toBe('approved');
+    });
+
+    it('returns the payload of a schedule approval on approve', () => {
+      approvedVersion();
+      const payload = JSON.stringify({ action: 'create', cronExpr: '0 8 * * *' });
+      const code = askFor('schedule', payload)._unsafeUnwrap().code;
+      const decision = decide(code)._unsafeUnwrap();
+      expect(decision).toMatchObject({ outcome: 'approved', purpose: 'schedule', payload });
+    });
+
+    it('refuses a run decision when the version is no longer approved', () => {
+      approvedVersion();
+      const code = askFor('run')._unsafeUnwrap().code;
+      repo.setVersionState(versionId, ['approved'], 'retired')._unsafeUnwrap();
+      expect(decide(code)._unsafeUnwrap()).toEqual({ outcome: 'refused' });
+    });
+
+    it('accepts a payload of 12,000 characters and refuses one of 12,001', () => {
+      approvedVersion();
+      expect(askFor('schedule', 'x'.repeat(12_000)).isOk()).toBe(true);
+      seed += 8;
+      expect(askFor('schedule', 'x'.repeat(12_001))._unsafeUnwrapErr().scriptCode).toBe(
+        'INVALID_ARGUMENT',
+      );
+    });
+
+    it('keeps one open approval per purpose and a new one replaces the same purpose only', () => {
+      approvedVersion();
+      const run1 = askFor('run')._unsafeUnwrap().code;
+      seed += 8;
+      const schedule = askFor('schedule', '{}')._unsafeUnwrap().code;
+      seed += 8;
+      const run2 = askFor('run')._unsafeUnwrap().code;
+      expect(decide(run1)._unsafeUnwrap().outcome).toBe('refused');
+      expect(decide(schedule)._unsafeUnwrap()).toMatchObject({ purpose: 'schedule' });
+      expect(decide(run2)._unsafeUnwrap()).toMatchObject({ purpose: 'run' });
+    });
+
+    it('keeps an approved version approved when a run approval leaks', () => {
+      approvedVersion();
+      const code = askFor('run')._unsafeUnwrap().code;
+      const outcome = svc.cancelLeaked(msg(`approve ${code}`));
+      expect(repo.getVersion(versionId)._unsafeUnwrap()?.state).toBe('approved');
+      expect(outcome.cancelled[0].purpose).toBe('run');
+      expect(decide(code)._unsafeUnwrap().outcome).toBe('refused');
+    });
+
+    it('keeps an approved version approved when a schedule code goes to the wrong chat', () => {
+      approvedVersion();
+      const code = askFor('schedule', '{}')._unsafeUnwrap().code;
+      const outcome = svc.cancelWrongChat(msg(`/approve ${code}`, 'other'));
+      expect(outcome.cancelled[0].purpose).toBe('schedule');
+      expect(repo.getVersion(versionId)._unsafeUnwrap()?.state).toBe('approved');
+    });
+
+    it('a leaked run code leaves the open approval of another purpose alone', () => {
+      approvedVersion();
+      const run = askFor('run')._unsafeUnwrap().code;
+      seed += 8;
+      const schedule = askFor('schedule', '{}')._unsafeUnwrap().code;
+      svc.cancelLeaked(msg(`approve ${run}`));
+      expect(decide(schedule)._unsafeUnwrap().outcome).toBe('approved');
+    });
+
+    it('a rebuilt index keeps the purpose, so a leak does not move an approved version', () => {
+      approvedVersion();
+      const code = askFor('run')._unsafeUnwrap().code;
+      const fresh = createApprovalService({
+        repo,
+        ttlMinutes: 30,
+        logger: pino({ level: 'silent' }),
+        now: () => clock,
+      })._unsafeUnwrap();
+      const outcome = fresh.cancelLeaked(msg(`approve ${code}`));
+      expect(outcome.cancelled.map((c) => c.purpose)).toEqual(['run']);
+      expect(repo.getVersion(versionId)._unsafeUnwrap()?.state).toBe('approved');
+    });
+
+    it('a rebuilt index still moves a version-purpose leak back to tested', () => {
+      const code = ask();
+      const fresh = createApprovalService({
+        repo,
+        ttlMinutes: 30,
+        logger: pino({ level: 'silent' }),
+        now: () => clock,
+      })._unsafeUnwrap();
+      const outcome = fresh.cancelLeaked(msg(`approve ${code}`));
+      expect(outcome.cancelled.map((c) => c.purpose)).toEqual(['version']);
+      expect(repo.getVersion(versionId)._unsafeUnwrap()?.state).toBe('tested');
+    });
+
+    it('expireVersion expires the approvals of every purpose', () => {
+      approvedVersion();
+      const run = askFor('run')._unsafeUnwrap().code;
+      seed += 8;
+      const schedule = askFor('schedule', '{}')._unsafeUnwrap().code;
+      svc.expireVersion(versionId)._unsafeUnwrap();
+      expect(decide(run)._unsafeUnwrap().outcome).toBe('refused');
+      expect(decide(schedule)._unsafeUnwrap().outcome).toBe('refused');
     });
   });
 
