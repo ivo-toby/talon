@@ -24,6 +24,8 @@ export interface ScheduleInfo {
   label: string;
   prompt: string;
   promptFile: string;
+  /** Name of the stored script of a script schedule, or '' for other schedules. */
+  script: string;
   enabled: boolean;
   nextRunAt: string | null;
   lastRunAt: string | null;
@@ -99,11 +101,13 @@ function toScheduleInfo(
   let label = '';
   let prompt = '';
   let promptFile = '';
+  let script = '';
   try {
     const parsed = JSON.parse(row.payload) as Record<string, unknown>;
     label = typeof parsed.label === 'string' ? parsed.label : '';
     prompt = typeof parsed.prompt === 'string' ? parsed.prompt : '';
     promptFile = typeof parsed.promptFile === 'string' ? parsed.promptFile : '';
+    script = typeof parsed.script === 'string' ? parsed.script : '';
   } catch {
     // payload may not be valid JSON — leave defaults
   }
@@ -115,6 +119,7 @@ function toScheduleInfo(
     label,
     prompt,
     promptFile,
+    script,
     enabled: row.enabled === 1,
     nextRunAt: row.next_run_at !== null ? new Date(row.next_run_at).toISOString() : null,
     lastRunAt: row.last_run_at !== null ? new Date(row.last_run_at).toISOString() : null,
@@ -164,12 +169,13 @@ export async function listSchedulesCommand(options: {
     }
 
     // Print table header
-    const header = ['ID', 'PERSONA', 'LABEL', 'PROMPT', 'CRON', 'ENABLED', 'NEXT RUN'];
+    const header = ['ID', 'PERSONA', 'LABEL', 'PROMPT', 'SCRIPT', 'CRON', 'ENABLED', 'NEXT RUN'];
     const rows = schedules.map((s) => [
       s.id,
       s.personaName,
       s.label,
       s.promptFile ? `file:${s.promptFile}` : s.prompt ? truncate(s.prompt, 40) : '',
+      s.script || '',
       s.expression,
       s.enabled ? 'yes' : 'no',
       s.nextRunAt ?? '—',

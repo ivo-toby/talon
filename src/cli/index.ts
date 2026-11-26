@@ -38,6 +38,13 @@ import { configShowCommand } from './commands/config-show.js';
 import { addScheduleCommand } from './commands/add-schedule.js';
 import { authMcp, AuthMcpError } from './commands/auth-mcp.js';
 import { listSchedulesCommand } from './commands/list-schedules.js';
+import {
+  DEFAULT_RUN_LIMIT,
+  SCRIPT_NAME_PATTERN,
+  scriptListCommand,
+  scriptRunsCommand,
+  scriptShowCommand,
+} from './commands/script.js';
 import { removeScheduleCommand } from './commands/remove-schedule.js';
 import { runSubAgentCommand } from './commands/run-subagent.js';
 import { listProvidersCommand } from './commands/list-providers.js';
@@ -570,6 +577,8 @@ program
     '--prompt-file <name>',
     "Prompt file basename in the persona's prompts/ dir (without .md), resolved by the scheduler at fire time",
   )
+  .option('--script <name>', 'Stored script of the persona to run (mutually exclusive with --prompt and --prompt-file)')
+  .option('--input <json>', 'JSON input of the script run (needs --script)')
   .option('--config <path>', 'Path to talond.yaml', DEFAULT_CONFIG_PATH)
   .action(
     async (opts: {
@@ -579,17 +588,37 @@ program
       label: string;
       prompt?: string;
       promptFile?: string;
+      script?: string;
+      input?: string;
       config: string;
     }) => {
-      if (opts.prompt && opts.promptFile) {
-        console.error('Error: --prompt and --prompt-file are mutually exclusive');
-        process.exit(1);
-        return;
-      }
-      if (!opts.prompt && !opts.promptFile) {
-        console.error('Error: provide one of --prompt or --prompt-file');
-        process.exit(1);
-        return;
+      if (opts.script !== undefined) {
+        if (opts.prompt !== undefined || opts.promptFile !== undefined) {
+          console.error('Error: --script is mutually exclusive with --prompt and --prompt-file');
+          process.exit(1);
+          return;
+        }
+        if (!SCRIPT_NAME_PATTERN.test(opts.script)) {
+          console.error(`Error: invalid script name "${opts.script}"`);
+          process.exit(1);
+          return;
+        }
+      } else {
+        if (opts.input !== undefined) {
+          console.error('Error: --input needs --script');
+          process.exit(1);
+          return;
+        }
+        if (opts.prompt && opts.promptFile) {
+          console.error('Error: --prompt and --prompt-file are mutually exclusive');
+          process.exit(1);
+          return;
+        }
+        if (!opts.prompt && !opts.promptFile) {
+          console.error('Error: provide one of --prompt, --prompt-file or --script');
+          process.exit(1);
+          return;
+        }
       }
       await addScheduleCommand({
         persona: opts.persona,
@@ -598,6 +627,8 @@ program
         label: opts.label,
         ...(opts.prompt !== undefined ? { prompt: opts.prompt } : {}),
         ...(opts.promptFile !== undefined ? { promptFile: opts.promptFile } : {}),
+        ...(opts.script !== undefined ? { script: opts.script } : {}),
+        ...(opts.input !== undefined ? { input: opts.input } : {}),
         configPath: opts.config,
       });
     },
@@ -965,6 +996,69 @@ program
       authDir: opts.authDir,
       timeout,
     });
+  });
+
+// ---------------------------------------------------------------------------
+// Script commands (read-only)
+// ---------------------------------------------------------------------------
+
+const script = program
+  .command('script')
+  .description('Show stored scripts, their versions and runs (read-only)');
+
+script
+  .command('list')
+  .description('List stored scripts with their newest, approved and last-run state')
+  .option('--persona <name>', 'Filter by persona name')
+  .option('--config <path>', 'Path to talond.yaml', DEFAULT_CONFIG_PATH)
+  .action(async (opts: { persona?: string; config: string }) => {
+    await scriptListCommand({ configPath: opts.config, persona: opts.persona });
+  });
+
+script
+  .command('show <persona> <name>')
+  .description('Show the versions of a script, optionally with its code')
+  .option('--version <n>', 'Show only this version number')
+  .option('--code', 'Print the files of the version (the newest unless --version is given)')
+  .option('--config <path>', 'Path to talond.yaml', DEFAULT_CONFIG_PATH)
+  .action(
+    async (
+      persona: string,
+      name: string,
+      opts: { version?: string; code?: boolean; config: string },
+    ) => {
+      let version: number | undefined;
+      if (opts.version !== undefined) {
+        version = Number(opts.version);
+        if (!Number.isInteger(version) || version < 1) {
+          console.error('--version must be a positive integer');
+          process.exit(1);
+          return;
+        }
+      }
+      await scriptShowCommand({
+        configPath: opts.config,
+        persona,
+        name,
+        ...(version !== undefined ? { version } : {}),
+        ...(opts.code !== undefined ? { code: opts.code } : {}),
+      });
+    },
+  );
+
+script
+  .command('runs <persona> <name>')
+  .description('List the recent runs of all versions of a script')
+  .option('--limit <n>', 'Maximum number of runs to show', String(DEFAULT_RUN_LIMIT))
+  .option('--config <path>', 'Path to talond.yaml', DEFAULT_CONFIG_PATH)
+  .action(async (persona: string, name: string, opts: { limit: string; config: string }) => {
+    const limit = Number(opts.limit);
+    if (!Number.isInteger(limit) || limit < 1) {
+      console.error('--limit must be a positive integer');
+      process.exit(1);
+      return;
+    }
+    await scriptRunsCommand({ configPath: opts.config, persona, name, limit });
   });
 
 // ---------------------------------------------------------------------------

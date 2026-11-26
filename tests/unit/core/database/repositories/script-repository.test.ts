@@ -544,4 +544,90 @@ describe('ScriptRepository', () => {
       }
     });
   });
+
+  describe('listing', () => {
+    it('listScripts returns the scripts of one persona ordered by name', () => {
+      const zeta = repo.upsertScript(personaId, 'zeta-job', uuid())._unsafeUnwrap();
+      const alpha = repo.upsertScript(personaId, 'alpha-job', uuid())._unsafeUnwrap();
+      repo.upsertScript(makePersona(), 'other-job', uuid());
+
+      const rows = repo.listScripts(personaId)._unsafeUnwrap();
+      expect(rows.map((r) => r.id)).toEqual([alpha.id, script.id, zeta.id]);
+      expect(rows.map((r) => r.name)).toEqual(['alpha-job', 'daily', 'zeta-job']);
+    });
+
+    it('listScripts returns an empty array for a persona without scripts', () => {
+      expect(repo.listScripts(makePersona())._unsafeUnwrap()).toEqual([]);
+    });
+
+    it('listVersions returns the versions of a script newest first', () => {
+      const v1 = makeVersion();
+      const v2 = makeVersion();
+      const v3 = makeVersion();
+
+      const rows = repo.listVersions(script.id)._unsafeUnwrap();
+      expect(rows.map((r) => r.id)).toEqual([v3.id, v2.id, v1.id]);
+      expect(rows.map((r) => r.version)).toEqual([3, 2, 1]);
+    });
+
+    it('listVersions does not return the versions of another script', () => {
+      const other = repo.upsertScript(personaId, 'weekly', uuid())._unsafeUnwrap();
+      makeVersion(other);
+      makeVersion();
+
+      expect(repo.listVersions(script.id)._unsafeUnwrap()).toHaveLength(1);
+    });
+
+    it('getVersionByNumber finds a version of the script by its number', () => {
+      const v1 = makeVersion();
+      const v2 = makeVersion();
+
+      expect(repo.getVersionByNumber(script.id, 1)._unsafeUnwrap()?.id).toBe(v1.id);
+      expect(repo.getVersionByNumber(script.id, 2)._unsafeUnwrap()?.id).toBe(v2.id);
+    });
+
+    it('getVersionByNumber returns null for a missing number or another script', () => {
+      makeVersion();
+      const other = repo.upsertScript(personaId, 'weekly', uuid())._unsafeUnwrap();
+      makeVersion(other);
+      makeVersion(other);
+
+      expect(repo.getVersionByNumber(script.id, 2)._unsafeUnwrap()).toBeNull();
+      expect(repo.getVersionByNumber(other.id, 1)._unsafeUnwrap()).not.toBeNull();
+      expect(repo.getVersionByNumber(other.id, 3)._unsafeUnwrap()).toBeNull();
+    });
+
+    it('listRuns returns runs of all versions newest first and honours the limit', () => {
+      const v1 = makeVersion();
+      const v2 = makeVersion();
+      const run = (versionId: string, startedAt: number): string => {
+        const id = uuid();
+        repo.insertRun({ id, versionId, mode: 'live', trigger: 'schedule', startedAt });
+        return id;
+      };
+      const oldest = run(v1.id, 100);
+      const middle = run(v2.id, 200);
+      const newest = run(v1.id, 300);
+
+      const all = repo.listRuns(script.id, 10)._unsafeUnwrap();
+      expect(all.map((r) => r.id)).toEqual([newest, middle, oldest]);
+
+      const limited = repo.listRuns(script.id, 2)._unsafeUnwrap();
+      expect(limited.map((r) => r.id)).toEqual([newest, middle]);
+    });
+
+    it('listRuns does not return runs of another script', () => {
+      const other = repo.upsertScript(personaId, 'weekly', uuid())._unsafeUnwrap();
+      const otherVersion = makeVersion(other);
+      repo.insertRun({
+        id: uuid(),
+        versionId: otherVersion.id,
+        mode: 'live',
+        trigger: 'test',
+        startedAt: 1,
+      });
+
+      expect(repo.listRuns(script.id, 20)._unsafeUnwrap()).toEqual([]);
+    });
+  });
 });

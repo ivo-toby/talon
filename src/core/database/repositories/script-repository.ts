@@ -129,6 +129,10 @@ export class ScriptRepository extends BaseRepository {
   private readonly finishRunStmt: Database.Statement;
   private readonly activeRunStmt: Database.Statement;
   private readonly lastFinishedRunStmt: Database.Statement;
+  private readonly listScriptsStmt: Database.Statement;
+  private readonly listVersionsStmt: Database.Statement;
+  private readonly getVersionByNumberStmt: Database.Statement;
+  private readonly listRunsStmt: Database.Statement;
 
   constructor(db: Database.Database) {
     super(db);
@@ -218,6 +222,21 @@ export class ScriptRepository extends BaseRepository {
       JOIN script_versions v ON v.id = r.version_id
       WHERE v.script_id = ? AND r.trigger = ? AND r.ended_at IS NOT NULL
       ORDER BY r.ended_at DESC, r.rowid DESC LIMIT 1
+    `);
+    this.listScriptsStmt = db.prepare(
+      `SELECT * FROM scripts WHERE persona_id = ? ORDER BY name ASC`,
+    );
+    this.listVersionsStmt = db.prepare(
+      `SELECT * FROM script_versions WHERE script_id = ? ORDER BY version DESC`,
+    );
+    this.getVersionByNumberStmt = db.prepare(
+      `SELECT * FROM script_versions WHERE script_id = ? AND version = ?`,
+    );
+    this.listRunsStmt = db.prepare(`
+      SELECT r.* FROM script_runs r
+      JOIN script_versions v ON v.id = r.version_id
+      WHERE v.script_id = ?
+      ORDER BY r.started_at DESC, r.rowid DESC LIMIT ?
     `);
   }
 
@@ -552,6 +571,45 @@ export class ScriptRepository extends BaseRepository {
       );
     } catch (cause) {
       return err(this.fail('find last finished script run', cause));
+    }
+  }
+
+  /** The scripts of a persona, ordered by name. */
+  listScripts(personaId: string): Result<ScriptRow[], DbError> {
+    try {
+      return ok(this.listScriptsStmt.all(personaId) as ScriptRow[]);
+    } catch (cause) {
+      return err(this.fail('list scripts', cause));
+    }
+  }
+
+  /** The versions of a script, newest version first. */
+  listVersions(scriptId: string): Result<ScriptVersionRow[], DbError> {
+    try {
+      return ok(this.listVersionsStmt.all(scriptId) as ScriptVersionRow[]);
+    } catch (cause) {
+      return err(this.fail('list script versions', cause));
+    }
+  }
+
+  /** The version of a script with the given number, or null. */
+  getVersionByNumber(scriptId: string, version: number): Result<ScriptVersionRow | null, DbError> {
+    try {
+      return ok(
+        (this.getVersionByNumberStmt.get(scriptId, version) as ScriptVersionRow | undefined) ??
+          null,
+      );
+    } catch (cause) {
+      return err(this.fail('get script version by number', cause));
+    }
+  }
+
+  /** Runs of all versions of a script, newest `started_at` first, at most `limit` rows. */
+  listRuns(scriptId: string, limit: number): Result<ScriptRunRow[], DbError> {
+    try {
+      return ok(this.listRunsStmt.all(scriptId, limit) as ScriptRunRow[]);
+    } catch (cause) {
+      return err(this.fail('list script runs', cause));
     }
   }
 }
