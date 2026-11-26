@@ -53,7 +53,13 @@ function play(
 }
 
 function files(
-  opts: { expectResult?: unknown; name?: string; extra?: string; inputSchema?: object } = {},
+  opts: {
+    expectResult?: unknown;
+    name?: string;
+    extra?: string;
+    inputSchema?: object;
+    liveInput?: unknown;
+  } = {},
 ): ScriptFile[] {
   return [
     { path: 'script.ts', content: `// ${opts.extra ?? 'v'}\n` },
@@ -65,7 +71,7 @@ function files(
         tools: ['mail.read', 'mail.send'],
         channels: [],
         dryRunInput: { d: 1 },
-        liveInput: { live: true },
+        liveInput: 'liveInput' in opts ? opts.liveInput : { live: true },
         ...(opts.inputSchema ? { inputSchema: opts.inputSchema } : {}),
       }),
     },
@@ -222,6 +228,7 @@ function setup(over: Partial<ScriptServiceDeps> = {}) {
   const live = { personaId: 'p1', threadId: 'th1', scriptName: 'mail-intake', scheduleId: 's1' };
   return {
     service,
+    approval,
     repo,
     backend,
     db,
@@ -1293,7 +1300,7 @@ describe('runByAgent', () => {
     expect((await s.service.runByAgent(approvalInput))._unsafeUnwrap()).toBe('awaiting-approval');
     const code = s.codeOf();
     expect(s.sent[0].body).toBe(
-      `The agent wants to run script mail-intake (version 1) now.\nInput: none\n/approve ${code}\n/reject ${code}`,
+      `The agent wants to run script mail-intake (version 1) now.\nInput: {"live":true} (default of the script)\n/approve ${code}\n/reject ${code}`,
     );
     expect(s.sent[0]).toMatchObject({ channel: 'tg', thread: 'chat-1' });
     const withInput = { ...approvalInput, input: { quiet: true } };
@@ -1361,15 +1368,110 @@ describe('runByAgent', () => {
     expect(agentRows(s)).toEqual([{ mode: 'live', ok: 1, schedule_id: null }]);
   });
 
+  /** Records the input of each `start` message that a script receives. */
+  function captureInputs(s: ReturnType<typeof setup>): unknown[] {
+    const inputs: unknown[] = [];
+    s.backend.setExecStreamHandler((c) => {
+      c.onStdin((text) => {
+        for (const part of text.split('\n').filter((l) => l !== '')) {
+          const message = JSON.parse(part) as { t: string; input?: unknown };
+          if (message.t === 'start') {
+            inputs.push(message.input);
+            c.emitStdout(line({ t: 'done', ok: true, result: 1 }));
+          }
+        }
+      });
+      return new Promise(() => {});
+    });
+    return inputs;
+  }
+
   it('runs with the stored input after /approve', async () => {
     const s = setup();
     await s.toAwaiting(files({ inputSchema }));
     await s.service.handleInbound(s.event(`/approve ${s.codeOf()}`));
     await s.service.runByAgent({ ...approvalInput, input: { quiet: true } });
-    play(s.backend, SCRIPT_CALLS, { ok: true, result: { sent: 1 } });
+    const inputs = captureInputs(s);
     await s.service.handleInbound(s.event(`/approve ${s.codeOf()}`));
     await vi.waitFor(() => expect(s.sent.at(-1)!.body).toBe('Script mail-intake finished.'));
-    expect(agentRows(s)).toHaveLength(1);
+    expect(inputs).toEqual([{ quiet: true }]);
+  });
+
+  it('runs with the liveInput of the manifest after /approve with no caller input', async () => {
+    const s = setup();
+    await s.toApproved();
+    await s.service.runByAgent(approvalInput);
+    const inputs = captureInputs(s);
+    await s.service.handleInbound(s.event(`/approve ${s.codeOf()}`));
+    await vi.waitFor(() => expect(s.sent.at(-1)!.body).toBe('Script mail-intake finished.'));
+    expect(inputs).toEqual([{ live: true }]);
+  });
+
+  it('runs at once with the given input, or with the liveInput', async () => {
+    const s = setup();
+    await s.toAwaiting(files({ inputSchema }));
+    await s.service.handleInbound(s.event(`/approve ${s.codeOf()}`));
+    const inputs = captureInputs(s);
+    await s.service.runByAgent({ ...allowed, input: { quiet: true } });
+    await s.service.runByAgent(allowed);
+    expect(inputs).toEqual([{ quiet: true }, { live: true }]);
+  });
+
+  it('shows none when the script has no default input', async () => {
+    const s = setup();
+    await s.toAwaiting(files({ liveInput: null }));
+    await s.service.handleInbound(s.event(`/approve ${s.codeOf()}`));
+    s.sent.length = 0;
+    await s.service.runByAgent(approvalInput);
+    expect(s.sent[0].body).toContain('\nInput: none\n/approve');
+    expect(payloads(s)).toEqual(['{}']);
+  });
+
+  it('counts the default input toward the message limit', async () => {
+    const s = setup();
+    await s.toAwaiting(files({ liveInput: 'y'.repeat(3600) }));
+    await s.service.handleInbound(s.event(`/approve ${s.codeOf()}`));
+    s.sent.length = 0;
+    const r = await s.service.runByAgent(approvalInput);
+    expect(r._unsafeUnwrapErr()).toMatchObject({ scriptCode: 'RESULT_TOO_LARGE' });
+    expect(s.sent).toHaveLength(0);
+  });
+
+  it('makes a new request when the open approval belongs to another chat', async () => {
+    const s = setup();
+    await s.toApproved();
+    s.sent.length = 0;
+    await s.service.runByAgent({ ...approvalInput, threadId: 'th2' });
+    await s.service.runByAgent(approvalInput);
+    expect(s.sent.map((m) => m.thread)).toEqual(['other-chat', 'chat-1']);
+    // the old approval of the other chat was expired by the new request
+    expect(await s.service.handleInbound(s.event(`/approve ${s.codeOf()}`))).toEqual({
+      reply: 'Script mail-intake started.',
+    });
+  });
+
+  it('keeps a schedule approval when the send of a run request fails', async () => {
+    const s = setup();
+    const { version } = await s.toApproved();
+    const schedule = s.approval.request({
+      versionId: version.versionId,
+      channelName: 'tg',
+      externalThreadId: 'chat-1',
+      purpose: 'schedule',
+      payload: '{}',
+    });
+    const scheduleCode = schedule._unsafeUnwrap().code;
+    s.send.mockImplementationOnce(() => Promise.resolve(err(new ScriptError('TOOL_FAILED', 'x'))));
+    expect((await s.service.runByAgent(approvalInput))._unsafeUnwrapErr()).toMatchObject({
+      scriptCode: 'TOOL_FAILED',
+    });
+    const decided = s.approval.decide({
+      code: scheduleCode,
+      decision: 'approved',
+      channelName: 'tg',
+      externalThreadId: 'chat-1',
+    });
+    expect(decided._unsafeUnwrap().outcome).toBe('approved');
   });
 
   it('checks the stored input against the manifest again after /approve', async () => {

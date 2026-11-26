@@ -1076,7 +1076,12 @@ export function createScriptService(deps: ScriptServiceDeps): ScriptService {
     let inputText: string | undefined;
     let payload: string | undefined;
     try {
-      inputText = input.input === undefined ? 'none' : JSON.stringify(resolved.value);
+      inputText =
+        input.input !== undefined
+          ? JSON.stringify(resolved.value)
+          : resolved.value === null
+            ? 'none'
+            : `${JSON.stringify(resolved.value)} (default of the script)`;
       payload = input.input === undefined ? '{}' : JSON.stringify({ input: resolved.value });
     } catch {
       inputText = undefined;
@@ -1094,7 +1099,14 @@ export function createScriptService(deps: ScriptServiceDeps): ScriptService {
     }
     const open = repo.findOpenApprovalFor(versionId, 'run', now());
     if (open.isErr()) return err(sandbox(open.error));
-    if (open.value && open.value.payload === payload) return ok('awaiting-approval');
+    if (
+      open.value &&
+      open.value.payload === payload &&
+      open.value.channel_name === chat.channelName &&
+      open.value.external_thread_id === chat.externalThreadId
+    ) {
+      return ok('awaiting-approval');
+    }
 
     // A new request expires the open run approval of the version.
     const requested = approval.request({
@@ -1116,7 +1128,7 @@ export function createScriptService(deps: ScriptServiceDeps): ScriptService {
       sent = err(new ScriptError('TOOL_FAILED', 'send threw'));
     }
     if (sent.isErr()) {
-      if (approval.expireVersion(versionId).isErr()) {
+      if (approval.expireVersion(versionId, 'run').isErr()) {
         logger.error({ versionId }, 'could not roll back a failed run approval request');
       }
       return err(new ScriptError('TOOL_FAILED', 'the approval message could not be sent'));

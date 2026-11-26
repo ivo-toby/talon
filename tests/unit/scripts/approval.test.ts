@@ -631,6 +631,16 @@ describe('approval service', () => {
       expect(decide(run)._unsafeUnwrap().outcome).toBe('refused');
       expect(decide(schedule)._unsafeUnwrap().outcome).toBe('refused');
     });
+
+    it('expireVersion with a purpose expires only that purpose', () => {
+      approvedVersion();
+      const run = askFor('run')._unsafeUnwrap().code;
+      seed += 8;
+      const schedule = askFor('schedule', '{}')._unsafeUnwrap().code;
+      svc.expireVersion(versionId, 'run')._unsafeUnwrap();
+      expect(decide(run)._unsafeUnwrap().outcome).toBe('refused');
+      expect(decide(schedule)._unsafeUnwrap().outcome).toBe('approved');
+    });
   });
 
   describe('fail closed', () => {

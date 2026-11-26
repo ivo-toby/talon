@@ -92,10 +92,10 @@ export interface ApprovalService {
    */
   noteAttempt(channelName: string, externalThreadId: string): boolean;
   /**
-   * Expires the open approvals of a version, of every purpose, in the database and in the index.
-   * If the database write fails, the index keeps the codes (fail closed).
+   * Expires the open approvals of a version, of every purpose or only of `purpose`, in the
+   * database and in the index. If the database write fails, the index keeps the codes (fail closed).
    */
-  expireVersion(versionId: string): Result<void, ScriptError>;
+  expireVersion(versionId: string, purpose?: ApprovalPurpose): Result<void, ScriptError>;
 }
 
 export interface Decision {
@@ -581,13 +581,13 @@ export function createApprovalService(options: {
       return false;
     },
 
-    expireVersion(versionId): Result<void, ScriptError> {
-      const expired = repo.expireOpenApprovals(versionId, now());
+    expireVersion(versionId, purpose): Result<void, ScriptError> {
+      const expired = repo.expireOpenApprovals(versionId, now(), purpose);
       if (expired.isErr()) {
         logger.error('script approval: an approval could not be expired; its code stays guarded');
         return err(sandbox(expired.error));
       }
-      dropVersion(versionId);
+      dropVersion(versionId, purpose);
       return ok(undefined);
     },
 
