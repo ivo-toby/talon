@@ -129,6 +129,12 @@ personas:
         - memory.access:*
         - subagent.invoke:*
         - subagent.background
+        # Scripts (see the `scripts` section). `script.manage:own` lets the
+        # agent write and test scripts. `script.run:*` lets the persona run
+        # its approved scripts. Put `script.run:*` in `requireApproval` and
+        # the user must approve each run that the agent starts.
+        # - script.manage:own
+        # - script.run:*
         # Text-only discovery of this thread's Images and saved Findings
         # (exposed to the model as `image_lookup`). Needs no vision assignment,
         # no `subagent.invoke`, no model credential, and never calls a model.
@@ -629,7 +635,8 @@ images:
 # does not pull it. The root directory is mounted read-only into the
 # container. The configuration is fixed for the process lifetime. The key
 # toolClasses overrides the read or write class of an MCP tool by its script
-# name <server>.<tool>.
+# name <server>.<tool>. A persona also needs the capability `script.run:*`
+# or `script.run:<name>` to run a script, and `script.manage:own` to write one.
 #
 scripts:
   enabled: false
