@@ -261,6 +261,49 @@ describe('ScriptStore', () => {
       expect(v.manifest.dryRunInput).toBeNull();
     });
 
+    describe('inputSchema', () => {
+      const schema = {
+        type: 'object',
+        properties: { quiet: { type: 'boolean' } },
+        additionalProperties: false,
+      };
+      const withManifest = (patch: Record<string, unknown>): ScriptFile[] =>
+        goodFiles({ 'manifest.json': JSON.stringify({ ...manifest, ...patch }) });
+
+      it('keeps a valid schema that dryRunInput and liveInput match', () => {
+        const v = save(
+          withManifest({ inputSchema: schema, dryRunInput: { quiet: true }, liveInput: {} }),
+        )._unsafeUnwrap();
+        expect(v.manifest.inputSchema).toEqual(schema);
+      });
+
+      it('refuses a schema that fails the safety walk', () => {
+        const bad = { type: 'object', properties: { a: { type: 'string', pattern: '(a+)+$' } } };
+        expectInvalid(withManifest({ inputSchema: bad, dryRunInput: {} }));
+      });
+
+      it('refuses a schema that is not an object', () => {
+        expectInvalid(withManifest({ inputSchema: 'x', dryRunInput: {} }));
+        expectInvalid(withManifest({ inputSchema: [], dryRunInput: {} }));
+      });
+
+      it('refuses a schema over 4,000 characters of JSON', () => {
+        const props = Object.fromEntries(
+          Array.from({ length: 150 }, (_, i) => [`property${i}`, { type: 'string' }]),
+        );
+        const big = { type: 'object', properties: props };
+        expect(JSON.stringify(big).length).toBeGreaterThan(4000);
+        expectInvalid(withManifest({ inputSchema: big, dryRunInput: {} }));
+      });
+
+      it('refuses a dryRunInput or liveInput that does not match', () => {
+        expectInvalid(withManifest({ inputSchema: schema, dryRunInput: { quiet: 'yes' } }));
+        expectInvalid(
+          withManifest({ inputSchema: schema, dryRunInput: {}, liveInput: { other: 1 } }),
+        );
+      });
+    });
+
     it('rejects invalid tests.json', () => {
       expectInvalid(goodFiles({ 'tests.json': 'nope' }));
       expectInvalid(goodFiles({ 'tests.json': '{"cases":[]}' }));

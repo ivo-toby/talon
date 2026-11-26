@@ -187,6 +187,7 @@ export interface ApprovalSummaryInput {
     channels: string[];
     dryRunInput: unknown;
     liveInput?: unknown;
+    inputSchema?: Record<string, unknown>;
   };
   /** The class of a manifest tool, from the provider. `undefined` counts as `write`. */
   toolClass(name: string): ToolClass | undefined;
@@ -256,6 +257,18 @@ export function buildApprovalSummary(input: ApprovalSummaryInput): Result<string
       new ScriptError('RESULT_TOO_LARGE', 'a write tool or channel name is too long to show'),
     );
   }
+  let inputLine: string | undefined;
+  if (manifest.inputSchema !== undefined) {
+    const properties = manifest.inputSchema.properties;
+    const names = isRecord(properties) ? Object.keys(properties) : [];
+    const nameList = names.length === 0 ? 'yes' : listed(names, READ_TOOL_MAX);
+    if (names.length > LISTED_MAX || nameList === undefined) {
+      return err(
+        new ScriptError('RESULT_TOO_LARGE', 'the input schema lists too many or too long names'),
+      );
+    }
+    inputLine = `Accepts input: ${nameList}`;
+  }
   const head = [
     `Script "${clean(input.name, NAME_MAX)}" v${input.version} asks for approval.`,
     `About: ${clean(input.description, DESCRIPTION_MAX)}`,
@@ -266,6 +279,9 @@ export function buildApprovalSummary(input: ApprovalSummaryInput): Result<string
   }
   if (manifest.channels.length > 0) {
     head.push(`Channels: ${channelList}`);
+  }
+  if (inputLine !== undefined) {
+    head.push(inputLine);
   }
   if (manifest.liveInput !== undefined && !sameJson(manifest.liveInput, manifest.dryRunInput)) {
     head.push('The scheduled input differs from the dry-run input.');

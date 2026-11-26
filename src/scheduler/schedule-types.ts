@@ -27,11 +27,13 @@ export interface SchedulePayload {
   promptFile?: string;
   /** Name of an approved script. Excludes `prompt` and `promptFile`. */
   script?: string;
+  /** Input of a script run. Present only for a script schedule. `null` is a real input. */
+  input?: unknown;
 }
 
 /** What the scheduler needs from the script service. */
 /** Why a scheduled run did not start. */
-export type ScriptNotRunReason = 'changed' | 'not-approved' | 'not-permitted';
+export type ScriptNotRunReason = 'changed' | 'not-approved' | 'not-permitted' | 'bad-input';
 
 export interface ScriptScheduleRunner {
   runScheduled(input: {
@@ -39,6 +41,7 @@ export interface ScriptScheduleRunner {
     threadId: string;
     scriptName: string;
     scheduleId: string;
+    input?: unknown;
   }): Promise<Result<ScriptRunReport | 'skipped', ScriptError>>;
   /** `reason` is set when the run did not start: its files changed, no version is approved, or the persona may not run it. */
   notifyFailure(input: {

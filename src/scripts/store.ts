@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { compileInputSchema, matchesInputSchema } from './run-input.js';
 import {
   chmodSync,
   lstatSync,
@@ -78,6 +79,7 @@ const manifestSchema = z.strictObject({
   channels: z.array(z.string().min(1).max(100)).max(5).default([]),
   dryRunInput: z.unknown(),
   liveInput: z.unknown().optional(),
+  inputSchema: z.record(z.string(), z.unknown()).optional(),
 });
 
 const unitCaseSchema = z.strictObject({
@@ -145,6 +147,18 @@ function parseManifest(text: string): Result<AuthoredManifest, ScriptError> {
   const parsed = manifestSchema.safeParse(json.value);
   if (!parsed.success) {
     return err(fail('INVALID_ARGUMENT', 'manifest.json is not valid'));
+  }
+  const { inputSchema } = parsed.data;
+  if (inputSchema !== undefined) {
+    const check = compileInputSchema(inputSchema);
+    const hasLive = Object.prototype.hasOwnProperty.call(json.value, 'liveInput');
+    if (
+      check === undefined ||
+      !matchesInputSchema(check, parsed.data.dryRunInput) ||
+      (hasLive && !matchesInputSchema(check, parsed.data.liveInput))
+    ) {
+      return err(fail('INVALID_ARGUMENT', 'manifest.json is not valid'));
+    }
   }
   return ok(parsed.data);
 }

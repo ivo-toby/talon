@@ -52,7 +52,9 @@ function play(
   });
 }
 
-function files(opts: { expectResult?: unknown; name?: string; extra?: string } = {}): ScriptFile[] {
+function files(
+  opts: { expectResult?: unknown; name?: string; extra?: string; inputSchema?: object } = {},
+): ScriptFile[] {
   return [
     { path: 'script.ts', content: `// ${opts.extra ?? 'v'}\n` },
     {
@@ -64,6 +66,7 @@ function files(opts: { expectResult?: unknown; name?: string; extra?: string } =
         channels: [],
         dryRunInput: { d: 1 },
         liveInput: { live: true },
+        ...(opts.inputSchema ? { inputSchema: opts.inputSchema } : {}),
       }),
     },
     {
@@ -728,6 +731,55 @@ describe('runScheduled capability check', () => {
     });
     expect(s.sent[0].body).toBe(
       'Script mail-intake did not run: the persona has no script.run capability for it.',
+    );
+  });
+});
+
+describe('runScheduled input', () => {
+  const inputSchema = {
+    type: 'object',
+    properties: { quiet: { type: 'boolean' } },
+  };
+
+  it('does not start with an input that the script does not accept', async () => {
+    const s = setup();
+    await s.toApproved();
+    s.createProvider.mockClear();
+    const r = await s.service.runScheduled({ ...s.live, input: { quiet: true } });
+    expect(r._unsafeUnwrapErr()).toMatchObject({ reason: 'bad-input' });
+    expect(s.createProvider).not.toHaveBeenCalled();
+    const refused = s.audits.filter((a) => a.action === 'script.run.refused');
+    expect(refused).toHaveLength(1);
+    expect(refused[0].details).toMatchObject({ reason: 'bad-input' });
+    expect(s.service.lastScheduledRunFailed('p1', 'mail-intake')).toBe(true);
+  });
+
+  it('does not start with an input that does not match the schema, and runs with one that does', async () => {
+    const s = setup();
+    await s.toAwaiting(files({ inputSchema }));
+    await s.service.handleInbound(s.event(`/approve ${s.codeOf()}`));
+    s.createProvider.mockClear();
+    const bad = await s.service.runScheduled({ ...s.live, input: { quiet: 'yes' } });
+    expect(bad._unsafeUnwrapErr()).toMatchObject({ reason: 'bad-input' });
+    expect(s.createProvider).not.toHaveBeenCalled();
+    play(s.backend, SCRIPT_CALLS, { ok: true, result: { sent: 1 } });
+    const good = (
+      await s.service.runScheduled({ ...s.live, input: { quiet: true } })
+    )._unsafeUnwrap();
+    expect(good).not.toBe('skipped');
+    expect(s.createProvider).toHaveBeenCalledTimes(1);
+  });
+
+  it('tells the owner once why the run did not start', async () => {
+    const s = setup();
+    await s.service.notifyFailure({
+      threadId: 'sched',
+      scriptName: 'mail-intake',
+      errorCode: 'INVALID_ARGUMENT',
+      reason: 'bad-input',
+    });
+    expect(s.sent[0].body).toBe(
+      'Script mail-intake did not run: the input of the schedule does not match the script.',
     );
   });
 });

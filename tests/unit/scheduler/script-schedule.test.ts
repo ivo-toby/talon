@@ -94,6 +94,27 @@ describe('Scheduler script schedules', () => {
     expect(runner.notifyFailure).not.toHaveBeenCalled();
   });
 
+  it('passes the input of the payload, also a null', async () => {
+    const id = await fire({ label: 'l', script: 'mail-intake', input: { quiet: true } });
+    expect(runner.runScheduled).toHaveBeenCalledWith({
+      personaId,
+      threadId,
+      scriptName: 'mail-intake',
+      scheduleId: id,
+      input: { quiet: true },
+    });
+    runner.runScheduled.mockClear();
+    const id2 = await fire({ label: 'l', script: 'mail-intake', input: null });
+    expect(runner.runScheduled).toHaveBeenCalledWith(
+      expect.objectContaining({ scheduleId: id2, input: null }),
+    );
+  });
+
+  it('passes no input key when the payload has none', async () => {
+    await fire({ label: 'l', script: 'mail-intake' });
+    expect(runner.runScheduled.mock.calls[0][0]).not.toHaveProperty('input');
+  });
+
   it('computes the next run before the run settles', async () => {
     runner.runScheduled.mockReturnValue(new Promise(() => {}));
     const id = await fire({ label: 'l', script: 'mail-intake' });

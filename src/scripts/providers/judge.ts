@@ -82,7 +82,7 @@ function isPlain(value: unknown): value is Record<string, unknown> {
  * synchronously, so a catastrophic regex or a huge schema would freeze the daemon.
  * Returns true when the schema is acceptable.
  */
-function isSafeSchema(root: unknown): boolean {
+export function isSafeSchema(root: unknown): boolean {
   let nodes = 0;
   const count = (value: unknown, depth: number): boolean => {
     if (typeof value !== 'object' || value === null) return true;

@@ -25,6 +25,7 @@ import type { ResolvedCapabilities } from '../personas/persona-types.js';
 import { runScript } from './runner.js';
 import { scriptRunAccess } from './run-policy.js';
 import type { ScriptStore, ScriptFile, StoredVersion } from './store.js';
+import { resolveRunInput } from './run-input.js';
 import { buildApprovalSummary } from './summary.js';
 import {
   runDryRun,
@@ -107,6 +108,7 @@ export interface ScriptService {
     threadId: string;
     scriptName: string;
     scheduleId: string;
+    input?: unknown;
   }): Promise<Result<ScriptRunReport | 'skipped', ScriptError>>;
   notifyFailure(input: {
     threadId: string;
@@ -130,7 +132,7 @@ export interface ScriptService {
  * Why a scheduled run did not start: the files changed, no version is approved,
  * or the persona has no `script.run` capability for the script.
  */
-export type ScriptNotRunReason = 'changed' | 'not-approved' | 'not-permitted';
+export type ScriptNotRunReason = 'changed' | 'not-approved' | 'not-permitted' | 'bad-input';
 
 /** A `SCRIPT_FAILED` error of `runScheduled` for a run that did not start. */
 export class ScriptNotRunError extends ScriptError {
@@ -143,7 +145,9 @@ export class ScriptNotRunError extends ScriptError {
         ? 'the files changed after the approval'
         : reason === 'not-permitted'
           ? 'the persona has no script.run capability for this script'
-          : 'no approved version of this script',
+          : reason === 'bad-input'
+            ? 'the input of the schedule does not match the script'
+            : 'no approved version of this script',
       cause,
     );
     this.reason = reason;
@@ -646,6 +650,7 @@ export function createScriptService(deps: ScriptServiceDeps): ScriptService {
     threadId: string;
     scriptName: string;
     scheduleId: string;
+    input?: unknown;
   }): Promise<Result<ScriptRunReport | 'skipped', ScriptError>> {
     const noApproved = (): ScriptError => new ScriptNotRunError('not-approved');
     // A scheduled run asks nobody: `approval` runs like `allowed`. `undefined`
@@ -740,6 +745,18 @@ export function createScriptService(deps: ScriptServiceDeps): ScriptService {
       if (loaded.isErr()) return err(loaded.error);
       const version = loaded.value;
       known = { name: version.manifest.name, version: version.version };
+      // After the capability check, before a run row or a provider exists.
+      const liveInput = resolveRunInput(version.manifest, input.input);
+      if (liveInput.isErr()) {
+        audit({
+          action: 'script.run.refused',
+          personaId: input.personaId,
+          threadId: input.threadId,
+          runId: randomUUID(),
+          details: { script: input.scriptName, version: version.version, reason: 'bad-input' },
+        });
+        return err(new ScriptNotRunError('bad-input', liveInput.error));
+      }
       const runRow = startRun(version.versionId, 'live', 'schedule', input.scheduleId);
       if (runRow.isErr()) return err(runRow.error);
       runId = runRow.value;
@@ -786,7 +803,7 @@ export function createScriptService(deps: ScriptServiceDeps): ScriptService {
         mode: 'live',
         provider,
         scriptPath: version.scriptPath,
-        input: manifest.liveInput ?? null,
+        input: liveInput.value,
         timeoutMs: config.runTimeoutMs,
         maxCalls: config.maxCallsPerRun,
         profile: SCRIPT_PROFILE,
@@ -881,7 +898,9 @@ export function createScriptService(deps: ScriptServiceDeps): ScriptService {
               ? `Script "${name}" did not run: it has no approved version.`
               : input.reason === 'not-permitted'
                 ? `Script ${name} did not run: the persona has no script.run capability for it.`
-                : `Script "${name}" failed (${code}). It stays scheduled. I will tell you again only if it fails after a success.`;
+                : input.reason === 'bad-input'
+                  ? `Script ${name} did not run: the input of the schedule does not match the script.`
+                  : `Script "${name}" failed (${code}). It stays scheduled. I will tell you again only if it fails after a success.`;
         const chat = deps.resolveChat(input.threadId);
         const sent = chat
           ? await deps.send(chat.channelName, chat.externalThreadId, text)

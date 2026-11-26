@@ -109,6 +109,8 @@ export interface AuthoredManifest {
   dryRunInput: unknown;
   /** Input of a scheduled run. Default null. */
   liveInput?: unknown;
+  /** JSON Schema of the input of a run. Absent: the script accepts no input. */
+  inputSchema?: Record<string, unknown>;
 }
 
 export type VersionState =

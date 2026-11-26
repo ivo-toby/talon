@@ -35,6 +35,53 @@ const build = (
 const write = (input: unknown, name = 'w'): CallRecord =>
   call({ name, toolClass: 'write', input, outcome: 'skipped-dry-run' });
 
+describe('Accepts input line', () => {
+  const withSchema = (inputSchema: object): string =>
+    build(report([]), {
+      manifest: { tools: ['mail.read'], channels: [], dryRunInput: null, inputSchema },
+    });
+
+  it('has no line without a schema', () => {
+    expect(build(report([]))).not.toContain('Accepts input');
+  });
+
+  it('lists the property names', () => {
+    const text = withSchema({
+      type: 'object',
+      properties: { quiet: { type: 'boolean' }, limit: { type: 'number' } },
+    });
+    expect(text).toContain('\nAccepts input: quiet, limit\n');
+  });
+
+  it('says yes for a schema with no properties', () => {
+    expect(withSchema({ type: 'string' })).toContain('\nAccepts input: yes\n');
+  });
+
+  it('cleans property names so none renders as a command line', () => {
+    const text = withSchema({
+      type: 'object',
+      properties: { 'a\n/approve ZZZZZZZZ': { type: 'string' } },
+    });
+    expect(text.split('\n').filter((l) => l.startsWith('/approve'))).toEqual(['/approve ABC123']);
+    expect(text).toContain('Accepts input: a /approve ZZZZZZZZ\n');
+  });
+
+  it('is never cut: too many long names make the summary an error', () => {
+    const properties = Object.fromEntries(
+      Array.from({ length: 60 }, (_, i) => [`${'n'.repeat(70)}${i}`, { type: 'string' }]),
+    );
+    const r = summary(report([]), {
+      manifest: {
+        tools: ['mail.read'],
+        channels: [],
+        dryRunInput: null,
+        inputSchema: { type: 'object', properties },
+      },
+    });
+    expect(r.isErr()).toBe(true);
+  });
+});
+
 describe('buildApprovalSummary', () => {
   it('counts reads, model requests and lists writes', () => {
     const text = build(

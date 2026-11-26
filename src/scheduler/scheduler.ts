@@ -363,6 +363,9 @@ export class Scheduler {
           threadId,
           scriptName,
           scheduleId: schedule.id,
+          ...(Object.prototype.hasOwnProperty.call(payload, 'input')
+            ? { input: payload.input }
+            : {}),
         })
         .then((result) => {
           let errorCode: string | undefined;
@@ -370,7 +373,12 @@ export class Scheduler {
           if (result.isErr()) {
             errorCode = result.error.scriptCode;
             const given = (result.error as { reason?: unknown }).reason;
-            if (given === 'changed' || given === 'not-approved' || given === 'not-permitted') {
+            if (
+              given === 'changed' ||
+              given === 'not-approved' ||
+              given === 'not-permitted' ||
+              given === 'bad-input'
+            ) {
               reason = given;
             }
           } else if (result.value !== 'skipped' && !result.value.ok) {
