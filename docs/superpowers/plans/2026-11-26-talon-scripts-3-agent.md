@@ -202,7 +202,7 @@ Rules:
 - `decide` for purpose `run` or `schedule` records the decision and leaves the state of the version alone. If the version is not in state `approved`, it refuses.
 - `cancelLeaked`, `cancelWrongChat` and the expiry path move a version back to `tested` only for purpose `version`.
 - `expireVersion` expires the approvals of all purposes.
-- A payload is at most 2,000 characters.
+- A payload is at most 12,000 characters.
 
 - [ ] **Step 1: Write the failing tests.** One test for each rule above. Add these two:
 
