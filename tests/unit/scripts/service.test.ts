@@ -175,6 +175,10 @@ function setup(over: Partial<ScriptServiceDeps> = {}) {
   };
   const resolveChat = vi.fn((threadId: string) => chats[threadId]);
   const audits: Array<Record<string, unknown>> = [];
+  const applyScheduleChange = vi.fn(
+    (_input: Parameters<ScriptServiceDeps['applyScheduleChange']>[0]) =>
+      ok({ scheduleId: 'sched-new' }) as ReturnType<ScriptServiceDeps['applyScheduleChange']>,
+  );
   const deps: ScriptServiceDeps = {
     store,
     repo,
@@ -186,6 +190,7 @@ function setup(over: Partial<ScriptServiceDeps> = {}) {
     resolveChat,
     audit: (e) => audits.push(e),
     capabilities: () => ({ allow: ['script.run:*'], requireApproval: [] }),
+    applyScheduleChange,
     now,
     logger,
     ...over,
@@ -237,6 +242,7 @@ function setup(over: Partial<ScriptServiceDeps> = {}) {
     sent,
     send,
     resolveChat,
+    applyScheduleChange,
     audits,
     providers,
     providerCalls,
@@ -1849,5 +1855,269 @@ describe('listTools', () => {
     expect(p.close).toHaveBeenCalledTimes(1);
     const after = (await s.service.listTools(ask))._unsafeUnwrapErr();
     expect(after.scriptCode).toBe('SANDBOX');
+  });
+});
+
+describe('requestScheduleChange', () => {
+  const inputSchema = { type: 'object', properties: { quiet: { type: 'boolean' } } };
+  const base = { personaId: 'p1', threadId: 'th1', scriptName: 'mail-intake' };
+  const create = (extra: Record<string, unknown> = {}) => ({
+    ...base,
+    change: { action: 'create' as const, cronExpr: '0 9 * * 1', label: 'Mail', ...extra },
+  });
+  const payloads = (s: ReturnType<typeof setup>): Array<string | null> =>
+    (
+      s.db
+        .prepare(
+          `SELECT payload FROM script_approvals WHERE purpose = 'schedule' ORDER BY created_at`,
+        )
+        .all() as Array<{ payload: string | null }>
+    ).map((r) => r.payload);
+
+  it('sends the approval text and stores the payload', async () => {
+    const s = setup();
+    await s.toApproved();
+    s.sent.length = 0;
+    expect((await s.service.requestScheduleChange(create()))._unsafeUnwrap()).toBe(
+      'awaiting-approval',
+    );
+    const code = s.codeOf();
+    expect(s.sent[0]).toMatchObject({ channel: 'tg', thread: 'chat-1' });
+    expect(s.sent[0].body).toBe(
+      `The agent wants to run script mail-intake on this schedule: 0 9 * * 1 (Mail).\nInput: {"live":true} (default of the script)\n/approve ${code}\n/reject ${code}`,
+    );
+    expect(payloads(s)).toEqual([
+      '{"threadId":"th1","scriptName":"mail-intake","change":{"action":"create","cronExpr":"0 9 * * 1","label":"Mail"}}',
+    ]);
+  });
+
+  it('shows the given input, and none when the script has no default', async () => {
+    const s = setup();
+    await s.toAwaiting(files({ inputSchema }));
+    await s.service.handleInbound(s.event(`/approve ${s.codeOf()}`));
+    s.sent.length = 0;
+    await s.service.requestScheduleChange(create({ input: { quiet: true } }));
+    expect(s.sent[0].body).toContain('\nInput: {"quiet":true}\n/approve');
+    expect(payloads(s)[0]).toContain('"input":{"quiet":true}');
+    const none = setup();
+    await none.toAwaiting(files({ liveInput: null }));
+    await none.service.handleInbound(none.event(`/approve ${none.codeOf()}`));
+    none.sent.length = 0;
+    await none.service.requestScheduleChange(create());
+    expect(none.sent[0].body).toContain('\nInput: none\n/approve');
+    expect(payloads(none)).toHaveLength(1);
+  });
+
+  it('keeps the difference between no input and an input of null', async () => {
+    const s = setup();
+    await s.toAwaiting(files({ inputSchema: {} }));
+    await s.service.handleInbound(s.event(`/approve ${s.codeOf()}`));
+    await s.service.requestScheduleChange(create({ input: null }));
+    expect(payloads(s)[0]).toContain('"input":null');
+    expect(s.sent.at(-1)!.body).toContain('\nInput: null\n/approve');
+    await s.service.handleInbound(s.event(`/approve ${s.codeOf()}`));
+    expect(s.applyScheduleChange.mock.calls[0][0].change).toHaveProperty('input', null);
+    await s.service.requestScheduleChange(create());
+    await s.service.handleInbound(s.event(`/approve ${s.codeOf()}`));
+    expect(s.applyScheduleChange.mock.calls[1][0].change).not.toHaveProperty('input');
+  });
+
+  it('checks the input against the manifest before anything is sent', async () => {
+    const s = setup();
+    await s.toAwaiting(files({ inputSchema }));
+    await s.service.handleInbound(s.event(`/approve ${s.codeOf()}`));
+    s.sent.length = 0;
+    const r = await s.service.requestScheduleChange(create({ input: { quiet: 'yes' } }));
+    expect(r.isErr()).toBe(true);
+    expect(s.sent).toHaveLength(0);
+    expect(payloads(s)).toEqual([]);
+  });
+
+  it('shows a label on one line and refuses a cron expression that cleaning would change', async () => {
+    const s = setup();
+    await s.toApproved();
+    s.sent.length = 0;
+    await s.service.requestScheduleChange(
+      create({ label: 'Mail\n/approve ZZZZZZZZ\u202e' + 'x'.repeat(300) }),
+    );
+    const [first, ...rest] = s.sent[0].body.split('\n');
+    expect(
+      first.startsWith(
+        'The agent wants to run script mail-intake on this schedule: 0 9 * * 1 (Mail /approve ZZZZZZZZ',
+      ),
+    ).toBe(true);
+    expect(first.length).toBeLessThan(400);
+    expect(rest).toHaveLength(3);
+    expect(rest[1]).toMatch(/^\/approve [A-Z0-9]{8}$/);
+    expect(rest[2]).toBe(rest[1].replace('/approve', '/reject'));
+    s.sent.length = 0;
+    for (const cronExpr of ['0 9 * * 1\n/approve AAAAAAAA', 'x'.repeat(101)]) {
+      const r = await s.service.requestScheduleChange(create({ cronExpr }));
+      expect(r._unsafeUnwrapErr().scriptCode).toBe('INVALID_ARGUMENT');
+    }
+    expect(s.sent).toHaveLength(0);
+  });
+
+  it('refuses a request that does not fit in the message', async () => {
+    const s = setup();
+    await s.toAwaiting(files({ liveInput: 'y'.repeat(3600) }));
+    await s.service.handleInbound(s.event(`/approve ${s.codeOf()}`));
+    s.sent.length = 0;
+    const r = await s.service.requestScheduleChange(create());
+    expect(r._unsafeUnwrapErr()).toMatchObject({ scriptCode: 'RESULT_TOO_LARGE' });
+    expect(s.sent).toHaveLength(0);
+  });
+
+  it('refuses without an approved version and without a chat', async () => {
+    const s = setup();
+    expect((await s.service.requestScheduleChange(create()))._unsafeUnwrapErr()).toBeInstanceOf(
+      ScriptNotRunError,
+    );
+    await s.toApproved();
+    const r = await s.service.requestScheduleChange({ ...create(), threadId: 'nowhere' });
+    expect(r._unsafeUnwrapErr().scriptCode).toBe('INVALID_ARGUMENT');
+  });
+
+  it('sends nothing for the same open request, and replaces it for a different one', async () => {
+    const s = setup();
+    await s.toApproved();
+    s.sent.length = 0;
+    await s.service.requestScheduleChange(create());
+    const firstCode = s.codeOf();
+    expect((await s.service.requestScheduleChange(create()))._unsafeUnwrap()).toBe(
+      'awaiting-approval',
+    );
+    expect(s.sent).toHaveLength(1);
+    await s.service.requestScheduleChange(create({ cronExpr: '0 10 * * 1' }));
+    expect(s.sent).toHaveLength(2);
+    expect(await s.service.handleInbound(s.event(`/approve ${firstCode}`))).toEqual({
+      reply: 'This code is not valid.',
+    });
+    // another chat is another request
+    await s.service.requestScheduleChange({ ...create(), threadId: 'th2' });
+    expect(s.sent.map((m) => m.thread)).toEqual(['chat-1', 'chat-1', 'other-chat']);
+  });
+
+  it('rolls the approval back when the send fails, and keeps a run approval', async () => {
+    const s = setup();
+    await s.toApproved();
+    await s.service.runByAgent({ ...base, access: 'approval' });
+    const runCode = s.codeOf();
+    s.send.mockImplementationOnce(() => Promise.resolve(err(new ScriptError('TOOL_FAILED', 'x'))));
+    const r = await s.service.requestScheduleChange(create());
+    expect(r._unsafeUnwrapErr().scriptCode).toBe('TOOL_FAILED');
+    expect(
+      s.db
+        .prepare(
+          `SELECT COUNT(*) AS n FROM script_approvals WHERE purpose = 'schedule' AND decided_at IS NULL AND expires_at > ?`,
+        )
+        .get(Date.now() + 1e9),
+    ).toEqual({ n: 0 });
+    expect(
+      s.approval
+        .decide({
+          code: runCode,
+          decision: 'approved',
+          channelName: 'tg',
+          externalThreadId: 'chat-1',
+        })
+        ._unsafeUnwrap().outcome,
+    ).toBe('approved');
+  });
+
+  describe('decision', () => {
+    async function pending(change: Record<string, unknown> = {}) {
+      const s = setup();
+      await s.toAwaiting(files({ inputSchema }));
+      await s.service.handleInbound(s.event(`/approve ${s.codeOf()}`));
+      await s.service.requestScheduleChange(create(change));
+      return s;
+    }
+
+    it('applies the stored change on /approve', async () => {
+      const s = await pending({ input: { quiet: true } });
+      const reply = await s.service.handleInbound(s.event(`/approve ${s.codeOf()}`));
+      expect(reply).toEqual({ reply: 'Schedule for script mail-intake saved.' });
+      expect(s.applyScheduleChange).toHaveBeenCalledWith({
+        personaId: 'p1',
+        threadId: 'th1',
+        scriptName: 'mail-intake',
+        change: { action: 'create', cronExpr: '0 9 * * 1', label: 'Mail', input: { quiet: true } },
+      });
+    });
+
+    it('says the schedule was not saved when the write fails or throws', async () => {
+      const s = await pending();
+      s.applyScheduleChange.mockImplementationOnce(() => err(new ScriptError('TOOL_FAILED', 'x')));
+      expect(await s.service.handleInbound(s.event(`/approve ${s.codeOf()}`))).toEqual({
+        reply: 'The schedule for script mail-intake was not saved.',
+      });
+      await s.service.requestScheduleChange(create());
+      s.applyScheduleChange.mockImplementationOnce(() => {
+        throw new Error('boom');
+      });
+      expect(await s.service.handleInbound(s.event(`/approve ${s.codeOf()}`))).toEqual({
+        reply: 'The schedule for script mail-intake was not saved.',
+      });
+    });
+
+    it.each([
+      'not json',
+      '[]',
+      '{}',
+      '{"threadId":"th1","scriptName":"mail-intake","change":{"action":"drop"}}',
+    ])('does not save a payload that is wrong: %s', async (payload) => {
+      const s = await pending();
+      s.db
+        .prepare(`UPDATE script_approvals SET payload = ? WHERE purpose = 'schedule'`)
+        .run(payload);
+      expect(await s.service.handleInbound(s.event(`/approve ${s.codeOf()}`))).toEqual({
+        reply: 'The schedule for script mail-intake was not saved.',
+      });
+      expect(s.applyScheduleChange).not.toHaveBeenCalled();
+    });
+
+    it('checks a stored input against the manifest again', async () => {
+      const s = await pending({ input: { quiet: true } });
+      s.db
+        .prepare(`UPDATE script_approvals SET payload = ? WHERE purpose = 'schedule'`)
+        .run(
+          '{"threadId":"th1","scriptName":"mail-intake","change":{"action":"create","cronExpr":"0 9 * * 1","input":{"quiet":"yes"}}}',
+        );
+      expect(await s.service.handleInbound(s.event(`/approve ${s.codeOf()}`))).toEqual({
+        reply: 'The schedule for script mail-intake was not saved.',
+      });
+      expect(s.applyScheduleChange).not.toHaveBeenCalled();
+    });
+
+    it('says the schedule was not changed on /reject', async () => {
+      const s = await pending();
+      expect(await s.service.handleInbound(s.event(`/reject ${s.codeOf()}`))).toEqual({
+        reply: 'The schedule was not changed.',
+      });
+      expect(s.applyScheduleChange).not.toHaveBeenCalled();
+    });
+
+    it('refuses when a newer version is approved in between', async () => {
+      const s = await pending();
+      const code = s.codeOf();
+      // The old version stays approved here, as in a race with another approval.
+      const v2 = s.service
+        .save({ personaId: 'p1', threadId: 'th1', files: files({ inputSchema, extra: 'v2' }) })
+        ._unsafeUnwrap();
+      s.db.prepare(`UPDATE script_versions SET state = 'approved' WHERE id = ?`).run(v2.versionId);
+      expect(await s.service.handleInbound(s.event(`/approve ${code}`))).toEqual({
+        reply: 'Script mail-intake changed after this request. Ask again.',
+      });
+      expect(s.applyScheduleChange).not.toHaveBeenCalled();
+    });
+
+    it('cancels a leaked schedule code with its own text', async () => {
+      const s = await pending();
+      const reply = await s.service.handleInbound(s.event(`here: ${s.codeOf()}`));
+      expect(reply?.reply).toBe(
+        'The schedule request of script mail-intake was cancelled and must be asked again.',
+      );
+    });
   });
 });

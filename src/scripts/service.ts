@@ -26,7 +26,7 @@ import { runScript } from './runner.js';
 import { scriptRunAccess } from './run-policy.js';
 import type { ScriptStore, ScriptFile, StoredVersion } from './store.js';
 import { resolveRunInput } from './run-input.js';
-import { buildApprovalSummary } from './summary.js';
+import { buildApprovalSummary, clean } from './summary.js';
 import {
   runDryRun,
   runUnitCases,
@@ -77,6 +77,13 @@ export interface ScriptServiceDeps {
   }): void;
   /** Capabilities of a persona by database ID, or `undefined` if it is not loaded. Never throws. */
   capabilities(personaId: string): ResolvedCapabilities | undefined;
+  /** Writes an approved schedule change. Bound to the schedule tool by the wiring. */
+  applyScheduleChange(input: {
+    personaId: string;
+    threadId: string;
+    scriptName: string;
+    change: ScriptScheduleChange;
+  }): Result<{ scheduleId: string }, ScriptError>;
   now?: () => number;
   logger?: Logger;
 }
@@ -125,6 +132,23 @@ export interface ScriptService {
     access: 'allowed' | 'approval';
     input?: unknown;
   }): Promise<Result<ScriptRunReport | 'awaiting-approval', ScriptError>>;
+  /**
+   * Asks the chat of the conversation to approve a schedule that runs the
+   * approved version of a script. One open request for each version: the same
+   * request again sends nothing. The input, if present, goes through the manifest.
+   */
+  requestScheduleChange(input: {
+    personaId: string;
+    threadId: string;
+    scriptName: string;
+    change: ScriptScheduleChange;
+  }): Promise<Result<'awaiting-approval', ScriptError>>;
+  /** The input of a schedule, checked against the manifest of the newest approved version. */
+  checkScheduleInput(input: {
+    personaId: string;
+    scriptName: string;
+    input: unknown;
+  }): Result<unknown, ScriptError>;
   notifyFailure(input: {
     threadId: string;
     scriptName: string;
@@ -161,6 +185,17 @@ export interface ScriptService {
 }
 
 export type { ScriptToolInfo } from './types.js';
+
+/** A change to a schedule that runs a script. */
+export interface ScriptScheduleChange {
+  action: 'create' | 'update';
+  /** For update. */
+  scheduleId?: string;
+  cronExpr?: string;
+  label?: string;
+  /** Stored in the schedule payload as `input`. `null` is a real input; no key means none. */
+  input?: unknown;
+}
 
 export interface ScriptInfo {
   name: string;
@@ -200,6 +235,9 @@ export class ScriptNotRunError extends ScriptError {
 const MAX_REPORT_CHARS = 1_000_000;
 /** The longest approval message for a run that the agent asks for. */
 const MAX_RUN_APPROVAL_CHARS = 3_500;
+/** The longest cron expression and label that an approval message shows. */
+const CRON_MAX = 100;
+const LABEL_MAX = 200;
 const CODE_CHARS = 8;
 const SHUTDOWN_WAIT_MS = 10_000;
 const NAME_MAX = 60;
@@ -233,6 +271,10 @@ function cleanDescription(description: string | undefined): string | undefined {
     .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, '')
     .slice(0, DESCRIPTION_MAX);
   return text.length > 0 ? text : undefined;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 const unknownVersion = (): ScriptError =>
@@ -790,6 +832,7 @@ export function createScriptService(deps: ScriptServiceDeps): ScriptService {
       });
     }
     if (outcome.purpose === 'run') return decideRun(event, outcome);
+    if (outcome.purpose === 'schedule') return decideSchedule(outcome);
     const name = cleanName(outcome.scriptName);
     const label =
       name !== '' && outcome.version !== undefined
@@ -864,6 +907,74 @@ export function createScriptService(deps: ScriptServiceDeps): ScriptService {
     return { reply: `Script ${name} started.` };
   }
 
+  /** The stored change of a schedule approval, or `undefined` if the payload is not of this form. */
+  function parseScheduleChange(
+    payload: string | undefined,
+  ): { threadId: string; change: ScriptScheduleChange } | undefined {
+    try {
+      const parsed: unknown = payload === undefined ? undefined : JSON.parse(payload);
+      if (!isPlainObject(parsed) || typeof parsed.threadId !== 'string') return undefined;
+      const raw = parsed.change;
+      if (!isPlainObject(raw) || (raw.action !== 'create' && raw.action !== 'update')) {
+        return undefined;
+      }
+      for (const key of ['scheduleId', 'cronExpr', 'label'] as const) {
+        if (raw[key] !== undefined && typeof raw[key] !== 'string') return undefined;
+      }
+      const change: ScriptScheduleChange = { action: raw.action };
+      if (typeof raw.scheduleId === 'string') change.scheduleId = raw.scheduleId;
+      if (typeof raw.cronExpr === 'string') change.cronExpr = raw.cronExpr;
+      if (typeof raw.label === 'string') change.label = raw.label;
+      if ('input' in raw) change.input = raw.input;
+      return { threadId: parsed.threadId, change };
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** The decision on a schedule that the agent asked for. */
+  function decideSchedule(outcome: Decision): { reply?: string } {
+    const name = cleanName(outcome.scriptName);
+    if (name === '' || outcome.personaId === undefined || outcome.versionId === undefined) {
+      return { reply: 'This request could not be started. Ask again.' };
+    }
+    if (outcome.outcome === 'rejected') return { reply: 'The schedule was not changed.' };
+    const { personaId, versionId } = outcome;
+    const notSaved = { reply: `The schedule for script ${name} was not saved.` };
+
+    const stored = parseScheduleChange(outcome.payload);
+    if (!stored) return notSaved;
+    const version = repo.getVersion(versionId);
+    if (version.isErr() || !version.value) return notSaved;
+    const newest = repo.latestApproved(version.value.script_id);
+    if (newest.isErr()) return notSaved;
+    if (!newest.value || newest.value.id !== versionId) {
+      return { reply: `Script ${name} changed after this request. Ask again.` };
+    }
+    try {
+      if ('input' in stored.change) {
+        const loaded = store.load(versionId);
+        if (loaded.isErr() || resolveRunInput(loaded.value.manifest, stored.change.input).isErr()) {
+          return notSaved;
+        }
+      }
+      const applied = deps.applyScheduleChange({
+        personaId,
+        threadId: stored.threadId,
+        scriptName: name,
+        change: stored.change,
+      });
+      if (applied.isErr()) {
+        logger.error({ scriptCode: applied.error.scriptCode }, 'script schedule not saved');
+        return notSaved;
+      }
+    } catch {
+      logger.error('script schedule failed unexpectedly');
+      return notSaved;
+    }
+    return { reply: `Schedule for script ${name} saved.` };
+  }
+
   function cancelReply(
     event: InboundEvent,
     outcome: CancelOutcome,
@@ -886,16 +997,21 @@ export function createScriptService(deps: ScriptServiceDeps): ScriptService {
     }
     // Nothing was cancelled, or a write failed: the code stays guarded, but do not claim a cancel.
     const done = outcome.cancelled.length > 0 && !outcome.failed;
-    const onlyRuns = outcome.cancelled.every((item) => item.purpose === 'run');
-    const runText = done && onlyRuns ? runCancelText(outcome) : undefined;
+    const purpose = outcome.cancelled[0]?.purpose;
+    const agentPurpose =
+      (purpose === 'run' || purpose === 'schedule') &&
+      outcome.cancelled.every((item) => item.purpose === purpose)
+        ? purpose
+        : undefined;
+    const agentText = done && agentPurpose ? agentCancelText(outcome, agentPurpose) : undefined;
     return attemptReply(
       event,
-      runText ?? (done ? reply : 'This code cannot be used here. Ask for a new approval.'),
+      agentText ?? (done ? reply : 'This code cannot be used here. Ask for a new approval.'),
     );
   }
 
-  /** The notice for cancelled run requests, or `undefined` if no script name is known. */
-  function runCancelText(outcome: CancelOutcome): string | undefined {
+  /** The notice for cancelled run or schedule requests, or a general one if no script name is known. */
+  function agentCancelText(outcome: CancelOutcome, purpose: 'run' | 'schedule'): string {
     const names = new Set<string>();
     for (const item of outcome.cancelled) {
       try {
@@ -908,9 +1024,11 @@ export function createScriptService(deps: ScriptServiceDeps): ScriptService {
         // an unreadable manifest: no name
       }
     }
-    if (names.size === 0) return 'The run request was cancelled and must be asked again.';
+    if (names.size === 0) return `The ${purpose} request was cancelled and must be asked again.`;
     return [...names]
-      .map((name) => `The run request of script ${name} was cancelled and must be asked again.`)
+      .map(
+        (name) => `The ${purpose} request of script ${name} was cancelled and must be asked again.`,
+      )
       .join('\n');
   }
 
@@ -1240,31 +1358,60 @@ export function createScriptService(deps: ScriptServiceDeps): ScriptService {
         new ScriptError('INVALID_ARGUMENT', 'this conversation has no chat for an approval'),
       );
     }
-    let inputText: string | undefined;
-    let payload: string | undefined;
-    try {
-      inputText =
-        input.input !== undefined
-          ? JSON.stringify(resolved.value)
-          : resolved.value === null
-            ? 'none'
-            : `${JSON.stringify(resolved.value)} (default of the script)`;
-      payload = input.input === undefined ? '{}' : JSON.stringify({ input: resolved.value });
-    } catch {
-      inputText = undefined;
-    }
-    if (typeof inputText !== 'string' || typeof payload !== 'string') {
+    const inputText = describeInput(input.input !== undefined, resolved.value);
+    const payload = input.input === undefined ? '{}' : safeStringify({ input: resolved.value });
+    if (inputText === undefined || payload === undefined) {
       return err(new ScriptError('INVALID_ARGUMENT', 'the input cannot be shown as JSON'));
     }
-    const messageOf = (code: string): string =>
-      `The agent wants to run script ${version.manifest.name} (version ${version.version}) now.\n` +
-      `Input: ${inputText}\n/approve ${code}\n/reject ${code}`;
+    return askAgentApproval({
+      versionId,
+      purpose: 'run',
+      chat,
+      payload,
+      messageOf: (code) =>
+        `The agent wants to run script ${version.manifest.name} (version ${version.version}) now.\n` +
+        `Input: ${inputText}\n/approve ${code}\n/reject ${code}`,
+    });
+  }
+
+  /** The JSON text of a value, or `undefined` if it cannot be serialized. */
+  function safeStringify(value: unknown): string | undefined {
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * The `Input:` line of an approval message: the JSON of a given input, the
+   * default of the script, or `none`. `undefined` if the input is not JSON.
+   */
+  function describeInput(given: boolean, value: unknown): string | undefined {
+    const text = safeStringify(value);
+    if (text === undefined) return undefined;
+    return given ? text : value === null ? 'none' : `${text} (default of the script)`;
+  }
+
+  /**
+   * Asks a chat to approve something that the agent wants. One open approval for
+   * each version and purpose: the same request again sends nothing; a different
+   * one replaces it. A failed send rolls the new approval back.
+   */
+  async function askAgentApproval(input: {
+    versionId: string;
+    purpose: 'run' | 'schedule';
+    chat: { channelName: string; externalThreadId: string };
+    payload: string;
+    messageOf: (code: string) => string;
+  }): Promise<Result<'awaiting-approval', ScriptError>> {
+    const { versionId, purpose, chat, payload, messageOf } = input;
     if (messageOf('0'.repeat(CODE_CHARS)).length > MAX_RUN_APPROVAL_CHARS) {
       return err(
         new ScriptError('RESULT_TOO_LARGE', 'the input does not fit in the approval message'),
       );
     }
-    const open = repo.findOpenApprovalFor(versionId, 'run', now());
+    const open = repo.findOpenApprovalFor(versionId, purpose, now());
     if (open.isErr()) return err(sandbox(open.error));
     if (
       open.value &&
@@ -1275,12 +1422,12 @@ export function createScriptService(deps: ScriptServiceDeps): ScriptService {
       return ok('awaiting-approval');
     }
 
-    // A new request expires the open run approval of the version.
+    // A new request expires the open approval of the same purpose.
     const requested = approval.request({
       versionId,
       channelName: chat.channelName,
       externalThreadId: chat.externalThreadId,
-      purpose: 'run',
+      purpose,
       payload,
     });
     if (requested.isErr()) return err(requested.error);
@@ -1295,12 +1442,87 @@ export function createScriptService(deps: ScriptServiceDeps): ScriptService {
       sent = err(new ScriptError('TOOL_FAILED', 'send threw'));
     }
     if (sent.isErr()) {
-      if (approval.expireVersion(versionId, 'run').isErr()) {
-        logger.error({ versionId }, 'could not roll back a failed run approval request');
+      if (approval.expireVersion(versionId, purpose).isErr()) {
+        logger.error({ versionId }, `could not roll back a failed ${purpose} approval request`);
       }
       return err(new ScriptError('TOOL_FAILED', 'the approval message could not be sent'));
     }
     return ok('awaiting-approval');
+  }
+
+  /** The newest approved version of a script, loaded, or an error. */
+  function loadApproved(
+    personaId: string,
+    scriptName: string,
+  ): Result<{ versionId: string; loaded: StoredVersion }, ScriptError> {
+    const script = repo.findScript(personaId, scriptName);
+    if (script.isErr()) return err(sandbox(script.error));
+    if (!script.value) return err(new ScriptNotRunError('not-approved'));
+    const approved = repo.latestApproved(script.value.id);
+    if (approved.isErr()) return err(sandbox(approved.error));
+    if (!approved.value) return err(new ScriptNotRunError('not-approved'));
+    const loaded = store.load(approved.value.id);
+    if (loaded.isErr()) return err(loaded.error);
+    return ok({ versionId: approved.value.id, loaded: loaded.value });
+  }
+
+  async function requestScheduleChangeImpl(input: {
+    personaId: string;
+    threadId: string;
+    scriptName: string;
+    change: ScriptScheduleChange;
+  }): Promise<Result<'awaiting-approval', ScriptError>> {
+    const found = loadApproved(input.personaId, input.scriptName);
+    if (found.isErr()) return err(found.error);
+    const { versionId, loaded: version } = found.value;
+    const hasInput = 'input' in input.change && input.change.input !== undefined;
+    const resolved = resolveRunInput(version.manifest, hasInput ? input.change.input : undefined);
+    if (resolved.isErr()) return err(resolved.error);
+    const chat = deps.resolveChat(input.threadId);
+    if (!chat) {
+      return err(
+        new ScriptError('INVALID_ARGUMENT', 'this conversation has no chat for an approval'),
+      );
+    }
+    // What the user reads is what is stored: a cron expression that cleaning would change is refused.
+    const cronExpr = clean(input.change.cronExpr ?? '', CRON_MAX);
+    if (cronExpr !== (input.change.cronExpr ?? '')) {
+      return err(new ScriptError('INVALID_ARGUMENT', 'the cron expression is not valid'));
+    }
+    const label = clean(input.change.label ?? '', LABEL_MAX);
+    const inputText = describeInput(hasInput, resolved.value);
+    const change: ScriptScheduleChange = { action: input.change.action };
+    if (input.change.scheduleId !== undefined) change.scheduleId = input.change.scheduleId;
+    if (input.change.cronExpr !== undefined) change.cronExpr = cronExpr;
+    if (input.change.label !== undefined) change.label = label;
+    if (hasInput) change.input = resolved.value;
+    const payload = safeStringify({
+      threadId: input.threadId,
+      scriptName: version.manifest.name,
+      change,
+    });
+    if (inputText === undefined || payload === undefined) {
+      return err(new ScriptError('INVALID_ARGUMENT', 'the input cannot be shown as JSON'));
+    }
+    return askAgentApproval({
+      versionId,
+      purpose: 'schedule',
+      chat,
+      payload,
+      messageOf: (code) =>
+        `The agent wants to run script ${version.manifest.name} on this schedule: ${cronExpr} (${label}).\n` +
+        `Input: ${inputText}\n/approve ${code}\n/reject ${code}`,
+    });
+  }
+
+  function checkScheduleInputImpl(input: {
+    personaId: string;
+    scriptName: string;
+    input: unknown;
+  }): Result<unknown, ScriptError> {
+    const found = loadApproved(input.personaId, input.scriptName);
+    if (found.isErr()) return err(found.error);
+    return resolveRunInput(found.value.loaded.manifest, input.input);
   }
 
   async function guard<T>(
@@ -1364,6 +1586,17 @@ export function createScriptService(deps: ScriptServiceDeps): ScriptService {
     },
 
     runByAgent: (input) => tracked(() => runByAgentImpl(input)),
+
+    requestScheduleChange: (input) => tracked(() => requestScheduleChangeImpl(input)),
+
+    checkScheduleInput(input): Result<unknown, ScriptError> {
+      try {
+        return checkScheduleInputImpl(input);
+      } catch (error) {
+        logger.error({ err: error }, 'script schedule input check failed unexpectedly');
+        return err(sandbox());
+      }
+    },
 
     list(personaId): Result<ScriptInfo[], ScriptError> {
       try {

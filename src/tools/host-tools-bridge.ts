@@ -22,8 +22,14 @@ import {
   type ChannelBroadcastArgs,
 } from './host-tools/channel-broadcast.js';
 import { PersonaSendHandler, type PersonaSendArgs } from './host-tools/persona-send.js';
-import { PersonaTaskStatusHandler, type PersonaTaskStatusArgs } from './host-tools/persona-task-status.js';
-import { PersonaTaskCancelHandler, type PersonaTaskCancelArgs } from './host-tools/persona-task-cancel.js';
+import {
+  PersonaTaskStatusHandler,
+  type PersonaTaskStatusArgs,
+} from './host-tools/persona-task-status.js';
+import {
+  PersonaTaskCancelHandler,
+  type PersonaTaskCancelArgs,
+} from './host-tools/persona-task-cancel.js';
 import { PersonaListHandler } from './host-tools/persona-list.js';
 import { HttpProxyHandler, type HttpProxyArgs } from './host-tools/http-proxy.js';
 import { DbQueryHandler, type DbQueryArgs } from './host-tools/db-query.js';
@@ -151,6 +157,8 @@ export class HostToolsBridge {
       threadRepository: ctx.repos.thread,
       channelRepository: ctx.repos.channel,
       personaRepository: ctx.repos.persona,
+      getService: () => this.scriptService,
+      resolveCapabilities: (personaId) => this.resolvePersonaCapabilities(personaId),
       logger: handlerLogger,
     });
 
@@ -207,9 +215,7 @@ export class HostToolsBridge {
       // actually hold one. Background-agent runs (backgroundTaskId set) are not
       // queue-dispatched, so they must not free a slot.
       const waitScope = <T>(fn: () => Promise<T>, context: ToolExecutionContext): Promise<T> =>
-        context.backgroundTaskId
-          ? fn()
-          : ctx.queueManager.runWithSlotReleased(fn, context.runId);
+        context.backgroundTaskId ? fn() : ctx.queueManager.runWithSlotReleased(fn, context.runId);
       this.personaSendHandler = new PersonaSendHandler({
         taskMapper: ctx.a2aTaskMapper,
         taskRepo: ctx.repos.a2aTask,
@@ -346,6 +352,16 @@ export class HostToolsBridge {
    */
   setScriptService(service: ScriptService | null): void {
     this.scriptService = service;
+  }
+
+  /**
+   * Writes a schedule change that the user approved in the chat. The script
+   * service calls it through the wiring; it writes like the direct path of `schedule_manage`.
+   */
+  applyScriptScheduleChange(
+    input: Parameters<ScheduleManageHandler['applyScriptChange']>[0],
+  ): ReturnType<ScheduleManageHandler['applyScriptChange']> {
+    return this.scheduleHandler.applyScriptChange(input);
   }
 
   /** Sets the text of the script authoring guide. Undefined: the guide is not available. */
@@ -568,14 +584,8 @@ export class HostToolsBridge {
     refuseApprovalGated: boolean;
     requestLogId: string;
   }): Promise<{ result: ToolCallResult; denied: boolean }> {
-    const {
-      normalizedTool,
-      args,
-      context,
-      authenticatedContext,
-      loggedToolName,
-      toolObservation,
-    } = opts;
+    const { normalizedTool, args, context, authenticatedContext, loggedToolName, toolObservation } =
+      opts;
     const requestLogger = this.dispatchLogger.logger;
     return await this.dispatchLogger.run(opts.dispatchPrivacy, async () => {
       const resolvedCaps = this.resolvePersonaCapabilities(
@@ -907,9 +917,7 @@ export class HostToolsBridge {
       const loadedResult = this.ctx.personaLoader.getByName(personaName);
       if (loadedResult.isErr() || loadedResult.value === undefined) {
         logger.warn(
-          voiceObservation
-            ? { voice: true, errorCategory: 'unknown' }
-            : { personaId, personaName },
+          voiceObservation ? { voice: true, errorCategory: 'unknown' } : { personaId, personaName },
           voiceObservation
             ? 'host-tools-bridge: loaded persona lookup failed, failing closed (no tools allowed)'
             : 'host-tools-bridge: loaded persona not found, failing closed (no tools allowed)',
@@ -1025,7 +1033,10 @@ export class HostToolsBridge {
             error: 'A2A task mapper not initialized',
           };
         }
-        return this.personaTaskCancelHandler.execute(args as unknown as PersonaTaskCancelArgs, context);
+        return this.personaTaskCancelHandler.execute(
+          args as unknown as PersonaTaskCancelArgs,
+          context,
+        );
 
       case 'persona.list':
         return this.personaListHandler.execute({}, context);

@@ -17,6 +17,10 @@ import { ToolError } from '../../core/errors/error-types.js';
 import { getNextCronTime } from '../../scheduler/cron-evaluator.js';
 import type { SchedulePayload } from '../../scheduler/schedule-types.js';
 import type { ToolExecutionContext } from './channel-send.js';
+import type { ScriptScheduleChange, ScriptService } from '../../scripts/service.js';
+import { scriptRunAccess } from '../../scripts/run-policy.js';
+import type { ResolvedCapabilities } from '../../personas/persona-types.js';
+import type { ScheduleRow } from '../../core/database/repositories/schedule-repository.js';
 
 /** Manifest for the schedule.manage host tool. */
 export interface ScheduleManageTool {
@@ -37,6 +41,10 @@ export interface ScheduleManageArgs {
   prompt?: string;
   /** Prompt file alias to resolve from the persona's prompts/ directory. */
   promptFile?: string;
+  /** Name of an approved script to run instead of a prompt. Excludes prompt and promptFile. */
+  script?: string;
+  /** Input of the script. Legal only with a script; it must match the input schema. */
+  input?: unknown;
 }
 
 /** Valid actions for the schedule.manage tool. */
@@ -50,6 +58,18 @@ const VALID_ACTIONS = new Set(['create', 'update', 'cancel', 'delete', 'list']);
  * lenient — the scheduler will perform stricter validation at runtime.
  */
 const CRON_PATTERN = /^(\S+\s+){4}\S+$/;
+
+const SCRIPT_NAME_PATTERN = /^[a-z][a-z0-9-]{1,48}$/;
+const AWAITING_APPROVAL_TEXT =
+  'The user must approve this schedule in the chat. Do not call the tool again for this request.';
+
+/** A stored schedule payload, read defensively. */
+interface StoredPayload {
+  label: string;
+  script?: string;
+  hasInput: boolean;
+  input?: unknown;
+}
 
 /** Metadata marker applied to dedicated schedule execution threads. */
 const SCHEDULE_THREAD_KIND = 'schedule';
@@ -65,7 +85,11 @@ function readOriginExternalIdFromMetadata(metadataJson: string | null | undefine
   if (!metadataJson) return null;
   try {
     const parsed = JSON.parse(metadataJson) as Record<string, unknown>;
-    if (parsed && parsed.kind === SCHEDULE_THREAD_KIND && typeof parsed.originExternalId === 'string') {
+    if (
+      parsed &&
+      parsed.kind === SCHEDULE_THREAD_KIND &&
+      typeof parsed.originExternalId === 'string'
+    ) {
       return parsed.originExternalId;
     }
   } catch {
@@ -100,6 +124,10 @@ export class ScheduleManageHandler {
       threadRepository: ThreadRepository;
       channelRepository: ChannelRepository;
       personaRepository: PersonaRepository;
+      /** The current script service, or null when scripts are off. */
+      getService: () => ScriptService | null;
+      /** The capabilities of a persona, resolved from the trusted run context. */
+      resolveCapabilities: (personaId: string) => ResolvedCapabilities;
       logger: pino.Logger;
     },
   ) {}
@@ -111,8 +139,24 @@ export class ScheduleManageHandler {
    * @param context - Execution context (runId, threadId, personaId).
    * @returns ToolCallResult with status 'success' or 'error'.
    */
-  execute(args: ScheduleManageArgs, context: ToolExecutionContext): Promise<ToolCallResult> {
-    return Promise.resolve(this.executeSync(args, context));
+  async execute(args: ScheduleManageArgs, context: ToolExecutionContext): Promise<ToolCallResult> {
+    if (this.isScriptRequest(args, context)) {
+      try {
+        return await this.executeScript(args, context, context.requestId ?? 'unknown');
+      } catch {
+        this.deps.logger.error(
+          { requestId: context.requestId },
+          'schedule.manage: script schedule failed',
+        );
+        return {
+          requestId: context.requestId ?? 'unknown',
+          tool: 'schedule.manage',
+          status: 'error',
+          error: 'schedule.manage: script schedule failed',
+        };
+      }
+    }
+    return this.executeSync(args, context);
   }
 
   /** Synchronous dispatch — wrapped by execute() to satisfy the async tool interface. */
@@ -186,6 +230,31 @@ export class ScheduleManageHandler {
       };
     }
 
+    const created = this.insertSchedule(cronExpr.trim(), payloadResult.value, context, requestId);
+    if (created.isErr()) {
+      return { requestId, tool: 'schedule.manage', status: 'error', error: created.error.message };
+    }
+    return {
+      requestId,
+      tool: 'schedule.manage',
+      status: 'success',
+      result: { scheduleId: created.value, action: 'create', created: true },
+    };
+  }
+
+  /**
+   * Writes a new schedule on the dedicated execution thread of the invoking
+   * chat. The one write path of `create` for prompt schedules, script schedules
+   * and approved script schedules.
+   */
+  private insertSchedule(
+    cronExpr: string,
+    schedulePayload: SchedulePayload,
+    context: ToolExecutionContext,
+    requestId: string,
+  ): Result<string, ToolError> {
+    const fail = (msg: string): Result<string, ToolError> => err(new ToolError(msg));
+
     // Resolve the invoking thread + its channel so the schedule can be
     // stored on a dedicated execution thread rather than polluting the
     // live conversation session. The origin thread's external_id is
@@ -194,40 +263,49 @@ export class ScheduleManageHandler {
     const threadResult = this.deps.threadRepository.findById(context.threadId);
     if (threadResult.isErr()) {
       const msg = `schedule.manage: failed to load invoking thread — ${threadResult.error.message}`;
-      this.deps.logger.error({ requestId, threadId: context.threadId, err: threadResult.error }, msg);
-      return { requestId, tool: 'schedule.manage', status: 'error', error: msg };
+      this.deps.logger.error(
+        { requestId, threadId: context.threadId, err: threadResult.error },
+        msg,
+      );
+      return fail(msg);
     }
     const originThread = threadResult.value;
     if (!originThread) {
       const msg = `schedule.manage: invoking thread "${context.threadId}" not found`;
       this.deps.logger.warn({ requestId, threadId: context.threadId }, msg);
-      return { requestId, tool: 'schedule.manage', status: 'error', error: msg };
+      return fail(msg);
     }
 
     const channelResult = this.deps.channelRepository.findById(originThread.channel_id);
     if (channelResult.isErr()) {
       const msg = `schedule.manage: failed to load channel — ${channelResult.error.message}`;
-      this.deps.logger.error({ requestId, channelId: originThread.channel_id, err: channelResult.error }, msg);
-      return { requestId, tool: 'schedule.manage', status: 'error', error: msg };
+      this.deps.logger.error(
+        { requestId, channelId: originThread.channel_id, err: channelResult.error },
+        msg,
+      );
+      return fail(msg);
     }
     const channelRow = channelResult.value;
     if (!channelRow) {
       const msg = `schedule.manage: channel "${originThread.channel_id}" not found`;
       this.deps.logger.warn({ requestId, channelId: originThread.channel_id }, msg);
-      return { requestId, tool: 'schedule.manage', status: 'error', error: msg };
+      return fail(msg);
     }
 
     const personaResult = this.deps.personaRepository.findById(context.personaId);
     if (personaResult.isErr()) {
       const msg = `schedule.manage: failed to load persona — ${personaResult.error.message}`;
-      this.deps.logger.error({ requestId, personaId: context.personaId, err: personaResult.error }, msg);
-      return { requestId, tool: 'schedule.manage', status: 'error', error: msg };
+      this.deps.logger.error(
+        { requestId, personaId: context.personaId, err: personaResult.error },
+        msg,
+      );
+      return fail(msg);
     }
     const personaRow = personaResult.value;
     if (!personaRow) {
       const msg = `schedule.manage: persona "${context.personaId}" not found`;
       this.deps.logger.warn({ requestId, personaId: context.personaId }, msg);
-      return { requestId, tool: 'schedule.manage', status: 'error', error: msg };
+      return fail(msg);
     }
 
     // If this tool is invoked from an already-dedicated schedule thread
@@ -248,25 +326,20 @@ export class ScheduleManageHandler {
       requestId,
     });
     if (dedicatedThreadResult.isErr()) {
-      return {
-        requestId,
-        tool: 'schedule.manage',
-        status: 'error',
-        error: dedicatedThreadResult.error.message,
-      };
+      return err(dedicatedThreadResult.error);
     }
     const dedicatedThreadId = dedicatedThreadResult.value;
 
     const scheduleId = uuidv4();
-    const payload = JSON.stringify(payloadResult.value);
+    const payload = JSON.stringify(schedulePayload);
 
     // Compute next_run_at from the cron expression so the scheduler
     // can find this schedule on its next tick. (Fixes BUG-005.)
-    const nextRunResult = getNextCronTime(cronExpr.trim());
+    const nextRunResult = getNextCronTime(cronExpr);
     if (nextRunResult.isErr()) {
       const msg = `schedule.manage: failed to compute next run time — ${nextRunResult.error.message}`;
       this.deps.logger.warn({ requestId, cronExpr }, msg);
-      return { requestId, tool: 'schedule.manage', status: 'error', error: msg };
+      return fail(msg);
     }
 
     const insertResult = this.deps.scheduleRepository.insert({
@@ -274,7 +347,7 @@ export class ScheduleManageHandler {
       persona_id: context.personaId,
       thread_id: dedicatedThreadId,
       type: 'cron',
-      expression: cronExpr.trim(),
+      expression: cronExpr,
       payload,
       enabled: 1,
       last_run_at: null,
@@ -284,7 +357,7 @@ export class ScheduleManageHandler {
     if (insertResult.isErr()) {
       const msg = `schedule.manage: create failed — ${insertResult.error.message}`;
       this.deps.logger.error({ requestId, err: insertResult.error }, msg);
-      return { requestId, tool: 'schedule.manage', status: 'error', error: msg };
+      return fail(msg);
     }
 
     this.deps.logger.info(
@@ -300,12 +373,7 @@ export class ScheduleManageHandler {
       'schedule.manage: schedule created on dedicated execution thread',
     );
 
-    return {
-      requestId,
-      tool: 'schedule.manage',
-      status: 'success',
-      result: { scheduleId, action: 'create', created: true },
-    };
+    return ok(scheduleId);
   }
 
   /** Handle the 'update' action — update an existing schedule's fields. */
@@ -400,17 +468,10 @@ export class ScheduleManageHandler {
       updateInput.payload = fields['payload'];
     }
 
-    const updateResult = this.deps.scheduleRepository.update(scheduleId, context.personaId, updateInput);
-    if (updateResult.isErr()) {
-      const msg = `schedule.manage: update failed — ${updateResult.error.message}`;
-      this.deps.logger.error({ requestId, scheduleId, err: updateResult.error }, msg);
-      return { requestId, tool: 'schedule.manage', status: 'error', error: msg };
+    const updated = this.writeUpdate(scheduleId, context.personaId, updateInput, requestId);
+    if (updated.isErr()) {
+      return { requestId, tool: 'schedule.manage', status: 'error', error: updated.error.message };
     }
-
-    this.deps.logger.info(
-      { requestId, scheduleId, personaId: context.personaId },
-      'schedule.manage: schedule updated',
-    );
 
     return {
       requestId,
@@ -418,6 +479,256 @@ export class ScheduleManageHandler {
       status: 'success',
       result: { scheduleId, action: 'update', updated: true },
     };
+  }
+
+  /** The one write path of `update`: prompt schedules, script schedules and approved script schedules. */
+  private writeUpdate(
+    scheduleId: string,
+    personaId: string,
+    updateInput: { expression?: string; payload?: string; next_run_at?: number },
+    requestId: string,
+  ): Result<void, ToolError> {
+    const updateResult = this.deps.scheduleRepository.update(scheduleId, personaId, updateInput);
+    if (updateResult.isErr()) {
+      const msg = `schedule.manage: update failed — ${updateResult.error.message}`;
+      this.deps.logger.error({ requestId, scheduleId, err: updateResult.error }, msg);
+      return err(new ToolError(msg));
+    }
+
+    this.deps.logger.info(
+      { requestId, scheduleId, personaId },
+      'schedule.manage: schedule updated',
+    );
+    return ok(undefined);
+  }
+
+  // -------------------------------------------------------------------------
+  // Script schedules
+  // -------------------------------------------------------------------------
+
+  /** True if the call belongs to the script path: it names a script or an input, or changes a script schedule. */
+  private isScriptRequest(args: ScheduleManageArgs, context: ToolExecutionContext): boolean {
+    const hasScript = args.script !== undefined;
+    const hasInput = args.input !== undefined;
+    if (args.action === 'create') return hasScript || hasInput;
+    if (args.action !== 'update') return false;
+    if (hasScript || hasInput) return true;
+    if (args.cronExpr === undefined && args.label === undefined) return false;
+    if (args.prompt !== undefined || args.promptFile !== undefined) return false;
+    if (typeof args.scheduleId !== 'string') return false;
+    const row = this.deps.scheduleRepository.findById(args.scheduleId);
+    if (row.isErr() || !row.value || row.value.persona_id !== context.personaId) return false;
+    return this.readStoredPayload(row.value.payload).script !== undefined;
+  }
+
+  private readStoredPayload(payloadJson: string): StoredPayload {
+    try {
+      const parsed: unknown = JSON.parse(payloadJson);
+      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+        return { label: '', hasInput: false };
+      }
+      const record = parsed as Record<string, unknown>;
+      return {
+        label: typeof record.label === 'string' ? record.label : '',
+        ...(typeof record.script === 'string' ? { script: record.script } : {}),
+        hasInput: 'input' in record,
+        ...('input' in record ? { input: record.input } : {}),
+      };
+    } catch {
+      return { label: '', hasInput: false };
+    }
+  }
+
+  /** A schedule of the persona, or an error. The check by persona, not by invoking thread. */
+  private loadOwnedSchedule(
+    scheduleId: string | undefined,
+    personaId: string,
+    requestId: string,
+  ): Result<ScheduleRow, ToolError> {
+    if (!scheduleId || typeof scheduleId !== 'string' || scheduleId.trim() === '') {
+      return err(new ToolError('schedule.manage: scheduleId is required for update action'));
+    }
+    const existing = this.deps.scheduleRepository.findById(scheduleId);
+    if (existing.isErr()) {
+      const msg = `schedule.manage: failed to load existing schedule — ${existing.error.message}`;
+      this.deps.logger.error({ requestId, scheduleId, err: existing.error }, msg);
+      return err(new ToolError(msg));
+    }
+    if (!existing.value) {
+      const msg = `schedule.manage: schedule "${scheduleId}" not found`;
+      this.deps.logger.warn({ requestId, scheduleId }, msg);
+      return err(new ToolError(msg));
+    }
+    if (existing.value.persona_id !== personaId) {
+      const msg = `schedule.manage: schedule "${scheduleId}" does not belong to this persona`;
+      this.deps.logger.warn({ requestId, scheduleId, personaId }, msg);
+      return err(new ToolError(msg));
+    }
+    return ok(existing.value);
+  }
+
+  /** `create` or `update` of a schedule that runs a script. */
+  private async executeScript(
+    args: ScheduleManageArgs,
+    context: ToolExecutionContext,
+    requestId: string,
+  ): Promise<ToolCallResult> {
+    const fail = (message: string, ...extra: [] | [unknown]): ToolCallResult => {
+      this.deps.logger.warn({ requestId }, message);
+      return {
+        requestId,
+        tool: 'schedule.manage',
+        status: 'error',
+        error: message,
+        ...(extra.length ? { result: extra[0] } : {}),
+      };
+    };
+    this.deps.logger.info(
+      { requestId, runId: context.runId, personaId: context.personaId, action: args.action },
+      'schedule.manage: executing a script schedule',
+    );
+    const isUpdate = args.action === 'update';
+    const hasInput = args.input !== undefined;
+
+    let existing: ScheduleRow | undefined;
+    if (isUpdate) {
+      // The check by owner comes first.
+      const owned = this.loadOwnedSchedule(args.scheduleId, context.personaId, requestId);
+      if (owned.isErr()) return fail(owned.error.message);
+      existing = owned.value;
+    }
+    const stored = existing ? this.readStoredPayload(existing.payload) : undefined;
+    const scriptName = args.script ?? stored?.script;
+    const toPrompt = args.prompt !== undefined || args.promptFile !== undefined;
+
+    if (args.script !== undefined && toPrompt) {
+      return fail('schedule.manage: script excludes prompt and promptFile');
+    }
+    if (scriptName === undefined || (args.script === undefined && toPrompt)) {
+      return fail('schedule.manage: input is legal only with script');
+    }
+    if (!SCRIPT_NAME_PATTERN.test(scriptName)) {
+      return fail(
+        'schedule.manage: script must be a script name (lowercase letters, digits and dashes)',
+      );
+    }
+
+    const cronExpr = (args.cronExpr ?? existing?.expression)?.trim();
+    if (!cronExpr) return fail('schedule.manage: cronExpr is required for create action');
+    if (!CRON_PATTERN.test(cronExpr) || getNextCronTime(cronExpr).isErr()) {
+      return fail(
+        `schedule.manage: invalid cron expression. Expected 5-field cron format (minute hour day month weekday)`,
+      );
+    }
+
+    const service = this.deps.getService();
+    if (service === null) return fail('scripts are off');
+    const access = scriptRunAccess(this.deps.resolveCapabilities(context.personaId), scriptName);
+    if (access === 'denied') return fail(`this persona cannot run script ${scriptName}`);
+    if (!service.hasApproved(context.personaId, scriptName)) {
+      return fail(`script ${scriptName} has no approved version`);
+    }
+
+    // The stored input stays only with the same script.
+    const keepStored = !hasInput && stored?.hasInput === true && stored.script === scriptName;
+    const change: ScriptScheduleChange = {
+      action: isUpdate ? 'update' : 'create',
+      ...(existing ? { scheduleId: existing.id } : {}),
+      cronExpr,
+      label: args.label ?? stored?.label ?? '',
+      ...(hasInput ? { input: args.input } : keepStored ? { input: stored?.input } : {}),
+    };
+    const call = { personaId: context.personaId, threadId: context.threadId, scriptName, change };
+
+    if (access === 'approval') {
+      const requested = await service.requestScheduleChange(call);
+      if (requested.isErr()) {
+        return fail(requested.error.message, {
+          scriptCode: requested.error.scriptCode,
+          message: requested.error.message,
+        });
+      }
+      return {
+        requestId,
+        tool: 'schedule.manage',
+        status: 'success',
+        result: { status: 'awaiting-approval', message: AWAITING_APPROVAL_TEXT },
+      };
+    }
+
+    if (hasInput) {
+      const checked = service.checkScheduleInput({
+        personaId: context.personaId,
+        scriptName,
+        input: args.input,
+      });
+      if (checked.isErr()) return fail(checked.error.message);
+    }
+    const written = this.applyScriptChange({ ...call, requestId });
+    if (written.isErr()) return fail(written.error.message);
+    return {
+      requestId,
+      tool: 'schedule.manage',
+      status: 'success',
+      result: isUpdate
+        ? { scheduleId: written.value.scheduleId, action: 'update', updated: true }
+        : { scheduleId: written.value.scheduleId, action: 'create', created: true },
+    };
+  }
+
+  /**
+   * Writes a schedule change for a script. The one write of the direct path and
+   * of an approved change. It trusts the caller for the script check, and
+   * checks again that an updated schedule exists and belongs to the persona.
+   */
+  applyScriptChange(input: {
+    personaId: string;
+    threadId: string;
+    scriptName: string;
+    change: ScriptScheduleChange;
+    requestId?: string;
+  }): Result<{ scheduleId: string }, ToolError> {
+    const { personaId, threadId, scriptName, change } = input;
+    const requestId = input.requestId ?? 'script-approval';
+    const context: ToolExecutionContext = { runId: requestId, threadId, personaId, requestId };
+    const hasInput = change.input !== undefined;
+    const payloadFor = (label: string): SchedulePayload => ({
+      label,
+      script: scriptName,
+      ...(hasInput ? { input: change.input } : {}),
+    });
+
+    if (change.action === 'create') {
+      const cronExpr = change.cronExpr?.trim();
+      if (!cronExpr)
+        return err(new ToolError('schedule.manage: cronExpr is required for create action'));
+      return this.insertSchedule(cronExpr, payloadFor(change.label ?? ''), context, requestId).map(
+        (scheduleId) => ({ scheduleId }),
+      );
+    }
+
+    const owned = this.loadOwnedSchedule(change.scheduleId, personaId, requestId);
+    if (owned.isErr()) return err(owned.error);
+    const row = owned.value;
+    const fields: { expression?: string; payload?: string; next_run_at?: number } = {
+      payload: JSON.stringify(
+        payloadFor(change.label ?? this.readStoredPayload(row.payload).label),
+      ),
+    };
+    const cronExpr = change.cronExpr?.trim();
+    if (cronExpr !== undefined && cronExpr !== row.expression) {
+      const next = getNextCronTime(cronExpr);
+      if (next.isErr()) {
+        return err(
+          new ToolError(`schedule.manage: failed to compute next run time — ${next.error.message}`),
+        );
+      }
+      fields.expression = cronExpr;
+      fields.next_run_at = next.value;
+    }
+    return this.writeUpdate(row.id, personaId, fields, requestId).map(() => ({
+      scheduleId: row.id,
+    }));
   }
 
   /** Handle the 'cancel' action — disable the schedule (sets enabled=0). */
@@ -547,14 +858,14 @@ export class ScheduleManageHandler {
         lastRunAt: row.last_run_at ? new Date(row.last_run_at).toISOString() : null,
       };
 
-      if (typeof payload?.promptFile === 'string') {
-        return {
-          ...schedule,
-          promptFile: payload.promptFile,
-        };
-      }
-
-      return schedule;
+      return {
+        ...schedule,
+        ...(typeof payload?.promptFile === 'string' ? { promptFile: payload.promptFile } : {}),
+        ...(typeof payload?.script === 'string' ? { script: payload.script } : {}),
+        ...(typeof payload?.script === 'string' && payload !== null && 'input' in payload
+          ? { input: payload.input }
+          : {}),
+      };
     });
 
     this.deps.logger.debug(
@@ -592,7 +903,10 @@ export class ScheduleManageHandler {
     const existing = this.deps.threadRepository.findByExternalId(channelId, dedicatedExternalId);
     if (existing.isErr()) {
       const msg = `schedule.manage: failed to look up dedicated schedule thread — ${existing.error.message}`;
-      this.deps.logger.error({ requestId, channelId, dedicatedExternalId, err: existing.error }, msg);
+      this.deps.logger.error(
+        { requestId, channelId, dedicatedExternalId, err: existing.error },
+        msg,
+      );
       return err(new ToolError(msg));
     }
     if (existing.value) {
@@ -625,7 +939,10 @@ export class ScheduleManageHandler {
         return ok(retry.value.id);
       }
       const msg = `schedule.manage: failed to create dedicated schedule thread — ${insertResult.error.message}`;
-      this.deps.logger.error({ requestId, channelId, dedicatedExternalId, err: insertResult.error }, msg);
+      this.deps.logger.error(
+        { requestId, channelId, dedicatedExternalId, err: insertResult.error },
+        msg,
+      );
       return err(new ToolError(msg));
     }
     return ok(dedicatedThreadId);
@@ -636,9 +953,7 @@ export class ScheduleManageHandler {
     existingPayloadJson?: string,
   ): Result<SchedulePayload, ToolError> {
     if (args.prompt !== undefined && args.promptFile !== undefined) {
-      return err(
-        new ToolError('schedule.manage: prompt and promptFile are mutually exclusive'),
-      );
+      return err(new ToolError('schedule.manage: prompt and promptFile are mutually exclusive'));
     }
 
     const existingPayload = this.parseSchedulePayload(existingPayloadJson);

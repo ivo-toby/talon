@@ -12,6 +12,9 @@
 
 import { describe, it, expect, vi } from 'vitest';
 import { ok, err } from 'neverthrow';
+import type { ScriptService } from '../../../../src/scripts/service.js';
+import { ScriptError } from '../../../../src/scripts/types.js';
+import type { ResolvedCapabilities } from '../../../../src/personas/persona-types.js';
 import { ScheduleManageHandler } from '../../../../src/tools/host-tools/schedule-manage.js';
 import type { ScheduleManageArgs } from '../../../../src/tools/host-tools/schedule-manage.js';
 import type { ToolExecutionContext } from '../../../../src/tools/host-tools/channel-send.js';
@@ -138,12 +141,14 @@ function makeThreadRepo(overrides: Partial<ThreadRepository> = {}): ThreadReposi
     findById: vi.fn().mockReturnValue(ok(makeThreadRow())),
     findByExternalId: vi.fn().mockReturnValue(ok(null)),
     findByChannelId: vi.fn().mockReturnValue(ok([])),
-    insert: vi.fn().mockImplementation((row) => ok({
-      ...makeThreadRow(),
-      ...row,
-      created_at: 1000,
-      updated_at: 1000,
-    })),
+    insert: vi.fn().mockImplementation((row) =>
+      ok({
+        ...makeThreadRow(),
+        ...row,
+        created_at: 1000,
+        updated_at: 1000,
+      }),
+    ),
     update: vi.fn().mockReturnValue(ok(makeThreadRow())),
     ...overrides,
   } as unknown as ThreadRepository;
@@ -173,13 +178,19 @@ function makePersonaRepo(overrides: Partial<PersonaRepository> = {}): PersonaRep
   } as unknown as PersonaRepository;
 }
 
-function makeHandler(overrides: {
-  scheduleRepository?: ScheduleRepository;
-  threadRepository?: ThreadRepository;
-  channelRepository?: ChannelRepository;
-  personaRepository?: PersonaRepository;
-} = {}) {
+function makeHandler(
+  overrides: {
+    scheduleRepository?: ScheduleRepository;
+    threadRepository?: ThreadRepository;
+    channelRepository?: ChannelRepository;
+    personaRepository?: PersonaRepository;
+    service?: unknown;
+    capabilities?: ResolvedCapabilities;
+  } = {},
+) {
   return new ScheduleManageHandler({
+    getService: () => (overrides.service ?? null) as ScriptService | null,
+    resolveCapabilities: () => overrides.capabilities ?? { allow: [], requireApproval: [] },
     scheduleRepository: overrides.scheduleRepository ?? makeScheduleRepo(),
     threadRepository: overrides.threadRepository ?? makeThreadRepo(),
     channelRepository: overrides.channelRepository ?? makeChannelRepo(),
@@ -214,12 +225,14 @@ describe('ScheduleManageHandler — create', () => {
   it('creates a schedule on a newly-provisioned dedicated execution thread', async () => {
     const insertSchedule = vi.fn().mockReturnValue(ok(makeScheduleRow()));
     const findByExternalId = vi.fn().mockReturnValue(ok(null));
-    const insertThread = vi.fn().mockImplementation((row) => ok({
-      ...makeThreadRow(),
-      ...row,
-      created_at: 1000,
-      updated_at: 1000,
-    }));
+    const insertThread = vi.fn().mockImplementation((row) =>
+      ok({
+        ...makeThreadRow(),
+        ...row,
+        created_at: 1000,
+        updated_at: 1000,
+      }),
+    );
     const handler = makeHandler({
       scheduleRepository: makeScheduleRepo({ insert: insertSchedule }),
       threadRepository: makeThreadRepo({ findByExternalId, insert: insertThread }),
@@ -345,12 +358,14 @@ describe('ScheduleManageHandler — create', () => {
     });
     const findById = vi.fn().mockReturnValue(ok(invokingScheduleThread));
     const findByExternalId = vi.fn().mockReturnValue(ok(null));
-    const insertThread = vi.fn().mockImplementation((row) => ok({
-      ...makeThreadRow(),
-      ...row,
-      created_at: 1000,
-      updated_at: 1000,
-    }));
+    const insertThread = vi.fn().mockImplementation((row) =>
+      ok({
+        ...makeThreadRow(),
+        ...row,
+        created_at: 1000,
+        updated_at: 1000,
+      }),
+    );
     const insertSchedule = vi.fn().mockReturnValue(ok(makeScheduleRow()));
 
     const handler = makeHandler({
@@ -370,7 +385,10 @@ describe('ScheduleManageHandler — create', () => {
       'channel-001',
       'schedule:assistant:telegram-main:chat-42',
     );
-    const insertedMetadata = JSON.parse(insertThread.mock.calls[0][0].metadata) as Record<string, unknown>;
+    const insertedMetadata = JSON.parse(insertThread.mock.calls[0][0].metadata) as Record<
+      string,
+      unknown
+    >;
     expect(insertedMetadata.originExternalId).toBe('chat-42');
     expect(insertedMetadata.originExternalId).not.toMatch(/^schedule:/);
   });
@@ -381,12 +399,14 @@ describe('ScheduleManageHandler — create', () => {
     // agent-runner consume, scheduled delivery silently breaks. Assert
     // the contract end-to-end by parsing the metadata the way the
     // consumers do.
-    const insertThread = vi.fn().mockImplementation((row) => ok({
-      ...makeThreadRow(),
-      ...row,
-      created_at: 1000,
-      updated_at: 1000,
-    }));
+    const insertThread = vi.fn().mockImplementation((row) =>
+      ok({
+        ...makeThreadRow(),
+        ...row,
+        created_at: 1000,
+        updated_at: 1000,
+      }),
+    );
     const handler = makeHandler({
       threadRepository: makeThreadRepo({
         findByExternalId: vi.fn().mockReturnValue(ok(null)),
@@ -434,7 +454,12 @@ describe('ScheduleManageHandler — create', () => {
     });
 
     const result = await handler.execute(
-      { action: 'create', cronExpr: '0 7 * * 1-5', label: 'Morning briefing', promptFile: 'morning-briefing' },
+      {
+        action: 'create',
+        cronExpr: '0 7 * * 1-5',
+        label: 'Morning briefing',
+        promptFile: 'morning-briefing',
+      },
       makeContext(),
     );
 
@@ -856,10 +881,7 @@ describe('ScheduleManageHandler — cancel', () => {
 
   it('returns error when scheduleId is empty string', async () => {
     const handler = makeHandler();
-    const result = await handler.execute(
-      { action: 'cancel', scheduleId: '' },
-      makeContext(),
-    );
+    const result = await handler.execute({ action: 'cancel', scheduleId: '' }, makeContext());
     expect(result.status).toBe('error');
     expect(result.error).toMatch(/scheduleId is required/);
   });
@@ -946,10 +968,7 @@ describe('ScheduleManageHandler — delete', () => {
 
   it('returns error when scheduleId is empty string', async () => {
     const handler = makeHandler();
-    const result = await handler.execute(
-      { action: 'delete', scheduleId: '' },
-      makeContext(),
-    );
+    const result = await handler.execute({ action: 'delete', scheduleId: '' }, makeContext());
     expect(result.status).toBe('error');
     expect(result.error).toMatch(/scheduleId is required/);
   });
@@ -1091,5 +1110,367 @@ describe('ScheduleManageHandler — list', () => {
 
     expect(result.status).toBe('error');
     expect(result.error).toContain('list failed');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Script schedules
+// ---------------------------------------------------------------------------
+
+describe('ScheduleManageHandler — script schedules', () => {
+  const allowScript: ResolvedCapabilities = {
+    allow: ['script.run:mail-intake'],
+    requireApproval: [],
+  };
+  const approveScript: ResolvedCapabilities = {
+    allow: [],
+    requireApproval: ['script.run:mail-intake'],
+  };
+  const AWAITING_TEXT =
+    'The user must approve this schedule in the chat. Do not call the tool again for this request.';
+
+  function makeService(over: Record<string, unknown> = {}) {
+    return {
+      hasApproved: vi.fn(() => true),
+      checkScheduleInput: vi.fn((i: { input: unknown }) => ok(i.input)),
+      requestScheduleChange: vi.fn(() => Promise.resolve(ok('awaiting-approval'))),
+      ...over,
+    };
+  }
+
+  function setupScript(
+    capabilities: ResolvedCapabilities,
+    stored?: Partial<ScheduleRow>,
+    service: ReturnType<typeof makeService> | null = makeService(),
+  ) {
+    const scheduleRepository = makeScheduleRepo({
+      findById: vi.fn().mockReturnValue(ok(stored ? makeScheduleRow(stored) : null)),
+    });
+    const handler = makeHandler({ scheduleRepository, service, capabilities });
+    return { handler, scheduleRepository, service };
+  }
+
+  const scriptRow = (payload: Record<string, unknown> = {}): Partial<ScheduleRow> => ({
+    payload: JSON.stringify({ label: 'Mail', script: 'mail-intake', ...payload }),
+  });
+  const insertedPayload = (repo: ScheduleRepository): unknown =>
+    JSON.parse((repo.insert as ReturnType<typeof vi.fn>).mock.calls[0][0].payload as string);
+  const updatedPayload = (repo: ScheduleRepository): unknown =>
+    JSON.parse((repo.update as ReturnType<typeof vi.fn>).mock.calls[0][2].payload as string);
+  const createArgs = (extra: Record<string, unknown> = {}): ScheduleManageArgs => ({
+    action: 'create',
+    cronExpr: '0 9 * * 1',
+    label: 'Mail',
+    script: 'mail-intake',
+    ...extra,
+  });
+
+  it.each([
+    [{ prompt: 'x' }],
+    [{ promptFile: 'x' }],
+    [{ script: 'Bad Name' }],
+    [{ script: undefined, input: { a: 1 } }],
+  ])('refuses the arguments %j on create', async (extra) => {
+    const { handler, scheduleRepository, service } = setupScript(allowScript);
+    const r = await handler.execute(createArgs(extra), makeContext());
+    expect(r.status).toBe('error');
+    expect(scheduleRepository.insert).not.toHaveBeenCalled();
+    expect(service!.requestScheduleChange).not.toHaveBeenCalled();
+  });
+
+  it('answers scripts are off without a service', async () => {
+    const { handler, scheduleRepository } = setupScript(allowScript, undefined, null);
+    const r = await handler.execute(createArgs(), makeContext());
+    expect(r).toMatchObject({ status: 'error', error: expect.stringContaining('scripts are off') });
+    expect(scheduleRepository.insert).not.toHaveBeenCalled();
+  });
+
+  it('refuses a persona without the script.run label', async () => {
+    const { handler, scheduleRepository } = setupScript({ allow: [], requireApproval: [] });
+    const r = await handler.execute(createArgs(), makeContext());
+    expect(r.status).toBe('error');
+    expect(scheduleRepository.insert).not.toHaveBeenCalled();
+  });
+
+  it('refuses a script without an approved version', async () => {
+    const service = makeService({ hasApproved: vi.fn(() => false) });
+    const { handler, scheduleRepository } = setupScript(allowScript, undefined, service);
+    const r = await handler.execute(createArgs(), makeContext());
+    expect(r).toMatchObject({
+      status: 'error',
+      error: expect.stringContaining('script mail-intake has no approved version'),
+    });
+    expect(scheduleRepository.insert).not.toHaveBeenCalled();
+  });
+
+  it('writes a script schedule at once with access allowed', async () => {
+    const { handler, scheduleRepository, service } = setupScript(allowScript);
+    const r = await handler.execute(createArgs(), makeContext());
+    expect(r).toMatchObject({ status: 'success', result: { action: 'create', created: true } });
+    expect(insertedPayload(scheduleRepository)).toEqual({ label: 'Mail', script: 'mail-intake' });
+    expect(service!.requestScheduleChange).not.toHaveBeenCalled();
+  });
+
+  it('stores an input, also null, and checks it before it writes', async () => {
+    const { handler, scheduleRepository, service } = setupScript(allowScript);
+    await handler.execute(createArgs({ input: null }), makeContext());
+    expect(insertedPayload(scheduleRepository)).toEqual({
+      label: 'Mail',
+      script: 'mail-intake',
+      input: null,
+    });
+    expect(service!.checkScheduleInput).toHaveBeenCalledWith({
+      personaId: 'persona-001',
+      scriptName: 'mail-intake',
+      input: null,
+    });
+  });
+
+  it('writes nothing when the input does not match the script', async () => {
+    const service = makeService({
+      checkScheduleInput: vi.fn(() => err(new ScriptError('INVALID_ARGUMENT', 'bad input'))),
+    });
+    const { handler, scheduleRepository } = setupScript(allowScript, undefined, service);
+    const r = await handler.execute(createArgs({ input: { a: 1 } }), makeContext());
+    expect(r.status).toBe('error');
+    expect(scheduleRepository.insert).not.toHaveBeenCalled();
+  });
+
+  it('asks for an approval with access approval and writes nothing', async () => {
+    const { handler, scheduleRepository, service } = setupScript(approveScript);
+    const r = await handler.execute(createArgs({ input: { a: 1 } }), makeContext());
+    expect(r).toEqual({
+      requestId: 'req-001',
+      tool: 'schedule.manage',
+      status: 'success',
+      result: { status: 'awaiting-approval', message: AWAITING_TEXT },
+    });
+    expect(service!.requestScheduleChange).toHaveBeenCalledWith({
+      personaId: 'persona-001',
+      threadId: 'live-thread-001',
+      scriptName: 'mail-intake',
+      change: { action: 'create', cronExpr: '0 9 * * 1', label: 'Mail', input: { a: 1 } },
+    });
+    expect(scheduleRepository.insert).not.toHaveBeenCalled();
+  });
+
+  it('returns the error of a failed request without a code', async () => {
+    const service = makeService({
+      requestScheduleChange: vi.fn(() =>
+        Promise.resolve(
+          err(new ScriptError('TOOL_FAILED', 'the approval message could not be sent')),
+        ),
+      ),
+    });
+    const { handler } = setupScript(approveScript, undefined, service);
+    const r = await handler.execute(createArgs(), makeContext());
+    expect(r).toMatchObject({
+      status: 'error',
+      error: expect.stringContaining('the approval message could not be sent'),
+    });
+  });
+
+  it('lists the script and the input of a script schedule', async () => {
+    const scheduleRepository = makeScheduleRepo({
+      findByPersona: vi
+        .fn()
+        .mockReturnValue(
+          ok([makeScheduleRow(scriptRow({ input: { a: 1 } })), makeScheduleRow(scriptRow({}))]),
+        ),
+    });
+    const handler = makeHandler({ scheduleRepository });
+    const r = await handler.execute({ action: 'list' }, makeContext());
+    const schedules = (r.result as { schedules: Array<Record<string, unknown>> }).schedules;
+    expect(schedules[0]).toMatchObject({ script: 'mail-intake', input: { a: 1 } });
+    expect(schedules[1]).toMatchObject({ script: 'mail-intake' });
+    expect(schedules[1]).not.toHaveProperty('input');
+  });
+
+  describe('update', () => {
+    const upd = (extra: Record<string, unknown>): ScheduleManageArgs => ({
+      action: 'update',
+      scheduleId: 'sched-001',
+      ...extra,
+    });
+
+    it('checks the owner first', async () => {
+      const { handler, scheduleRepository, service } = setupScript(allowScript, {
+        ...scriptRow(),
+        persona_id: 'someone-else',
+      });
+      const r = await handler.execute(upd({ script: 'mail-intake' }), makeContext());
+      expect(r).toMatchObject({ status: 'error' });
+      expect(r.error).toContain('does not belong');
+      expect(service!.hasApproved).not.toHaveBeenCalled();
+      expect(scheduleRepository.update).not.toHaveBeenCalled();
+    });
+
+    it('turns a prompt schedule into a script schedule', async () => {
+      const { handler, scheduleRepository } = setupScript(allowScript, {});
+      const r = await handler.execute(upd({ script: 'mail-intake' }), makeContext());
+      expect(r).toMatchObject({ status: 'success', result: { action: 'update', updated: true } });
+      expect(updatedPayload(scheduleRepository)).toEqual({
+        label: 'Daily standup',
+        script: 'mail-intake',
+      });
+    });
+
+    it('asks for an approval when the script is set and access is approval', async () => {
+      const { handler, scheduleRepository, service } = setupScript(approveScript, {});
+      const r = await handler.execute(
+        upd({ script: 'mail-intake', cronExpr: '5 9 * * 1' }),
+        makeContext(),
+      );
+      expect(r.result).toMatchObject({ status: 'awaiting-approval' });
+      expect(service!.requestScheduleChange).toHaveBeenCalledWith({
+        personaId: 'persona-001',
+        threadId: 'live-thread-001',
+        scriptName: 'mail-intake',
+        change: {
+          action: 'update',
+          scheduleId: 'sched-001',
+          cronExpr: '5 9 * * 1',
+          label: 'Daily standup',
+        },
+      });
+      expect(scheduleRepository.update).not.toHaveBeenCalled();
+    });
+
+    it.each([[{ cronExpr: '5 9 * * 1' }], [{ label: 'New' }], [{ input: { b: 2 } }]])(
+      'asks for an approval when only %j of a script schedule changes',
+      async (extra) => {
+        const { handler, scheduleRepository, service } = setupScript(approveScript, {
+          ...scriptRow({ input: { a: 1 } }),
+          expression: '0 9 * * 1',
+        });
+        const r = await handler.execute(upd(extra), makeContext());
+        expect(r.result).toMatchObject({ status: 'awaiting-approval' });
+        const change = (
+          service!.requestScheduleChange.mock.calls[0] as unknown as [
+            { scriptName: string; change: Record<string, unknown> },
+          ]
+        )[0];
+        expect(change.scriptName).toBe('mail-intake');
+        expect(change.change).toMatchObject({
+          action: 'update',
+          scheduleId: 'sched-001',
+          cronExpr: 'cronExpr' in extra ? '5 9 * * 1' : '0 9 * * 1',
+          label: 'label' in extra ? 'New' : 'Mail',
+          input: 'input' in extra ? { b: 2 } : { a: 1 },
+        });
+        expect(scheduleRepository.update).not.toHaveBeenCalled();
+      },
+    );
+
+    it('keeps the stored input when the script stays the same', async () => {
+      const { handler, scheduleRepository } = setupScript(
+        allowScript,
+        scriptRow({ input: { a: 1 } }),
+      );
+      const r = await handler.execute(upd({ script: 'mail-intake', label: 'x' }), makeContext());
+      expect(r.status).toBe('success');
+      expect(updatedPayload(scheduleRepository)).toEqual({
+        label: 'x',
+        script: 'mail-intake',
+        input: { a: 1 },
+      });
+    });
+
+    it('drops the stored input when the script changes and no input is given', async () => {
+      const { handler, scheduleRepository } = setupScript(
+        { allow: ['script.run:*'], requireApproval: [] },
+        scriptRow({ input: { a: 1 } }),
+      );
+      await handler.execute(upd({ script: 'other-script' }), makeContext());
+      expect(updatedPayload(scheduleRepository)).toEqual({ label: 'Mail', script: 'other-script' });
+    });
+
+    it('keeps the stored script name when an update names none', async () => {
+      const { handler, scheduleRepository } = setupScript(allowScript, scriptRow());
+      await handler.execute(upd({ label: 'New' }), makeContext());
+      expect(updatedPayload(scheduleRepository)).toEqual({ label: 'New', script: 'mail-intake' });
+    });
+
+    it('needs no approval to turn a script schedule into a prompt schedule', async () => {
+      const { handler, scheduleRepository, service } = setupScript(
+        approveScript,
+        scriptRow({ input: { a: 1 } }),
+      );
+      const r = await handler.execute(upd({ prompt: 'Do it' }), makeContext());
+      expect(r.status).toBe('success');
+      expect(updatedPayload(scheduleRepository)).toEqual({ label: 'Mail', prompt: 'Do it' });
+      expect(service!.requestScheduleChange).not.toHaveBeenCalled();
+    });
+
+    it('refuses an input without a script on a prompt schedule', async () => {
+      const { handler, scheduleRepository } = setupScript(allowScript, {});
+      const r = await handler.execute(upd({ input: { a: 1 } }), makeContext());
+      expect(r.status).toBe('error');
+      expect(scheduleRepository.update).not.toHaveBeenCalled();
+    });
+
+    it('leaves a cron change of a prompt schedule alone', async () => {
+      const { handler, scheduleRepository, service } = setupScript(approveScript, {});
+      const r = await handler.execute(upd({ cronExpr: '5 9 * * 1' }), makeContext());
+      expect(r.status).toBe('success');
+      expect(scheduleRepository.update).toHaveBeenCalledTimes(1);
+      expect(service!.requestScheduleChange).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('applyScriptChange', () => {
+    const change = (extra: Record<string, unknown>) => ({
+      personaId: 'persona-001',
+      threadId: 'live-thread-001',
+      scriptName: 'mail-intake',
+      change: { action: 'create' as const, cronExpr: '0 9 * * 1', label: 'Mail', ...extra },
+    });
+
+    it('writes a created schedule on the dedicated thread', () => {
+      const { handler, scheduleRepository } = setupScript(approveScript);
+      const r = handler.applyScriptChange(change({}));
+      expect(r.isOk()).toBe(true);
+      expect(insertedPayload(scheduleRepository)).toEqual({ label: 'Mail', script: 'mail-intake' });
+      expect(scheduleRepository.insert).toHaveBeenCalledWith(
+        expect.objectContaining({ persona_id: 'persona-001', expression: '0 9 * * 1' }),
+      );
+    });
+
+    it('keeps an input of null', () => {
+      const { handler, scheduleRepository } = setupScript(approveScript);
+      handler.applyScriptChange(change({ input: null }));
+      expect(insertedPayload(scheduleRepository)).toEqual({
+        label: 'Mail',
+        script: 'mail-intake',
+        input: null,
+      });
+    });
+
+    it('updates the schedule', () => {
+      const { handler, scheduleRepository } = setupScript(approveScript, {});
+      const r = handler.applyScriptChange(
+        change({ action: 'update', scheduleId: 'sched-001', cronExpr: '5 9 * * 1' }),
+      );
+      expect(r._unsafeUnwrap()).toEqual({ scheduleId: 'sched-001' });
+      expect(scheduleRepository.update).toHaveBeenCalledWith(
+        'sched-001',
+        'persona-001',
+        expect.objectContaining({ expression: '5 9 * * 1' }),
+      );
+    });
+
+    it('fails cleanly when the schedule was deleted in between', () => {
+      const { handler, scheduleRepository } = setupScript(approveScript);
+      const r = handler.applyScriptChange(change({ action: 'update', scheduleId: 'sched-001' }));
+      expect(r.isErr()).toBe(true);
+      expect(scheduleRepository.update).not.toHaveBeenCalled();
+    });
+
+    it('does not update the schedule of another persona', () => {
+      const { handler, scheduleRepository } = setupScript(approveScript, { persona_id: 'other' });
+      const r = handler.applyScriptChange(change({ action: 'update', scheduleId: 'sched-001' }));
+      expect(r.isErr()).toBe(true);
+      expect(scheduleRepository.update).not.toHaveBeenCalled();
+    });
   });
 });

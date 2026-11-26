@@ -182,7 +182,9 @@ class SocketClient {
         ...(context.a2aTaskId ? { a2aTaskId: context.a2aTaskId } : {}),
         ...(context.a2aHopCount !== undefined ? { a2aHopCount: context.a2aHopCount } : {}),
         ...(context.backgroundTaskId ? { backgroundTaskId: context.backgroundTaskId } : {}),
-        ...(context.primaryExecutionEnvId ? { primaryExecutionEnvId: context.primaryExecutionEnvId } : {}),
+        ...(context.primaryExecutionEnvId
+          ? { primaryExecutionEnvId: context.primaryExecutionEnvId }
+          : {}),
         ...(context.allowedHostRoots ? { allowedHostRoots: context.allowedHostRoots } : {}),
       },
     };
@@ -243,7 +245,7 @@ const IMAGE_LOOKUP_LIMIT_SCHEMA = {
 const IMAGE_LOOKUP_CURSOR_SCHEMA = {
   type: 'string' as const,
   description:
-    'Opaque cursor taken from a previous result\'s `nextCursor`. Bound to the operation, filter, and thread that issued it \u2014 do not edit it or reuse it for another operation, filter, or thread. Omit for the first page.',
+    "Opaque cursor taken from a previous result's `nextCursor`. Bound to the operation, filter, and thread that issued it \u2014 do not edit it or reuse it for another operation, filter, or thread. Omit for the first page.",
 };
 
 /** Opaque Image/Finding identifiers: plain tokens, never paths or URLs. */
@@ -287,14 +289,16 @@ const IMAGE_LOOKUP_TOOL = {
 const TOOLS = [
   {
     name: 'schedule_manage',
-    description: 'Creates, updates, cancels, or lists scheduled tasks on behalf of a persona. Schedules are durable — persisted in SQLite and survive session resets and daemon restarts. Use this instead of CronCreate/CronDelete, which are session-bound and disappear when the conversation ends.',
+    description:
+      'Creates, updates, cancels, or lists scheduled tasks on behalf of a persona. Schedules are durable — persisted in SQLite and survive session resets and daemon restarts. Use this instead of CronCreate/CronDelete, which are session-bound and disappear when the conversation ends.',
     inputSchema: {
       type: 'object' as const,
       properties: {
         action: {
           type: 'string' as const,
           enum: ['create', 'update', 'cancel', 'delete', 'list'],
-          description: 'Action to perform. "cancel" disables a schedule, "delete" removes it permanently. Use "list" to see your schedules.',
+          description:
+            'Action to perform. "cancel" disables a schedule, "delete" removes it permanently. Use "list" to see your schedules.',
         },
         scheduleId: {
           type: 'string' as const,
@@ -310,11 +314,22 @@ const TOOLS = [
         },
         prompt: {
           type: 'string' as const,
-          description: 'Inline prompt to execute when the schedule fires. Mutually exclusive with promptFile.',
+          description:
+            'Inline prompt to execute when the schedule fires. Mutually exclusive with promptFile.',
         },
         promptFile: {
           type: 'string' as const,
-          description: 'Prompt file alias from the persona prompts/ directory. Mutually exclusive with prompt.',
+          description:
+            'Prompt file alias from the persona prompts/ directory. Mutually exclusive with prompt.',
+        },
+        script: {
+          type: 'string' as const,
+          description:
+            'Name of an approved script to run instead of a prompt. Excludes prompt and promptFile.',
+        },
+        input: {
+          description:
+            'Optional input for the script. It must match the input schema of the script.',
         },
       },
       required: ['action'],
@@ -340,7 +355,8 @@ const TOOLS = [
         files: {
           type: 'array' as const,
           maxItems: 20,
-          description: 'save: the files of the script, for example script.ts, manifest.json, tests.json.',
+          description:
+            'save: the files of the script, for example script.ts, manifest.json, tests.json.',
           items: {
             type: 'object' as const,
             properties: {
@@ -373,7 +389,8 @@ const TOOLS = [
       properties: {
         name: {
           type: 'string' as const,
-          description: 'The script name, as in script_manage "list". Lowercase letters, digits and dashes.',
+          description:
+            'The script name, as in script_manage "list". Lowercase letters, digits and dashes.',
         },
         input: {
           description: 'Optional. Any JSON value that matches the input schema of the script.',
@@ -385,7 +402,7 @@ const TOOLS = [
   {
     name: 'channel_send',
     description:
-'Sends a message to a channel on behalf of a persona. On a scheduled run, leave `externalChatId` out: the message is then delivered to the conversation where the schedule was created, including the exact Telegram topic. Pass `externalChatId` only to deliver somewhere else on purpose (e.g. a Telegram chat_id, or `<chat_id>:<topic_id>` for one topic); it overrides the schedule\'s origin. If the schedule has no origin (CLI-created schedules) and no `externalChatId` is given, the tool errors — use `channel_list` to discover available chats or `channel_broadcast` to fan out.',
+      "Sends a message to a channel on behalf of a persona. On a scheduled run, leave `externalChatId` out: the message is then delivered to the conversation where the schedule was created, including the exact Telegram topic. Pass `externalChatId` only to deliver somewhere else on purpose (e.g. a Telegram chat_id, or `<chat_id>:<topic_id>` for one topic); it overrides the schedule's origin. If the schedule has no origin (CLI-created schedules) and no `externalChatId` is given, the tool errors — use `channel_list` to discover available chats or `channel_broadcast` to fan out.",
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -405,7 +422,7 @@ const TOOLS = [
         externalChatId: {
           type: 'string' as const,
           description:
-'Optional explicit recipient on the target channel (e.g. Telegram chat_id or `<chat_id>:<topic_id>`, Slack channel id). Leave out to answer where the run or schedule belongs. Required only for CLI-created scheduled tasks that have no origin chat.',
+            'Optional explicit recipient on the target channel (e.g. Telegram chat_id or `<chat_id>:<topic_id>`, Slack channel id). Leave out to answer where the run or schedule belongs. Required only for CLI-created scheduled tasks that have no origin chat.',
         },
       },
       required: ['channelId', 'content'],
@@ -414,12 +431,12 @@ const TOOLS = [
   {
     name: 'channel_react',
     description:
-      'Places an emoji reaction on a message in the current conversation (Telegram, WhatsApp). '
-      + 'To react to the message you are answering, pass only `emoji` and leave `messageId` out — that is the normal case. '
-      + `Use it to acknowledge without writing a reply (e.g. 👍 for "understood"): react, then make your final response exactly ${NO_REPLY_SENTINEL} so no text message is sent. `
-      + 'To react to a different message, pass its id as `messageId`. Valid ids are the "(id …)" values in "[Replying to …]" and "[Reaction: …]" headers, and the ids returned by `list: true`, which lists the recent messages of this conversation. '
-      + 'Never take an id from the database: the numbers stored with messages are delivery keys, not message ids. '
-      + 'Telegram only accepts its standard reaction set (👍 👎 ❤ 🔥 🎉 🙏 👌 🤔 👀 😁 😢 💯 and similar); an unsupported emoji returns an error naming the alternatives.',
+      'Places an emoji reaction on a message in the current conversation (Telegram, WhatsApp). ' +
+      'To react to the message you are answering, pass only `emoji` and leave `messageId` out — that is the normal case. ' +
+      `Use it to acknowledge without writing a reply (e.g. 👍 for "understood"): react, then make your final response exactly ${NO_REPLY_SENTINEL} so no text message is sent. ` +
+      'To react to a different message, pass its id as `messageId`. Valid ids are the "(id …)" values in "[Replying to …]" and "[Reaction: …]" headers, and the ids returned by `list: true`, which lists the recent messages of this conversation. ' +
+      'Never take an id from the database: the numbers stored with messages are delivery keys, not message ids. ' +
+      'Telegram only accepts its standard reaction set (👍 👎 ❤ 🔥 🎉 🙏 👌 🤔 👀 😁 😢 💯 and similar); an unsupported emoji returns an error naming the alternatives.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -475,16 +492,16 @@ const TOOLS = [
   {
     name: 'persona_send',
     description:
-      'Delegate a self-contained task to another persona, which has its own system prompt, skills and tools, '
-      + 'keeping that work out of your own context. The target sees ONLY `message`: no conversation history, summary, '
-      + 'images or findings from this thread, so write a complete brief (goal, relevant facts and identifiers, constraints, '
-      + 'expected output format). Use persona_list to pick a target (only the personas listed there are allowed). Tasks sent to a busy persona are queued, not rejected. '
-      + 'Set await_reply to wait for the result, which comes back as text in `result`; the wait (including any queue time) is '
-      + 'capped by timeout_ms (max 1800000 ms, default 300000). '
-      + 'If the state is "timeout", the delegated task keeps running: fetch it later with persona_task_status, '
-      + 'unless cancel_on_timeout was set, in which case it is canceled and the state is "canceled"; '
-      + 'stop it yourself with persona_task_cancel. '
-      + 'A "failed" state is final (no automatic retry); you decide whether to resend.',
+      'Delegate a self-contained task to another persona, which has its own system prompt, skills and tools, ' +
+      'keeping that work out of your own context. The target sees ONLY `message`: no conversation history, summary, ' +
+      'images or findings from this thread, so write a complete brief (goal, relevant facts and identifiers, constraints, ' +
+      'expected output format). Use persona_list to pick a target (only the personas listed there are allowed). Tasks sent to a busy persona are queued, not rejected. ' +
+      'Set await_reply to wait for the result, which comes back as text in `result`; the wait (including any queue time) is ' +
+      'capped by timeout_ms (max 1800000 ms, default 300000). ' +
+      'If the state is "timeout", the delegated task keeps running: fetch it later with persona_task_status, ' +
+      'unless cancel_on_timeout was set, in which case it is canceled and the state is "canceled"; ' +
+      'stop it yourself with persona_task_cancel. ' +
+      'A "failed" state is final (no automatic retry); you decide whether to resend.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -503,7 +520,8 @@ const TOOLS = [
         },
         timeout_ms: {
           type: 'integer' as const,
-          description: 'Optional synchronous wait timeout in milliseconds. Max: 1800000 (30 minutes). Default: 300000 (5 minutes).',
+          description:
+            'Optional synchronous wait timeout in milliseconds. Max: 1800000 (30 minutes). Default: 300000 (5 minutes).',
         },
         cancel_on_timeout: {
           type: 'boolean' as const,
@@ -527,7 +545,8 @@ const TOOLS = [
         },
         wait_ms: {
           type: 'integer' as const,
-          description: 'Optional wait time in milliseconds for the task to reach a terminal state. Default: 0.',
+          description:
+            'Optional wait time in milliseconds for the task to reach a terminal state. Default: 0.',
         },
       },
       required: ['task_id'],
@@ -536,10 +555,10 @@ const TOOLS = [
   {
     name: 'persona_task_cancel',
     description:
-      'Cancel a task you delegated via persona_send, e.g. after a "timeout" or when the work is no longer needed. '
-      + 'A queued task is dropped and a running one is stopped. Only tasks you submitted in this conversation can be canceled. '
-      + 'Returns { task_id, state, canceled }: canceled=true means this call canceled it; canceled=false means it had already '
-      + 'finished and `state` is its real final state (completed/failed/canceled), so use persona_task_status to read the result.',
+      'Cancel a task you delegated via persona_send, e.g. after a "timeout" or when the work is no longer needed. ' +
+      'A queued task is dropped and a running one is stopped. Only tasks you submitted in this conversation can be canceled. ' +
+      'Returns { task_id, state, canceled }: canceled=true means this call canceled it; canceled=false means it had already ' +
+      'finished and `state` is its real final state (completed/failed/canceled), so use persona_task_status to read the result.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -637,14 +656,16 @@ const TOOLS = [
   },
   {
     name: 'execution_env',
-    description: 'Manage isolated Sprite execution environments. Before risky commands or repeated test runs, create a checkpoint so you can restore the same env to a clean baseline.',
+    description:
+      'Manage isolated Sprite execution environments. Before risky commands or repeated test runs, create a checkpoint so you can restore the same env to a clean baseline.',
     inputSchema: {
       type: 'object' as const,
       properties: {
         action: {
           type: 'string' as const,
           enum: ['create', 'exec', 'upload', 'download', 'checkpoint', 'restore', 'destroy'],
-          description: 'Operation to perform on an execution environment. Use checkpoint before risky changes, then restore to roll the same env back to that checkpoint.',
+          description:
+            'Operation to perform on an execution environment. Use checkpoint before risky changes, then restore to roll the same env back to that checkpoint.',
         },
         envId: {
           type: 'string' as const,
@@ -756,14 +777,16 @@ const TOOLS = [
   IMAGE_LOOKUP_TOOL,
   {
     name: 'background_agent',
-    description: 'Starts and manages background agent workers. You have access to specialized agent profiles — always call action "profiles" first to discover what is available before spawning. When asked about your capabilities, available agents, or what you can delegate, call "profiles" to list them.',
+    description:
+      'Starts and manages background agent workers. You have access to specialized agent profiles — always call action "profiles" first to discover what is available before spawning. When asked about your capabilities, available agents, or what you can delegate, call "profiles" to list them.',
     inputSchema: {
       type: 'object' as const,
       properties: {
         action: {
           type: 'string' as const,
           enum: ['spawn', 'status', 'cancel', 'result', 'profiles'],
-          description: 'Operation to perform. Call "profiles" to discover available specialist agents before spawning. Always do this when asked about your capabilities or available agents.',
+          description:
+            'Operation to perform. Call "profiles" to discover available specialist agents before spawning. Always do this when asked about your capabilities or available agents.',
         },
         prompt: {
           type: 'string' as const,
@@ -779,7 +802,8 @@ const TOOLS = [
         },
         profile: {
           type: 'string' as const,
-          description: 'Persona name to use as the background agent profile. Call with action "profiles" first to see available options with descriptions. When provided, the named persona\'s system prompt, skills, model, and provider are used instead of the spawning thread\'s persona.',
+          description:
+            'Persona name to use as the background agent profile. Call with action "profiles" first to see available options with descriptions. When provided, the named persona\'s system prompt, skills, model, and provider are used instead of the spawning thread\'s persona.',
         },
         workingDirectory: {
           type: 'string' as const,
@@ -787,7 +811,8 @@ const TOOLS = [
         },
         timeoutMinutes: {
           type: 'number' as const,
-          description: 'Optional timeout override for spawn, in minutes. Default is 30 minutes. Use at least 15 for simple tasks and 30+ for complex tasks (spec writing, multi-file refactors, research). The agent process is killed when the timeout expires.',
+          description:
+            'Optional timeout override for spawn, in minutes. Default is 30 minutes. Use at least 15 for simple tasks and 30+ for complex tasks (spec writing, multi-file refactors, research). The agent process is killed when the timeout expires.',
         },
       },
       required: ['action'],

@@ -1268,6 +1268,7 @@ export async function bootstrap(
       channelRepo: repos.channel,
       channelRegistry,
       auditLogger,
+      applyScheduleChange: (input) => hostToolsBridge.applyScriptScheduleChange(input),
       provider: {
         hostTools: hostToolsBridge,
         personaLoader,

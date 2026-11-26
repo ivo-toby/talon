@@ -29,7 +29,7 @@ import { createApprovalService } from './approval.js';
 import { buildScriptBroker } from './config.js';
 import { createDaemonProviderFactory, type DaemonProviderDeps } from './daemon-provider.js';
 import { installScriptSdk } from './sdk-install.js';
-import { createScriptService, type ScriptService } from './service.js';
+import { createScriptService, type ScriptScheduleChange, type ScriptService } from './service.js';
 import { createScriptStore } from './store.js';
 import { ScriptError } from './types.js';
 
@@ -44,6 +44,13 @@ export interface ScriptRuntimeDeps {
   provider: Omit<DaemonProviderDeps, 'logger' | 'personaLoader'> & {
     personaLoader: Pick<PersonaLoader, 'getById' | 'getByName'>;
   };
+  /** Writes an approved schedule change. The bootstrap binds it to the schedule tool. */
+  applyScheduleChange: (input: {
+    personaId: string;
+    threadId: string;
+    scriptName: string;
+    change: ScriptScheduleChange;
+  }) => Result<{ scheduleId: string }, Error>;
   logger: Logger;
 }
 
@@ -203,6 +210,23 @@ export function buildScriptRuntime(deps: ScriptRuntimeDeps): Result<ScriptServic
     send,
     resolveChat: createChatResolver(deps.threadRepo, deps.channelRepo),
     capabilities: createCapabilityResolver(deps.personaRepo, deps.provider.personaLoader),
+    applyScheduleChange(input) {
+      try {
+        return deps
+          .applyScheduleChange(input)
+          .mapErr(
+            (cause) => new ScriptError('TOOL_FAILED', 'the schedule could not be saved', cause),
+          );
+      } catch (cause) {
+        return err(
+          new ScriptError(
+            'TOOL_FAILED',
+            'the schedule could not be saved',
+            cause instanceof Error ? cause : undefined,
+          ),
+        );
+      }
+    },
     audit(entry) {
       if (entry.action === 'script.approval') deps.auditLogger.logApprovalDecision(entry);
       else deps.auditLogger.logToolExecution(entry);

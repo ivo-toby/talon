@@ -40,7 +40,7 @@ const UNSAFE = new RegExp(
 );
 
 /** The one path for text that comes from the script or from data. */
-function clean(text: string, max: number): string {
+export function clean(text: string, max: number): string {
   const flat = text.replace(UNSAFE, ' ');
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 }
