@@ -367,7 +367,7 @@ The guide `templates/script-authoring.md` is at most 6,000 characters. It contai
 
 - [ ] **Step 1: Write the failing tests.** One test for each action and each rule. Add a test that compiles the example of the guide: extract the `script.ts` block, the manifest block and the cases block, and pass them to `store.save` with a test repository. Expected: `ok`.
 - [ ] **Step 2: Run.** Expected: FAIL.
-- [ ] **Step 3: Implement the handler, the registration and the wiring.** If the build does not copy `templates/script-authoring.md` to `dist`, change the build script in `package.json`. The bootstrap calls `setScriptService` in section 18 and with `null` at stop.
+- [ ] **Step 3: Implement the handler, the registration and the wiring.** Make sure that the build copies `templates/script-authoring.md` to `dist`. The bootstrap calls `setScriptService` in section 18 and with `null` at stop.
 - [ ] **Step 4: Run** `npx vitest run tests/unit/tools tests/unit/scripts tests/unit/daemon`. Expected: PASS.
 - [ ] **Step 5: Commit** `feat(tools): add the script_manage tool and the authoring guide`.
 
