@@ -41,6 +41,7 @@ export const HOST_TOOL_REGISTRY: ReadonlyArray<{
 }> = [
   { capabilityPrefix: 'schedule.manage', internalName: 'schedule.manage', mcpName: 'schedule_manage' },
   { capabilityPrefix: 'script.manage', internalName: 'script.manage', mcpName: 'script_manage' },
+  { capabilityPrefix: 'script.run', internalName: 'script.run', mcpName: 'script_run' },
   { capabilityPrefix: 'channel.send', internalName: 'channel.send', mcpName: 'channel_send' },
   { capabilityPrefix: 'channel.send', internalName: 'channel.list', mcpName: 'channel_list' },
   { capabilityPrefix: 'channel.send', internalName: 'channel.broadcast', mcpName: 'channel_broadcast' },
@@ -142,6 +143,14 @@ export const CAPABILITY_DESCRIPTIONS: ReadonlyArray<{
     mcpName: 'script_manage',
     labels: [
       { label: 'script.manage:own', description: 'Write, test and send scripts for approval' },
+    ],
+  },
+  {
+    toolPrefix: 'script.run',
+    mcpName: 'script_run',
+    labels: [
+      { label: 'script.run:*', description: 'Run any approved script of the persona' },
+      { label: 'script.run:<script-name>', description: 'Run that one approved script. In requireApproval: ask the user for each run that the agent starts' },
     ],
   },
   {

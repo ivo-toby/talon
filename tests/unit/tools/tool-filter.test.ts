@@ -384,10 +384,11 @@ describe('channel.react capability', () => {
 });
 
 describe('ALL_HOST_TOOLS', () => {
-  it('contains all seventeen host tools', () => {
-    expect(ALL_HOST_TOOLS).toHaveLength(17);
+  it('contains all eighteen host tools', () => {
+    expect(ALL_HOST_TOOLS).toHaveLength(18);
     expect(ALL_HOST_TOOLS).toContain('channel.react');
     expect(ALL_HOST_TOOLS).toContain('schedule.manage');
+    expect(ALL_HOST_TOOLS).toContain('script.run');
     expect(ALL_HOST_TOOLS).toContain('channel.send');
     expect(ALL_HOST_TOOLS).toContain('channel.list');
     expect(ALL_HOST_TOOLS).toContain('channel.broadcast');

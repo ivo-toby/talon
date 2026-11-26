@@ -37,6 +37,7 @@ import {
 } from './host-tools/image-lookup.js';
 import { ExecutionEnvHandler, type ExecutionEnvArgs } from './host-tools/execution-env.js';
 import { ScriptManageHandler, type ScriptManageArgs } from './host-tools/script-manage.js';
+import { ScriptRunHandler, type ScriptRunArgs } from './host-tools/script-run.js';
 import type { ScriptService } from '../scripts/service.js';
 import { filterVoiceMcpTools, isToolAllowed, MCP_TO_INTERNAL } from './tool-filter.js';
 import { createDatabase } from '../core/database/connection.js';
@@ -135,6 +136,7 @@ export class HostToolsBridge {
   private scriptService: ScriptService | null = null;
   private scriptGuide: string | undefined;
   private scriptManageHandler: ScriptManageHandler;
+  private scriptRunHandler: ScriptRunHandler;
 
   constructor(
     private readonly ctx: DaemonContext,
@@ -155,6 +157,12 @@ export class HostToolsBridge {
     this.scriptManageHandler = new ScriptManageHandler({
       getService: () => this.scriptService,
       getGuide: () => this.scriptGuide,
+      logger: handlerLogger,
+    });
+
+    this.scriptRunHandler = new ScriptRunHandler({
+      getService: () => this.scriptService,
+      resolveCapabilities: (personaId) => this.resolvePersonaCapabilities(personaId),
       logger: handlerLogger,
     });
 
@@ -964,6 +972,9 @@ export class HostToolsBridge {
 
       case 'script.manage':
         return this.scriptManageHandler.execute(args as unknown as ScriptManageArgs, context);
+
+      case 'script.run':
+        return this.scriptRunHandler.execute(args as unknown as ScriptRunArgs, context);
 
       case 'channel.send':
         return this.channelHandler.execute(args as unknown as ChannelSendArgs, context);

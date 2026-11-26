@@ -30,6 +30,9 @@ export { ScheduleManageHandler } from './schedule-manage.js';
 export type { ScriptManageTool, ScriptManageArgs } from './script-manage.js';
 export { ScriptManageHandler } from './script-manage.js';
 
+export type { ScriptRunArgs } from './script-run.js';
+export { ScriptRunHandler } from './script-run.js';
+
 export type { MemoryAccessTool, MemoryAccessArgs } from './memory-access.js';
 export { MemoryAccessHandler } from './memory-access.js';
 
