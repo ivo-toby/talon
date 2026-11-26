@@ -1196,3 +1196,281 @@ describe('a test that overlaps other changes', () => {
     expect((await s.service.test({ personaId: 'p1', versionId: v.versionId })).isOk()).toBe(true);
   });
 });
+
+describe('runByAgent', () => {
+  const inputSchema = { type: 'object', properties: { quiet: { type: 'boolean' } } };
+  const base = { personaId: 'p1', threadId: 'th1', scriptName: 'mail-intake' };
+  const allowed = { ...base, access: 'allowed' as const };
+  const approvalInput = { ...base, access: 'approval' as const };
+  const agentRows = (s: ReturnType<typeof setup>): unknown[] =>
+    s.db.prepare(`SELECT mode, ok, schedule_id FROM script_runs WHERE trigger = 'agent'`).all();
+  const payloads = (s: ReturnType<typeof setup>): Array<string | null> =>
+    (
+      s.db
+        .prepare(`SELECT payload FROM script_approvals WHERE purpose = 'run' ORDER BY created_at`)
+        .all() as Array<{ payload: string | null }>
+    ).map((r) => r.payload);
+
+  it('runs at once with access allowed and records an agent row without a schedule', async () => {
+    const s = setup();
+    await s.toApproved();
+    play(s.backend, SCRIPT_CALLS, { ok: true, result: { sent: 1 } });
+    const report = (await s.service.runByAgent(allowed))._unsafeUnwrap();
+    expect(report).not.toBe('awaiting-approval');
+    expect(report).toMatchObject({ ok: true });
+    expect(agentRows(s)).toEqual([{ mode: 'live', ok: 1, schedule_id: null }]);
+    expect(s.audits.filter((a) => a.action === 'script.run')).toHaveLength(1);
+    expect(s.sent).toHaveLength(1); // only the version approval message
+  });
+
+  it('fails without an approved version and while the script is running', async () => {
+    const s = setup();
+    expect((await s.service.runByAgent(allowed))._unsafeUnwrapErr()).toBeInstanceOf(
+      ScriptNotRunError,
+    );
+    await s.toApproved();
+    let started = false;
+    s.backend.setExecStreamHandler(() => {
+      started = true;
+      return new Promise(() => {});
+    });
+    const running = s.service.runByAgent(allowed);
+    await vi.waitFor(() => expect(started).toBe(true));
+    const second = (await s.service.runByAgent(allowed))._unsafeUnwrapErr();
+    expect(second).toMatchObject({ scriptCode: 'SCRIPT_FAILED' });
+    expect(second.message).toContain('the script is already running');
+    await s.service.shutdown();
+    await running;
+  });
+
+  it('does not change the failed flag of scheduled runs', async () => {
+    const s = setup();
+    await s.toApproved();
+    play(s.backend, SCRIPT_CALLS, { ok: false, message: 'boom' });
+    const report = (await s.service.runByAgent(allowed))._unsafeUnwrap();
+    expect(report).toMatchObject({ ok: false });
+    expect(s.service.lastScheduledRunFailed('p1', 'mail-intake')).toBe(false);
+    play(s.backend, SCRIPT_CALLS, { ok: true, result: { sent: 1 } });
+    await s.service.runScheduled(s.live);
+    expect(s.service.lastScheduledRunFailed('p1', 'mail-intake')).toBe(false);
+    play(s.backend, SCRIPT_CALLS, { ok: false, message: 'boom' });
+    await s.service.runScheduled(s.live);
+    expect(s.service.lastScheduledRunFailed('p1', 'mail-intake')).toBe(true);
+    play(s.backend, SCRIPT_CALLS, { ok: true, result: { sent: 1 } });
+    await s.service.runByAgent(allowed);
+    expect(s.service.lastScheduledRunFailed('p1', 'mail-intake')).toBe(true);
+  });
+
+  it('refuses a bad input before a run row, a provider or an approval exists', async () => {
+    const s = setup();
+    await s.toApproved();
+    s.createProvider.mockClear();
+    const before = s.sent.length;
+    for (const access of ['allowed', 'approval'] as const) {
+      const r = await s.service.runByAgent({ ...base, access, input: { quiet: true } });
+      expect(r._unsafeUnwrapErr()).toMatchObject({ scriptCode: 'INVALID_ARGUMENT' });
+    }
+    expect(s.createProvider).not.toHaveBeenCalled();
+    expect(agentRows(s)).toEqual([]);
+    expect(s.sent).toHaveLength(before);
+    expect(payloads(s)).toEqual([]);
+  });
+
+  it('refuses an approval request without a chat', async () => {
+    const s = setup();
+    await s.toApproved();
+    const r = await s.service.runByAgent({ ...approvalInput, threadId: 'nowhere' });
+    const error = r._unsafeUnwrapErr();
+    expect(error.scriptCode).toBe('INVALID_ARGUMENT');
+    expect(error.message).toContain('this conversation has no chat for an approval');
+  });
+
+  it('sends the approval text and stores the payload, with and without an input', async () => {
+    const s = setup();
+    await s.toAwaiting(files({ inputSchema }));
+    await s.service.handleInbound(s.event(`/approve ${s.codeOf()}`));
+    s.sent.length = 0;
+    expect((await s.service.runByAgent(approvalInput))._unsafeUnwrap()).toBe('awaiting-approval');
+    const code = s.codeOf();
+    expect(s.sent[0].body).toBe(
+      `The agent wants to run script mail-intake (version 1) now.\nInput: none\n/approve ${code}\n/reject ${code}`,
+    );
+    expect(s.sent[0]).toMatchObject({ channel: 'tg', thread: 'chat-1' });
+    const withInput = { ...approvalInput, input: { quiet: true } };
+    expect((await s.service.runByAgent(withInput))._unsafeUnwrap()).toBe('awaiting-approval');
+    expect(s.sent[1].body).toContain('Input: {"quiet":true}\n/approve');
+    expect(payloads(s)).toEqual(['{}', '{"input":{"quiet":true}}']);
+    // a different input expired the first approval
+    expect(await s.service.handleInbound(s.event(`/approve ${code}`))).toEqual({
+      reply: 'This code is not valid.',
+    });
+  });
+
+  it('sends one message for two requests while the approval is open', async () => {
+    const s = setup();
+    await s.toApproved();
+    s.sent.length = 0;
+    expect((await s.service.runByAgent(approvalInput))._unsafeUnwrap()).toBe('awaiting-approval');
+    expect((await s.service.runByAgent(approvalInput))._unsafeUnwrap()).toBe('awaiting-approval');
+    expect(s.send).toHaveBeenCalledTimes(2); // one for the version, one for the run
+    expect(s.sent).toHaveLength(1);
+  });
+
+  it('refuses a message that is too long and sends nothing', async () => {
+    const s = setup();
+    await s.toAwaiting(files({ inputSchema: { type: ['object', 'string'] } }));
+    await s.service.handleInbound(s.event(`/approve ${s.codeOf()}`));
+    s.sent.length = 0;
+    const r = await s.service.runByAgent({ ...approvalInput, input: 'x'.repeat(3600) });
+    expect(r._unsafeUnwrapErr()).toMatchObject({ scriptCode: 'RESULT_TOO_LARGE' });
+    expect(s.sent).toHaveLength(0);
+    expect(payloads(s)).toEqual([]);
+  });
+
+  it('expires the approval when the message cannot be sent', async () => {
+    const s = setup();
+    await s.toApproved();
+    s.send.mockImplementationOnce((channel: string, thread: string, body: string) => {
+      s.sent.push({ channel, thread, body });
+      return Promise.resolve(err(new ScriptError('TOOL_FAILED', 'nope')));
+    });
+    const r = await s.service.runByAgent(approvalInput);
+    expect(r._unsafeUnwrapErr()).toMatchObject({ scriptCode: 'TOOL_FAILED' });
+    expect(payloads(s)).toHaveLength(1);
+    const code = s.codeOf();
+    s.createProvider.mockClear();
+    await s.service.handleInbound(s.event(`/approve ${code}`));
+    expect(s.createProvider).not.toHaveBeenCalled();
+    expect(agentRows(s)).toEqual([]);
+  });
+
+  it('starts the run after /approve and tells the chat when it ends', async () => {
+    const s = setup();
+    await s.toApproved();
+    await s.service.runByAgent(approvalInput);
+    play(s.backend, SCRIPT_CALLS, { ok: true, result: { sent: 1 } });
+    const reply = await s.service.handleInbound(s.event(`/approve ${s.codeOf()}`));
+    expect(reply).toEqual({ reply: 'Script mail-intake started.' });
+    await vi.waitFor(() =>
+      expect(s.sent.at(-1)).toMatchObject({
+        channel: 'tg',
+        thread: 'chat-1',
+        body: 'Script mail-intake finished.',
+      }),
+    );
+    expect(agentRows(s)).toEqual([{ mode: 'live', ok: 1, schedule_id: null }]);
+  });
+
+  it('runs with the stored input after /approve', async () => {
+    const s = setup();
+    await s.toAwaiting(files({ inputSchema }));
+    await s.service.handleInbound(s.event(`/approve ${s.codeOf()}`));
+    await s.service.runByAgent({ ...approvalInput, input: { quiet: true } });
+    play(s.backend, SCRIPT_CALLS, { ok: true, result: { sent: 1 } });
+    await s.service.handleInbound(s.event(`/approve ${s.codeOf()}`));
+    await vi.waitFor(() => expect(s.sent.at(-1)!.body).toBe('Script mail-intake finished.'));
+    expect(agentRows(s)).toHaveLength(1);
+  });
+
+  it('checks the stored input against the manifest again after /approve', async () => {
+    const s = setup();
+    await s.toAwaiting(files({ inputSchema }));
+    await s.service.handleInbound(s.event(`/approve ${s.codeOf()}`));
+    await s.service.runByAgent({ ...approvalInput, input: { quiet: true } });
+    s.db
+      .prepare(`UPDATE script_approvals SET payload = ? WHERE purpose = 'run'`)
+      .run('{"input":{"quiet":"yes"}}');
+    s.createProvider.mockClear();
+    await s.service.handleInbound(s.event(`/approve ${s.codeOf()}`));
+    await vi.waitFor(() => expect(s.sent.at(-1)!.body).toContain('failed (INVALID_ARGUMENT)'));
+    expect(s.createProvider).not.toHaveBeenCalled();
+    expect(agentRows(s)).toEqual([]);
+  });
+
+  it('says a rejected run was not started', async () => {
+    const s = setup();
+    await s.toApproved();
+    await s.service.runByAgent(approvalInput);
+    const reply = await s.service.handleInbound(s.event(`/reject ${s.codeOf()}`));
+    expect(reply).toEqual({ reply: 'Script mail-intake was not started.' });
+    expect(agentRows(s)).toEqual([]);
+  });
+
+  it('refuses a run code when a newer version was approved through the chat', async () => {
+    const s = setup();
+    await s.toApproved();
+    await s.service.runByAgent(approvalInput);
+    const runCode = s.codeOf();
+    await s.toAwaiting(files({ extra: 'v2' }));
+    await s.service.handleInbound(s.event(`/approve ${s.codeOf()}`));
+    s.createProvider.mockClear();
+    // The old version is retired, so the database refuses its run code.
+    expect(await s.service.handleInbound(s.event(`/approve ${runCode}`))).toEqual({
+      reply: 'This code is not valid.',
+    });
+    expect(s.createProvider).not.toHaveBeenCalled();
+    expect(agentRows(s)).toEqual([]);
+  });
+
+  it('refuses an approved run when a newer version is approved', async () => {
+    const s = setup();
+    await s.toApproved();
+    await s.service.runByAgent(approvalInput);
+    const runCode = s.codeOf();
+    // The old version stays approved here, as in a race with another approval.
+    const v2 = s.service
+      .save({ personaId: 'p1', threadId: 'th1', files: files({ extra: 'v2' }) })
+      ._unsafeUnwrap();
+    s.db.prepare(`UPDATE script_versions SET state = 'approved' WHERE id = ?`).run(v2.versionId);
+    s.createProvider.mockClear();
+    const reply = await s.service.handleInbound(s.event(`/approve ${runCode}`));
+    expect(reply).toEqual({ reply: 'Script mail-intake changed after this request. Ask again.' });
+    expect(s.createProvider).not.toHaveBeenCalled();
+    expect(agentRows(s)).toEqual([]);
+  });
+
+  it('sends the failure text when the approved run fails', async () => {
+    const s = setup();
+    await s.toApproved();
+    await s.service.runByAgent(approvalInput);
+    play(s.backend, SCRIPT_CALLS, { ok: false, message: 'boom' });
+    await s.service.handleInbound(s.event(`/approve ${s.codeOf()}`));
+    await vi.waitFor(() => expect(s.sent.at(-1)!.body).toContain('failed (SCRIPT_FAILED)'));
+    expect(s.sent.at(-1)!.body).not.toContain('stays scheduled');
+    expect(s.service.lastScheduledRunFailed('p1', 'mail-intake')).toBe(false);
+  });
+
+  it('waits for an approved background run at shutdown', async () => {
+    const s = setup();
+    await s.toApproved();
+    await s.service.runByAgent(approvalInput);
+    let started = false;
+    s.backend.setExecStreamHandler(() => {
+      started = true;
+      return new Promise(() => {});
+    });
+    await s.service.handleInbound(s.event(`/approve ${s.codeOf()}`));
+    await vi.waitFor(() => expect(started).toBe(true));
+    await s.service.shutdown();
+    expect(s.backend.liveContainers()).toEqual([]);
+    const row = s.db
+      .prepare(`SELECT ok, ended_at FROM script_runs WHERE trigger = 'agent'`)
+      .get() as {
+      ok: number;
+      ended_at: number | null;
+    };
+    expect(row.ended_at).toBeGreaterThan(0);
+  });
+
+  it('cancels a leaked run code with a text about the run, and never logs a code', async () => {
+    const s = setup();
+    await s.toApproved();
+    await s.service.runByAgent(approvalInput);
+    const code = s.codeOf();
+    const reply = await s.service.handleInbound(s.event(`here: ${code}`));
+    expect(reply?.reply).toBe(
+      'The run request of script mail-intake was cancelled and must be asked again.',
+    );
+    expect(JSON.stringify(s.audits)).not.toContain(code);
+  });
+});
