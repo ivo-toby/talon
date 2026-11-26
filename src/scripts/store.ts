@@ -50,6 +50,12 @@ export interface ScriptStore {
   load(versionId: string): Result<StoredVersion, ScriptError>;
   /** Reads the files again and compares the hash with the stored hash. */
   verify(version: StoredVersion): Result<void, ScriptError>;
+  /**
+   * The files of a version as text. Verifies the hash first, so changed or
+   * extra files give the error of `verify`. Reads only regular files with an
+   * allowed path and never follows a link.
+   */
+  readFiles(version: StoredVersion): Result<ScriptFile[], ScriptError>;
   readUnitCases(version: StoredVersion): Result<UnitCase[], ScriptError>;
   hashFiles(files: ScriptFile[]): string;
 }
@@ -294,6 +300,33 @@ export function createScriptStore(options: {
     return versionDir(version.scriptId, version.version);
   }
 
+  /** The files of a version, if they match the stored hash. One read serves the check and the content. */
+  function verifiedTree(
+    version: StoredVersion,
+  ): Result<Array<{ path: string; bytes: Buffer }>, ScriptError> {
+    const failed = (): ScriptError =>
+      fail('SCRIPT_FAILED', 'script files do not match the approved content');
+    // The hash and the directory come from the database row, not from the caller.
+    const row = repo.getVersion(version.versionId);
+    if (row.isErr() || !row.value || !ID_PATTERN.test(row.value.script_id)) {
+      return err(failed());
+    }
+    const dir = versionDir(row.value.script_id, row.value.version);
+    try {
+      if (!lstatSync(join(root, row.value.script_id)).isDirectory()) {
+        return err(failed());
+      }
+    } catch {
+      return err(failed());
+    }
+    const tree = readTree(dir);
+    if (tree.isErr()) return err(tree.error);
+    if (hashEntries(tree.value) !== row.value.content_hash) {
+      return err(failed());
+    }
+    return tree;
+  }
+
   const store: ScriptStore = {
     hashFiles(files) {
       return hashFileList(files);
@@ -393,27 +426,14 @@ export function createScriptStore(options: {
     },
 
     verify(version) {
-      const failed = (): ScriptError =>
-        fail('SCRIPT_FAILED', 'script files do not match the approved content');
-      // The hash and the directory come from the database row, not from the caller.
-      const row = repo.getVersion(version.versionId);
-      if (row.isErr() || !row.value || !ID_PATTERN.test(row.value.script_id)) {
-        return err(failed());
-      }
-      const dir = versionDir(row.value.script_id, row.value.version);
-      try {
-        if (!lstatSync(join(root, row.value.script_id)).isDirectory()) {
-          return err(failed());
-        }
-      } catch {
-        return err(failed());
-      }
-      const tree = readTree(dir);
+      const tree = verifiedTree(version);
+      return tree.isErr() ? err(tree.error) : ok(undefined);
+    },
+
+    readFiles(version) {
+      const tree = verifiedTree(version);
       if (tree.isErr()) return err(tree.error);
-      if (hashEntries(tree.value) !== row.value.content_hash) {
-        return err(failed());
-      }
-      return ok(undefined);
+      return ok(tree.value.map((e) => ({ path: e.path, content: e.bytes.toString('utf8') })));
     },
 
     readUnitCases(version) {

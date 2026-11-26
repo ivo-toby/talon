@@ -470,3 +470,21 @@ describe('createOpenAiCompatibleJudgeModel', () => {
     expect(e.cause).toBeInstanceOf(Error);
   }, 15_000);
 });
+
+describe('createJudgeProvider list and inputSchema', () => {
+  const model: JudgeModel = { generate: () => Promise.resolve(ok({})) };
+
+  it('lists model.judge as a model tool', () => {
+    const list = make(model).list();
+    expect(list).toHaveLength(1);
+    expect(list[0]).toMatchObject({ name: 'model.judge', toolClass: 'model' });
+    expect(list[0].description?.length).toBeGreaterThan(0);
+  });
+
+  it('gives the input schema for model.judge only', () => {
+    const p = make(model);
+    const schema = p.inputSchema('model.judge') as { properties: Record<string, unknown> };
+    expect(Object.keys(schema.properties).sort()).toEqual(['input', 'prompt', 'schema']);
+    expect(p.inputSchema('model.other')).toBeUndefined();
+  });
+});

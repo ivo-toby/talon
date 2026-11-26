@@ -572,4 +572,49 @@ describe('ScriptStore', () => {
       expect(store.readUnitCases(v).isErr()).toBe(true);
     });
   });
+
+  describe('readFiles', () => {
+    it('returns the stored files with their paths and contents', () => {
+      const v = save(
+        goodFiles({ 'prompts/judge.md': 'prompt text', 'fixtures/a.json': '{"a":1}' }),
+      )._unsafeUnwrap();
+      const files = store.readFiles(v)._unsafeUnwrap();
+      expect([...files].sort((a, b) => a.path.localeCompare(b.path))).toEqual(
+        [...goodFiles({ 'prompts/judge.md': 'prompt text', 'fixtures/a.json': '{"a":1}' })].sort(
+          (a, b) => a.path.localeCompare(b.path),
+        ),
+      );
+    });
+
+    it('fails with the verify error when a file changed', () => {
+      const v = save(goodFiles())._unsafeUnwrap();
+      writeFileSync(join(v.dir, 'script.ts'), 'changed\n');
+      const e = store.readFiles(v)._unsafeUnwrapErr();
+      expect(e.scriptCode).toBe('SCRIPT_FAILED');
+      expect(e.message).not.toContain(root);
+    });
+
+    it('fails when a file is a symlink and never returns the target', () => {
+      const v = save(goodFiles())._unsafeUnwrap();
+      const secret = join(root, 'secret.txt');
+      writeFileSync(secret, 'TOP SECRET');
+      rmSync(join(v.dir, 'script.ts'));
+      symlinkSync(secret, join(v.dir, 'script.ts'));
+      const r = store.readFiles(v);
+      expect(r.isErr()).toBe(true);
+      expect(JSON.stringify(r._unsafeUnwrapErr().message)).not.toContain('SECRET');
+    });
+
+    it('fails when an extra file is present', () => {
+      const v = save(goodFiles())._unsafeUnwrap();
+      writeFileSync(join(v.dir, 'extra.ts'), 'x');
+      expect(store.readFiles(v).isErr()).toBe(true);
+    });
+
+    it('derives the directory from the database, not from the caller', () => {
+      const v = save(goodFiles())._unsafeUnwrap();
+      const files = store.readFiles({ ...v, dir: '/etc', scriptId: '../..' })._unsafeUnwrap();
+      expect(files.map((f) => f.path).sort()).toEqual(['manifest.json', 'script.ts', 'tests.json']);
+    });
+  });
 });

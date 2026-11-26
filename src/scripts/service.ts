@@ -41,6 +41,8 @@ import {
   type RunProvider,
   type ScriptErrorCode,
   type CallRecord,
+  type ProviderOptions,
+  type ScriptToolInfo,
   type ScriptRunReport,
   type ToolClass,
   type VersionState,
@@ -55,6 +57,7 @@ export interface ScriptServiceDeps {
   createProvider(
     context: RunContext,
     manifest: AuthoredManifest,
+    options?: ProviderOptions,
   ): Promise<Result<RunProvider, ScriptError>>;
   /** Sends a text to a chat: the approval message and failure notices. */
   send(
@@ -131,6 +134,23 @@ export interface ScriptService {
   hasApproved(personaId: string, scriptName: string): boolean;
   /** True if the last finished scheduled run of this script was a failure. */
   lastScheduledRunFailed(personaId: string, scriptName: string): boolean;
+  /** The scripts of a persona with their newest version and last live run. */
+  list(personaId: string): Result<ScriptInfo[], ScriptError>;
+  /** The files of one version, the newest if `version` is absent. */
+  show(input: {
+    personaId: string;
+    scriptName: string;
+    version?: number;
+  }): Result<{ info: ScriptVersionInfo; files: ScriptFile[] }, ScriptError>;
+  /**
+   * The tools that a script of this persona can call. Connects the MCP servers
+   * of the persona for the length of the call. With `name`, one entry with its input schema.
+   */
+  listTools(input: {
+    personaId: string;
+    threadId: string;
+    name?: string;
+  }): Promise<Result<ScriptToolInfo[], ScriptError>>;
   /** Marks runs that a crashed daemon left open as failed. Call one time at start. */
   recoverStaleRuns(): Result<number, ScriptError>;
   /**
@@ -139,6 +159,17 @@ export interface ScriptService {
    */
   shutdown(): Promise<void>;
 }
+
+export type { ScriptToolInfo } from './types.js';
+
+export interface ScriptInfo {
+  name: string;
+  latest: { version: number; state: VersionState; versionId: string };
+  approvedVersion?: number;
+  lastRun?: { ok: boolean; errorCode?: string; endedAt: number; trigger: string };
+}
+
+export type ScriptVersionInfo = ScriptInfo['latest'] & { name: string; contentHash: string };
 
 /**
  * Why a scheduled run did not start: the files changed, no version is approved,
@@ -185,6 +216,24 @@ const KNOWN_CODES: ReadonlySet<string> = new Set<ScriptErrorCode>([
   'TIMEOUT',
   'SANDBOX',
 ]);
+
+const DESCRIPTION_MAX = 200;
+/** Runs of a script that `list` looks through for the last live run. */
+const LAST_RUN_WINDOW = 20;
+const unknownScript = (): ScriptError => new ScriptError('INVALID_ARGUMENT', 'unknown script');
+
+/**
+ * A description comes from an external server. Control characters go first,
+ * so they cannot count against the limit or reach the agent.
+ */
+function cleanDescription(description: string | undefined): string | undefined {
+  if (description === undefined) return undefined;
+  const text = description
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, '')
+    .slice(0, DESCRIPTION_MAX);
+  return text.length > 0 ? text : undefined;
+}
 
 const unknownVersion = (): ScriptError =>
   new ScriptError('INVALID_ARGUMENT', 'unknown script version');
@@ -500,6 +549,118 @@ export function createScriptService(deps: ScriptServiceDeps): ScriptService {
       );
     } finally {
       await closeProvider(created.value);
+    }
+  }
+
+  function listImpl(personaId: string): Result<ScriptInfo[], ScriptError> {
+    const scripts = repo.listScripts(personaId);
+    if (scripts.isErr()) return err(sandbox(scripts.error));
+    const out: ScriptInfo[] = [];
+    for (const script of scripts.value) {
+      const versions = repo.listVersions(script.id);
+      if (versions.isErr()) return err(sandbox(versions.error));
+      const latest = versions.value[0];
+      if (!latest) continue;
+      const approved = repo.latestApproved(script.id);
+      if (approved.isErr()) return err(sandbox(approved.error));
+      const runs = repo.listRuns(script.id, LAST_RUN_WINDOW);
+      if (runs.isErr()) return err(sandbox(runs.error));
+      const last = runs.value.find(
+        (r) => r.ended_at !== null && (r.trigger === 'schedule' || r.trigger === 'agent'),
+      );
+      out.push({
+        name: script.name,
+        latest: { version: latest.version, state: latest.state, versionId: latest.id },
+        ...(approved.value ? { approvedVersion: approved.value.version } : {}),
+        ...(last && last.ended_at !== null
+          ? {
+              lastRun: {
+                ok: last.ok === 1,
+                ...(last.error_code ? { errorCode: last.error_code } : {}),
+                endedAt: last.ended_at,
+                trigger: last.trigger,
+              },
+            }
+          : {}),
+      });
+    }
+    return ok(out);
+  }
+
+  function showImpl(input: {
+    personaId: string;
+    scriptName: string;
+    version?: number;
+  }): Result<{ info: ScriptVersionInfo; files: ScriptFile[] }, ScriptError> {
+    // An unknown name, the script of another persona and an unknown number look the same.
+    const script = repo.findScript(input.personaId, input.scriptName);
+    if (script.isErr()) return err(sandbox(script.error));
+    if (!script.value) return err(unknownScript());
+    if (input.version !== undefined && !Number.isInteger(input.version)) {
+      return err(unknownScript());
+    }
+    const row =
+      input.version === undefined
+        ? repo.latestVersion(script.value.id)
+        : repo.getVersionByNumber(script.value.id, input.version);
+    if (row.isErr()) return err(sandbox(row.error));
+    if (!row.value) return err(unknownScript());
+    const stored = store.load(row.value.id);
+    if (stored.isErr()) return err(stored.error);
+    const files = store.readFiles(stored.value);
+    if (files.isErr()) return err(files.error);
+    return ok({
+      info: {
+        name: script.value.name,
+        version: row.value.version,
+        state: row.value.state,
+        versionId: row.value.id,
+        contentHash: row.value.content_hash,
+      },
+      files: files.value,
+    });
+  }
+
+  async function listToolsImpl(input: {
+    personaId: string;
+    threadId: string;
+    name?: string;
+  }): Promise<Result<ScriptToolInfo[], ScriptError>> {
+    const created = await deps.createProvider(
+      {
+        personaId: input.personaId,
+        threadId: input.threadId,
+        scriptRunId: randomUUID(),
+        scriptName: 'tool-listing',
+        channels: [],
+        versionDir: '',
+      },
+      {
+        name: 'tool-listing',
+        description: 'Lists tools.',
+        tools: [],
+        channels: [],
+        dryRunInput: null,
+      },
+      { allServers: true },
+    );
+    if (created.isErr()) return err(created.error);
+    const provider = created.value;
+    try {
+      const tools: ScriptToolInfo[] = provider
+        .list()
+        .map(({ name, toolClass, description }) => {
+          const text = cleanDescription(description);
+          return { name, toolClass, ...(text !== undefined ? { description: text } : {}) };
+        })
+        .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+      if (input.name === undefined) return ok(tools);
+      const one = tools.find((t) => t.name === input.name);
+      if (!one) return err(new ScriptError('INVALID_ARGUMENT', 'unknown tool'));
+      const schema = provider.inputSchema(one.name);
+      return ok([schema === undefined ? one : { ...one, inputSchema: schema }]);
+    } finally {
+      await closeProvider(provider);
     }
   }
 
@@ -1197,6 +1358,26 @@ export function createScriptService(deps: ScriptServiceDeps): ScriptService {
     },
 
     runByAgent: (input) => tracked(() => runByAgentImpl(input)),
+
+    list(personaId): Result<ScriptInfo[], ScriptError> {
+      try {
+        return listImpl(personaId);
+      } catch (error) {
+        logger.error({ err: error }, 'script list failed unexpectedly');
+        return err(sandbox());
+      }
+    },
+
+    show(input): Result<{ info: ScriptVersionInfo; files: ScriptFile[] }, ScriptError> {
+      try {
+        return showImpl(input);
+      } catch (error) {
+        logger.error({ err: error }, 'script show failed unexpectedly');
+        return err(sandbox());
+      }
+    },
+
+    listTools: (input) => tracked(() => listToolsImpl(input)),
 
     async notifyFailure(input): Promise<void> {
       try {

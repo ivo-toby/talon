@@ -143,7 +143,32 @@ export interface RunContext {
   versionDir: string;
 }
 
+/** A tool that a script of a persona can call, as the agent sees it. */
+export interface ScriptToolInfo {
+  /** The name that a manifest lists. */
+  name: string;
+  toolClass: ToolClass;
+  /** At most 200 characters. */
+  description?: string;
+  /** Only when the caller asked for one tool by name. */
+  inputSchema?: unknown;
+}
+
+/** What a provider can tell about the tools it offers. */
+export interface ToolLister {
+  /** The tools that a call would be allowed to use. Never carries `inputSchema`. */
+  list(): ScriptToolInfo[];
+  /** JSON Schema of the input of a tool, or `undefined` if it has none or does not exist. */
+  inputSchema(name: string): unknown;
+}
+
 /** A provider that holds resources for one run. `close` never rejects. */
-export interface RunProvider extends ToolProvider {
+export interface RunProvider extends ToolProvider, ToolLister {
   close(): Promise<void>;
+}
+
+/** Options of a provider factory beyond the run itself. */
+export interface ProviderOptions {
+  /** Connect every MCP server of the persona and offer the judge if the persona can have one. */
+  allServers?: boolean;
 }

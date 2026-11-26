@@ -5,7 +5,7 @@ import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 import { err, ok, type Result } from 'neverthrow';
 import { z } from 'zod';
 import { ScriptError } from '../types.js';
-import type { RunContext, ToolClass, ToolProvider } from '../types.js';
+import type { RunContext, ScriptToolInfo, ToolClass, ToolLister, ToolProvider } from '../types.js';
 
 export interface JudgeModel {
   /** One request with no tools. Returns the raw JSON value of the reply. */
@@ -143,7 +143,7 @@ export function createJudgeProvider(options: {
   model: JudgeModel;
   context: RunContext;
   timeoutMs: number;
-}): ToolProvider {
+}): ToolProvider & ToolLister {
   const failed = (cause?: unknown): ScriptError =>
     new ScriptError(
       'TOOL_FAILED',
@@ -154,6 +154,26 @@ export function createJudgeProvider(options: {
   return {
     describe(name): { toolClass: ToolClass } | undefined {
       return name === TOOL_NAME ? { toolClass: 'model' } : undefined;
+    },
+
+    list(): ScriptToolInfo[] {
+      return [
+        {
+          name: TOOL_NAME,
+          toolClass: 'model',
+          description:
+            'One model request with no tools: a prompt file of the script, an input and a JSON Schema for the reply.',
+        },
+      ];
+    },
+
+    inputSchema(name): unknown {
+      if (name !== TOOL_NAME) return undefined;
+      try {
+        return z.toJSONSchema(callSchema);
+      } catch {
+        return undefined;
+      }
     },
 
     async call(name, input, signal): Promise<Result<unknown, ScriptError>> {

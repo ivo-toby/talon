@@ -257,3 +257,51 @@ describe('createDaemonProviderFactory', () => {
     expect(mcpProvider.close).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('createDaemonProviderFactory with allServers', () => {
+  const noTools = manifest([]);
+
+  it('connects every MCP server of the persona although the manifest names none', async () => {
+    const { factory, createMcp } = setup();
+    await factory(context, noTools, { allServers: true });
+    expect(createMcp).toHaveBeenCalledTimes(1);
+    const options = createMcp.mock.calls[0][0] as { servers: Record<string, unknown> };
+    expect(Object.keys(options.servers).sort()).toEqual(['calendar', 'mail']);
+  });
+
+  it('still connects nothing without the option', async () => {
+    const { factory, createMcp } = setup();
+    await factory(context, noTools);
+    await factory(context, noTools, {});
+    await factory(context, noTools, { allServers: false });
+    expect(createMcp).not.toHaveBeenCalled();
+  });
+
+  it('offers the judge when the persona can have one, whatever the manifest says', async () => {
+    const { factory, createJudgeModel } = setup({ provider: 'local' });
+    const provider = (await factory(context, noTools, { allServers: true }))._unsafeUnwrap();
+    expect(createJudgeModel).toHaveBeenCalledTimes(1);
+    expect(provider.list().map((t) => t.name)).toContain('model.judge');
+  });
+
+  it('has no judge for a persona on a provider that cannot judge', async () => {
+    const { factory } = setup();
+    const provider = (await factory(context, noTools, { allServers: true }))._unsafeUnwrap();
+    expect(provider.list().map((t) => t.name)).not.toContain('model.judge');
+  });
+
+  it('lists only the host tools that the capabilities of the persona grant', async () => {
+    const { factory } = setup();
+    const provider = (await factory(context, noTools, { allServers: true }))._unsafeUnwrap();
+    expect(provider.list().some((t) => t.name.startsWith('talon.'))).toBe(false);
+  });
+
+  it('passes the error of the MCP factory on', async () => {
+    const { factory, createMcp } = setup();
+    createMcp.mockResolvedValueOnce(
+      err(new ScriptError('TOOL_FAILED', 'the MCP servers could not be reached')),
+    );
+    const result = await factory(context, noTools, { allServers: true });
+    expect(result._unsafeUnwrapErr().scriptCode).toBe('TOOL_FAILED');
+  });
+});

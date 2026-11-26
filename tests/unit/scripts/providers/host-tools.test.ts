@@ -187,3 +187,59 @@ describe('createHostToolProvider', () => {
     finish({ requestId: 'r', tool: 't', status: 'success', result: 1 });
   });
 });
+
+describe('createHostToolProvider list and inputSchema', () => {
+  const names = (list: Array<{ name: string }>): string[] => list.map((t) => t.name).sort();
+
+  it('lists the six tools with their class and a description when no capabilities are given', () => {
+    const { provider } = setup();
+    const list = provider.list();
+    expect(names(list)).toEqual([
+      'talon.channel_list',
+      'talon.channel_send',
+      'talon.memory_delete',
+      'talon.memory_list',
+      'talon.memory_read',
+      'talon.memory_write',
+    ]);
+    expect(list.find((t) => t.name === 'talon.memory_write')?.toolClass).toBe('write');
+    expect(list.find((t) => t.name === 'talon.memory_read')?.toolClass).toBe('read');
+    for (const tool of list) expect(tool.description?.length).toBeGreaterThan(0);
+    for (const tool of list) expect(tool).not.toHaveProperty('inputSchema');
+  });
+
+  it('lists only the tools that a call would be allowed to use', () => {
+    const list = (caps: { allow: string[]; requireApproval: string[] }): string[] =>
+      names(createHostToolProvider({ executeInProcess: vi.fn() }, context, caps).list());
+    expect(list({ allow: [], requireApproval: [] })).toEqual([]);
+    expect(list({ allow: ['memory.access:thread'], requireApproval: [] })).toEqual([
+      'talon.memory_delete',
+      'talon.memory_list',
+      'talon.memory_read',
+      'talon.memory_write',
+    ]);
+    expect(list({ allow: ['channel.send:*'], requireApproval: [] })).toEqual([
+      'talon.channel_list',
+      'talon.channel_send',
+    ]);
+    // An approval-gated host tool is refused for a script, so it is not offered.
+    expect(list({ allow: ['channel.send:*'], requireApproval: ['memory.access:thread'] })).toEqual([
+      'talon.channel_list',
+      'talon.channel_send',
+    ]);
+    expect(list({ allow: ['memory.access'], requireApproval: ['memory.access'] })).toEqual([]);
+  });
+
+  it('gives a JSON schema for a known tool and undefined for others', () => {
+    const { provider } = setup();
+    const schema = provider.inputSchema('talon.memory_read') as {
+      type: string;
+      properties: Record<string, unknown>;
+    };
+    expect(schema.type).toBe('object');
+    expect(Object.keys(schema.properties).sort()).toEqual(['key', 'namespace']);
+    expect(provider.inputSchema('talon.memory_write')).toBeDefined();
+    expect(provider.inputSchema('talon.nope')).toBeUndefined();
+    expect(provider.inputSchema('constructor')).toBeUndefined();
+  });
+});

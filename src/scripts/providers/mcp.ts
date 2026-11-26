@@ -9,12 +9,17 @@ import {
   toMastraMcpServers,
   type SerializableMcpServer,
 } from '../../providers/openai-compatible/agent-cli/mcp-tool-limits.js';
+import { z } from 'zod';
 import { ScriptError } from '../types.js';
-import type { RunProvider, ToolClass } from '../types.js';
+import type { RunProvider, ScriptToolInfo, ToolClass } from '../types.js';
 
 export interface McpToolLike {
   execute(input: unknown, options?: { abortSignal?: AbortSignal }): Promise<unknown>;
   mcp?: { annotations?: { readOnlyHint?: boolean } };
+  /** From an external server: untrusted. */
+  description?: unknown;
+  /** A zod schema, or an AI SDK schema wrapper with a `jsonSchema` property. */
+  inputSchema?: unknown;
 }
 
 export interface McpClientLike {
@@ -108,8 +113,23 @@ function isErrorResult(value: unknown): boolean {
   );
 }
 
+/** JSON Schema of the input of an MCP tool, or `undefined` if it cannot be made. */
+function toJsonSchema(schema: unknown): unknown {
+  if (schema === null || typeof schema !== 'object') return undefined;
+  try {
+    const wrapped = (schema as { jsonSchema?: unknown }).jsonSchema;
+    if (wrapped !== null && typeof wrapped === 'object') return wrapped;
+    if ('_zod' in schema) return z.toJSONSchema(schema as z.ZodType);
+  } catch {
+    // fall through: the schema is external data
+  }
+  return undefined;
+}
+
 function emptyProvider(): RunProvider {
   return {
+    list: () => [],
+    inputSchema: () => undefined,
     describe: () => undefined,
     call: () =>
       Promise.resolve(
@@ -189,6 +209,21 @@ function buildProvider(
     describe(name): { toolClass: ToolClass } | undefined {
       const entry = lookup(name);
       return entry ? { toolClass: entry.toolClass } : undefined;
+    },
+
+    list(): ScriptToolInfo[] {
+      return [...tools].map(([name, entry]) => ({
+        name,
+        toolClass: entry.toolClass,
+        ...(typeof entry.tool.description === 'string'
+          ? { description: entry.tool.description }
+          : {}),
+      }));
+    },
+
+    inputSchema(name): unknown {
+      const entry = lookup(name);
+      return entry ? toJsonSchema(entry.tool.inputSchema) : undefined;
     },
 
     async call(name, input, signal): Promise<Result<unknown, ScriptError>> {

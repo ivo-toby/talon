@@ -1,7 +1,8 @@
 /**
  * Builds the real tool provider of one script run from daemon state.
  *
- * A run gets only what its approved manifest names: the host tools always, the
+ * A run gets only what its approved manifest names (`allServers` is for tool
+ * listing only, which calls nothing): the host tools always, the
  * MCP servers whose tools the manifest lists, and `model.judge` if the manifest
  * lists it and the persona runs on an `openai-compatible` provider. A server
  * that the manifest does not name is never connected, so a run cannot start a
@@ -32,7 +33,9 @@ import {
   type AuthoredManifest,
   type RunContext,
   type RunProvider,
+  type ProviderOptions,
   type ToolProvider,
+  type ToolLister,
 } from './types.js';
 
 const HOST_PREFIX = 'talon.';
@@ -58,6 +61,7 @@ export interface DaemonProviderDeps {
 export type ProviderFactory = (
   context: RunContext,
   manifest: AuthoredManifest,
+  options?: ProviderOptions,
 ) => Promise<Result<RunProvider, ScriptError>>;
 
 /** Server names that the manifest reaches: the part of a tool name before the first dot. */
@@ -130,17 +134,18 @@ export function createDaemonProviderFactory(deps: DaemonProviderDeps): ProviderF
   const failed = (detail: string, cause?: unknown): ScriptError =>
     new ScriptError('TOOL_FAILED', detail, cause instanceof Error ? cause : undefined);
 
-  return async (context, manifest) => {
+  return async (context, manifest, options) => {
+    const allServers = options?.allServers === true;
     try {
       const personaResult = deps.personaLoader.getById(context.personaId);
       const persona = personaResult.isOk() ? personaResult.value : undefined;
       if (!persona) return err(failed('the persona of the script is not loaded'));
 
       const config = deps.config();
-      const host = createHostToolProvider(deps.hostTools, context);
+      const host = createHostToolProvider(deps.hostTools, context, persona.resolvedCapabilities);
 
-      let judge: ToolProvider | undefined;
-      if (manifest.tools.includes(JUDGE_NAME)) {
+      let judge: (ToolProvider & ToolLister) | undefined;
+      if (allServers || manifest.tools.includes(JUDGE_NAME)) {
         const model = judgeModelFor(persona, config, context.scriptName, createJudgeModel);
         if (model) {
           judge = createJudgeProvider({
@@ -153,7 +158,7 @@ export function createDaemonProviderFactory(deps: DaemonProviderDeps): ProviderF
 
       let mcp: RunProvider | undefined;
       const wanted = manifestServers(manifest.tools);
-      if (wanted.size > 0) {
+      if (allServers || wanted.size > 0) {
         const skills = deps
           .loadedSkills()
           .filter((skill) => persona.config.skills.includes(skill.manifest.name));
@@ -165,7 +170,7 @@ export function createDaemonProviderFactory(deps: DaemonProviderDeps): ProviderF
         });
         const selected = Object.fromEntries(
           Object.entries(runtime.mcpServers).filter(
-            ([name, server]) => wanted.has(name) && server.transport !== 'sdk',
+            ([name, server]) => (allServers || wanted.has(name)) && server.transport !== 'sdk',
           ),
         );
         if (Object.keys(selected).length > 0) {

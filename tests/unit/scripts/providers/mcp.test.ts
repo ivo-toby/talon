@@ -307,3 +307,84 @@ describe('createMcpProvider with the real MCPClient', () => {
     }
   }, 20_000);
 });
+
+describe('createMcpProvider list and inputSchema', () => {
+  it('lists tools by full name with class and description, and no schema', async () => {
+    const provider = await build(
+      fakeClient({
+        crm: {
+          find: {
+            execute: vi.fn(),
+            description: 'Finds a contact',
+            mcp: { annotations: { readOnlyHint: true } },
+          },
+          update: { execute: vi.fn() },
+        },
+      }),
+    );
+    const list = provider.list();
+    expect(list).toEqual(
+      expect.arrayContaining([
+        { name: 'crm.find', toolClass: 'read', description: 'Finds a contact' },
+        { name: 'crm.update', toolClass: 'write' },
+      ]),
+    );
+    expect(list).toHaveLength(2);
+  });
+
+  it('respects allowedTools: a filtered tool is not listed', async () => {
+    const provider = await build(
+      fakeClient({ crm: { find: { execute: vi.fn() }, drop: { execute: vi.fn() } } }),
+      { crm: stdio({ allowedTools: ['find'] }) },
+    );
+    expect(provider.list().map((t) => t.name)).toEqual(['crm.find']);
+  });
+
+  it('converts a zod input schema to JSON Schema and passes a JSON schema wrapper through', async () => {
+    const { z } = await import('zod');
+    const provider = await build(
+      fakeClient({
+        crm: {
+          find: { execute: vi.fn(), inputSchema: z.object({ q: z.string() }) },
+          wrapped: {
+            execute: vi.fn(),
+            inputSchema: { jsonSchema: { type: 'object', properties: {} } },
+          },
+        },
+      }),
+    );
+    expect(provider.inputSchema('crm.find')).toMatchObject({
+      type: 'object',
+      properties: { q: { type: 'string' } },
+    });
+    expect(provider.inputSchema('crm.wrapped')).toEqual({ type: 'object', properties: {} });
+  });
+
+  it('returns undefined for an unknown tool and for a schema that cannot be converted', async () => {
+    const { z } = await import('zod');
+    const provider = await build(
+      fakeClient({
+        crm: {
+          bad: { execute: vi.fn(), inputSchema: z.custom<string>(() => true) },
+          odd: { execute: vi.fn(), inputSchema: 42 },
+        },
+      }),
+    );
+    expect(provider.inputSchema('crm.bad')).toBeUndefined();
+    expect(provider.inputSchema('crm.odd')).toBeUndefined();
+    expect(provider.inputSchema('crm.none')).toBeUndefined();
+    expect(provider.inputSchema('toString')).toBeUndefined();
+  });
+
+  it('lists nothing for the empty provider', async () => {
+    const result = await createMcpProvider({
+      servers: {},
+      toolClasses: {},
+      connectTimeoutMs: 100,
+      logger: silent,
+    });
+    const provider = result._unsafeUnwrap();
+    expect(provider.list()).toEqual([]);
+    expect(provider.inputSchema('a.b')).toBeUndefined();
+  });
+});

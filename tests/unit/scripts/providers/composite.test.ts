@@ -189,3 +189,55 @@ describe('createCompositeProvider close', () => {
     expect(host.call).not.toHaveBeenCalled();
   });
 });
+
+describe('createCompositeProvider list and inputSchema', () => {
+  const lister = (
+    tools: Array<{ name: string; toolClass: 'read' | 'write' | 'model' }>,
+    schemas: Record<string, unknown> = {},
+  ): never =>
+    ({
+      describe: vi.fn(),
+      call: vi.fn(),
+      list: vi.fn(() => tools),
+      inputSchema: vi.fn((name: string) => schemas[name]),
+      close: vi.fn(async () => {}),
+    }) as never;
+
+  it('joins the parts and sorts by name', () => {
+    const p = createCompositeProvider({
+      host: lister([{ name: 'talon.memory_read', toolClass: 'read' }]),
+      judge: lister([{ name: 'model.judge', toolClass: 'model' }]),
+      mcp: lister([{ name: 'crm.find', toolClass: 'read' }]),
+    });
+    expect(p.list().map((t) => t.name)).toEqual(['crm.find', 'model.judge', 'talon.memory_read']);
+  });
+
+  it('skips a part without a judge or mcp and a part whose list throws', () => {
+    const bad = {
+      ...lister([]),
+      list: () => {
+        throw new Error('x');
+      },
+    } as never;
+    const p = createCompositeProvider({
+      host: lister([{ name: 'talon.memory_read', toolClass: 'read' }]),
+      mcp: bad,
+    });
+    expect(p.list().map((t) => t.name)).toEqual(['talon.memory_read']);
+  });
+
+  it('routes inputSchema like describe and is empty after close', async () => {
+    const p = createCompositeProvider({
+      host: lister([], { 'talon.memory_read': { a: 1 } }),
+      judge: lister([], { 'model.judge': { b: 2 } }),
+      mcp: lister([], { 'crm.find': { c: 3 } }),
+    });
+    expect(p.inputSchema('talon.memory_read')).toEqual({ a: 1 });
+    expect(p.inputSchema('model.judge')).toEqual({ b: 2 });
+    expect(p.inputSchema('model.other')).toBeUndefined();
+    expect(p.inputSchema('crm.find')).toEqual({ c: 3 });
+    await p.close();
+    expect(p.list()).toEqual([]);
+    expect(p.inputSchema('crm.find')).toBeUndefined();
+  });
+});

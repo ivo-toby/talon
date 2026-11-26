@@ -1,6 +1,8 @@
 import { err, type Result } from 'neverthrow';
 import { ScriptError } from '../types.js';
-import type { RunProvider, ToolClass, ToolProvider } from '../types.js';
+import type { RunProvider, ScriptToolInfo, ToolClass, ToolLister, ToolProvider } from '../types.js';
+
+type Part = ToolProvider & Partial<ToolLister>;
 
 const HOST_PREFIX = 'talon.';
 const MODEL_PREFIX = 'model.';
@@ -17,14 +19,14 @@ function toError(value: unknown): Error {
  * everything else -> mcp.
  */
 export function createCompositeProvider(parts: {
-  host: ToolProvider;
-  judge?: ToolProvider;
+  host: Part;
+  judge?: Part;
   mcp?: RunProvider;
 }): RunProvider {
   let closed = false;
   let closing: Promise<void> | undefined;
 
-  const route = (name: string): ToolProvider | undefined => {
+  const route = (name: string): Part | undefined => {
     if (name.startsWith(HOST_PREFIX)) return parts.host;
     if (name === JUDGE_NAME) return parts.judge;
     if (name.startsWith(MODEL_PREFIX)) return undefined;
@@ -40,8 +42,32 @@ export function createCompositeProvider(parts: {
     }
   };
 
+  const list = (): ScriptToolInfo[] => {
+    if (closed) return [];
+    const out: ScriptToolInfo[] = [];
+    for (const part of [parts.host, parts.judge, parts.mcp]) {
+      try {
+        out.push(...(part?.list?.() ?? []));
+      } catch {
+        // a part that cannot list offers nothing
+      }
+    }
+    return out.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  };
+
+  const inputSchema = (name: string): unknown => {
+    if (closed) return undefined;
+    try {
+      return route(name)?.inputSchema?.(name);
+    } catch {
+      return undefined;
+    }
+  };
+
   return {
     describe,
+    list,
+    inputSchema,
 
     async call(
       name: string,

@@ -1576,3 +1576,263 @@ describe('runByAgent', () => {
     expect(JSON.stringify(s.audits)).not.toContain(code);
   });
 });
+
+describe('list', () => {
+  it('lists the scripts of the persona with latest, approved version and last live run', async () => {
+    const s = setup();
+    const { version } = await s.toApproved();
+    s.service
+      .save({ personaId: 'p1', threadId: 'th1', files: files({ extra: 'v2' }) })
+      ._unsafeUnwrap();
+    s.service
+      .save({
+        personaId: 'p1',
+        threadId: 'th1',
+        files: files({ name: 'other-script' }),
+      })
+      ._unsafeUnwrap();
+    s.service
+      .save({
+        personaId: 'p2',
+        threadId: 'th2',
+        files: files({ name: 'not-mine' }),
+      })
+      ._unsafeUnwrap();
+
+    const list = s.service.list('p1')._unsafeUnwrap();
+    expect(list.map((i) => i.name)).toEqual(['mail-intake', 'other-script']);
+    const intake = list[0];
+    expect(intake.latest).toMatchObject({ version: 2, state: 'draft' });
+    expect(intake.latest.versionId).not.toBe(version.versionId);
+    expect(intake.approvedVersion).toBe(1);
+    expect(intake.lastRun).toBeUndefined();
+    expect(list[1].approvedVersion).toBeUndefined();
+    expect(s.service.list('nobody')._unsafeUnwrap()).toEqual([]);
+  });
+
+  it('takes lastRun from the newest finished live run of any version and ignores tests', async () => {
+    const s = setup();
+    const { version } = await s.toApproved();
+    const run = (
+      trigger: 'test' | 'dry-run' | 'schedule' | 'agent',
+      at: number,
+      okRun?: boolean,
+      code?: string,
+    ) => {
+      const id = `run-${trigger}-${at}`;
+      s.repo
+        .insertRun({
+          id,
+          versionId: version.versionId,
+          mode: 'live',
+          trigger,
+          scheduleId: null,
+          startedAt: at,
+        })
+        ._unsafeUnwrap();
+      if (okRun !== undefined) s.repo.finishRun(id, okRun, code ?? null, 1, at + 5)._unsafeUnwrap();
+    };
+    run('schedule', 9_000_000_000_000, true);
+    run('agent', 9_000_000_000_100, false, 'SCRIPT_FAILED');
+    run('test', 9_000_000_000_200, true);
+    run('dry-run', 9_000_000_000_300, true);
+    run('agent', 9_000_000_000_400); // still open
+    const last = s.service.list('p1')._unsafeUnwrap()[0].lastRun;
+    expect(last).toEqual({
+      ok: false,
+      errorCode: 'SCRIPT_FAILED',
+      endedAt: 9_000_000_000_105,
+      trigger: 'agent',
+    });
+  });
+
+  it('returns SANDBOX when the database fails', () => {
+    const s = setup();
+    vi.spyOn(s.repo, 'listScripts').mockReturnValue(err(new Error('db') as never));
+    const e = s.service.list('p1')._unsafeUnwrapErr();
+    expect(e.scriptCode).toBe('SANDBOX');
+  });
+});
+
+describe('show', () => {
+  it('returns the newest version with its files, or the version asked for', async () => {
+    const s = setup();
+    const v1 = s.service
+      .save({ personaId: 'p1', threadId: 'th1', files: files() })!
+      ._unsafeUnwrap();
+    const v2 = s.service
+      .save({ personaId: 'p1', threadId: 'th1', files: files({ extra: 'second' }) })
+      ._unsafeUnwrap();
+    const newest = s.service.show({ personaId: 'p1', scriptName: 'mail-intake' })._unsafeUnwrap();
+    expect(newest.info).toEqual({
+      name: 'mail-intake',
+      version: 2,
+      state: 'draft',
+      versionId: v2.versionId,
+      contentHash: v2.contentHash,
+    });
+    expect(newest.files.find((f) => f.path === 'script.ts')?.content).toBe('// second\n');
+    const first = s.service
+      .show({ personaId: 'p1', scriptName: 'mail-intake', version: 1 })
+      ._unsafeUnwrap();
+    expect(first.info.versionId).toBe(v1.versionId);
+    expect(first.files.find((f) => f.path === 'script.ts')?.content).toBe('// v\n');
+  });
+
+  it('gives one error for an unknown name, another persona and an unknown version', async () => {
+    const s = setup();
+    s.service.save({ personaId: 'p1', threadId: 'th1', files: files() })._unsafeUnwrap();
+    const errors = [
+      s.service.show({ personaId: 'p1', scriptName: 'nope' }),
+      s.service.show({ personaId: 'p2', scriptName: 'mail-intake' }),
+      s.service.show({ personaId: 'p1', scriptName: 'mail-intake', version: 9 }),
+      s.service.show({ personaId: 'p1', scriptName: 'mail-intake', version: 0 }),
+    ].map((r) => r._unsafeUnwrapErr());
+    for (const e of errors) {
+      expect(e.scriptCode).toBe('INVALID_ARGUMENT');
+      expect(e.message).toBe('script: [INVALID_ARGUMENT] unknown script');
+    }
+  });
+
+  it('fails with the verify error when the files changed, and leaks no content or path', async () => {
+    const s = setup();
+    const v = s.service.save({ personaId: 'p1', threadId: 'th1', files: files() })._unsafeUnwrap();
+    writeFileSync(join(v.dir, 'script.ts'), 'SECRET-CHANGED');
+    const e = s.service.show({ personaId: 'p1', scriptName: 'mail-intake' })._unsafeUnwrapErr();
+    expect(e.scriptCode).toBe('SCRIPT_FAILED');
+    expect(e.message).not.toContain('SECRET');
+    expect(e.message).not.toContain(s.root);
+  });
+});
+
+describe('listTools', () => {
+  function toolProvider(
+    tools: Array<{ name: string; toolClass: ToolClass; description?: string }>,
+    schemas: Record<string, unknown> = {},
+  ) {
+    const close = vi.fn(() => Promise.resolve());
+    const provider = {
+      describe: () => undefined,
+      call: () => Promise.resolve(ok(null)),
+      list: () => tools,
+      inputSchema: (name: string) => schemas[name],
+      close,
+    } as unknown as RunProvider;
+    return { provider, close };
+  }
+  const withProvider = (p: ReturnType<typeof toolProvider>) =>
+    setup({ createProvider: vi.fn(() => Promise.resolve(ok(p.provider))) });
+  const ask = { personaId: 'p1', threadId: 'th1' };
+
+  it('opens a provider with allServers and an empty manifest, sorts, and closes it', async () => {
+    const p = toolProvider([
+      { name: 'talon.memory_read', toolClass: 'read', description: 'Reads' },
+      { name: 'crm.find', toolClass: 'read', description: 'Finds' },
+      { name: 'model.judge', toolClass: 'model' },
+    ]);
+    const createProvider = vi.fn(() => Promise.resolve(ok(p.provider)));
+    const s = setup({ createProvider });
+    const list = (await s.service.listTools(ask))._unsafeUnwrap();
+    expect(list.map((t) => t.name)).toEqual(['crm.find', 'model.judge', 'talon.memory_read']);
+    const [context, manifest, options] = createProvider.mock.calls[0] as unknown as [
+      { personaId: string; threadId: string },
+      { tools: string[] },
+      { allServers?: boolean },
+    ];
+    expect(context).toMatchObject({ personaId: 'p1', threadId: 'th1' });
+    expect(manifest.tools).toEqual([]);
+    expect(options).toEqual({ allServers: true });
+    expect(p.close).toHaveBeenCalledTimes(1);
+  });
+
+  it('has no model.judge when the persona has no judge', async () => {
+    const p = toolProvider([{ name: 'talon.memory_read', toolClass: 'read' }]);
+    const s = withProvider(p);
+    const list = (await s.service.listTools(ask))._unsafeUnwrap();
+    expect(list.map((t) => t.name)).not.toContain('model.judge');
+  });
+
+  it('gives no schema without a name and one entry with a schema for a name', async () => {
+    const schema = { type: 'object', properties: { q: { type: 'string' } } };
+    const p = toolProvider(
+      [
+        { name: 'crm.find', toolClass: 'read' },
+        { name: 'crm.update', toolClass: 'write' },
+      ],
+      { 'crm.find': schema, 'crm.update': { type: 'object' } },
+    );
+    const s = withProvider(p);
+    const all = (await s.service.listTools(ask))._unsafeUnwrap();
+    for (const tool of all) expect(tool).not.toHaveProperty('inputSchema');
+    const one = (await s.service.listTools({ ...ask, name: 'crm.find' }))._unsafeUnwrap();
+    expect(one).toEqual([{ name: 'crm.find', toolClass: 'read', inputSchema: schema }]);
+    expect(p.close).toHaveBeenCalledTimes(2);
+  });
+
+  it('refuses an unknown tool name without echoing it', async () => {
+    const p = toolProvider([{ name: 'crm.find', toolClass: 'read' }]);
+    const s = withProvider(p);
+    const e = (await s.service.listTools({ ...ask, name: 'zzz-secret.tool' }))._unsafeUnwrapErr();
+    expect(e.scriptCode).toBe('INVALID_ARGUMENT');
+    expect(e.message).not.toContain('zzz-secret');
+    expect(p.close).toHaveBeenCalledTimes(1);
+  });
+
+  it('cuts a description to 200 characters after removing control characters', async () => {
+    const hostile = `a\u0000b\u001b[31m${'x'.repeat(300)}\nline\u007f`;
+    const p = toolProvider([
+      { name: 'crm.find', toolClass: 'read', description: hostile },
+      { name: 'crm.blank', toolClass: 'read', description: '\u0000\u0001' },
+    ]);
+    const list = (await withProvider(p).service.listTools(ask))._unsafeUnwrap();
+    const find = list.find((t) => t.name === 'crm.find')!;
+    // eslint-disable-next-line no-control-regex
+    expect(find.description).not.toMatch(/[\u0000-\u001f\u007f]/);
+    expect(find.description!.length).toBe(200);
+    expect(find.description!.startsWith('ab[31m')).toBe(true);
+    expect(list.find((t) => t.name === 'crm.blank')).not.toHaveProperty('description');
+  });
+
+  it('fails with the TOOL_FAILED error of the factory and names no server detail', async () => {
+    const createProvider = vi.fn(() =>
+      Promise.resolve(err(new ScriptError('TOOL_FAILED', 'the MCP servers could not be reached'))),
+    );
+    const s = setup({ createProvider });
+    const e = (await s.service.listTools(ask))._unsafeUnwrapErr();
+    expect(e.scriptCode).toBe('TOOL_FAILED');
+    expect(e.message).toBe('script: [TOOL_FAILED] the MCP servers could not be reached');
+  });
+
+  it('closes the provider and returns SANDBOX when list throws', async () => {
+    const p = toolProvider([]);
+    (p.provider as { list: () => never }).list = () => {
+      throw new Error('boom with /secret/path');
+    };
+    const e = (await withProvider(p).service.listTools(ask))._unsafeUnwrapErr();
+    expect(e.scriptCode).toBe('SANDBOX');
+    expect(e.message).not.toContain('secret');
+    expect(p.close).toHaveBeenCalledTimes(1);
+  });
+
+  it('is tracked: shutdown waits for it, and a closed service refuses it', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const p = toolProvider([{ name: 'crm.find', toolClass: 'read' }]);
+    const createProvider = vi.fn(async () => {
+      await gate;
+      return ok(p.provider);
+    });
+    const s = setup({ createProvider });
+    const pending = s.service.listTools(ask);
+    let down = false;
+    const shutdown = s.service.shutdown().then(() => (down = true));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(down).toBe(false);
+    release();
+    expect((await pending).isOk()).toBe(true);
+    await shutdown;
+    expect(p.close).toHaveBeenCalledTimes(1);
+    const after = (await s.service.listTools(ask))._unsafeUnwrapErr();
+    expect(after.scriptCode).toBe('SANDBOX');
+  });
+});
