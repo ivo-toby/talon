@@ -23,6 +23,8 @@ import type { AuditLogger } from '../core/logging/audit-logger.js';
 import { resolveThreadRecipient } from '../daemon/schedule-thread-utils.js';
 import { createDockerEngineClient, reapBrokerContainers } from '../execution-broker/index.js';
 import type { DockerEngineClient } from '../execution-broker/docker-types.js';
+import type { PersonaLoader } from '../personas/persona-loader.js';
+import type { ResolvedCapabilities } from '../personas/persona-types.js';
 import { createApprovalService } from './approval.js';
 import { buildScriptBroker } from './config.js';
 import { createDaemonProviderFactory, type DaemonProviderDeps } from './daemon-provider.js';
@@ -34,12 +36,14 @@ import { ScriptError } from './types.js';
 export interface ScriptRuntimeDeps {
   config: ScriptsConfig;
   db: Database.Database;
-  personaRepo: Pick<PersonaRepository, 'findAll'>;
+  personaRepo: Pick<PersonaRepository, 'findAll' | 'findById'>;
   threadRepo: Pick<ThreadRepository, 'findById'>;
   channelRepo: Pick<ChannelRepository, 'findById'>;
   channelRegistry: Pick<ChannelRegistry, 'get'>;
   auditLogger: Pick<AuditLogger, 'logToolExecution' | 'logApprovalDecision'>;
-  provider: Omit<DaemonProviderDeps, 'logger'>;
+  provider: Omit<DaemonProviderDeps, 'logger' | 'personaLoader'> & {
+    personaLoader: Pick<PersonaLoader, 'getById' | 'getByName'>;
+  };
   logger: Logger;
 }
 
@@ -132,6 +136,28 @@ export function createChatResolver(
   };
 }
 
+/**
+ * Capabilities of the loaded persona behind a database ID, read at every call so
+ * a hot reload shows at the next run. `undefined` if the persona is unknown or
+ * not loaded. Never throws.
+ */
+export function createCapabilityResolver(
+  personaRepo: Pick<PersonaRepository, 'findById'>,
+  personaLoader: Pick<PersonaLoader, 'getByName'>,
+): (personaId: string) => ResolvedCapabilities | undefined {
+  return (personaId) => {
+    try {
+      const row = personaRepo.findById(personaId);
+      if (row.isErr() || row.value === null) return undefined;
+      const loaded = personaLoader.getByName(row.value.name);
+      if (loaded.isErr() || loaded.value === undefined) return undefined;
+      return loaded.value.resolvedCapabilities;
+    } catch {
+      return undefined;
+    }
+  };
+}
+
 export function buildScriptRuntime(deps: ScriptRuntimeDeps): Result<ScriptService, ScriptError> {
   const { config, logger } = deps;
   const root = resolve(config.root);
@@ -176,6 +202,7 @@ export function buildScriptRuntime(deps: ScriptRuntimeDeps): Result<ScriptServic
     createProvider: createDaemonProviderFactory({ ...deps.provider, logger }),
     send,
     resolveChat: createChatResolver(deps.threadRepo, deps.channelRepo),
+    capabilities: createCapabilityResolver(deps.personaRepo, deps.provider.personaLoader),
     audit(entry) {
       if (entry.action === 'script.approval') deps.auditLogger.logApprovalDecision(entry);
       else deps.auditLogger.logToolExecution(entry);

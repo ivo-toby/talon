@@ -176,6 +176,7 @@ function setup(over: Partial<ScriptServiceDeps> = {}) {
     send,
     resolveChat,
     audit: (e) => audits.push(e),
+    capabilities: () => ({ allow: ['script.run:*'], requireApproval: [] }),
     now,
     logger,
     ...over,
@@ -673,6 +674,61 @@ describe('approval', () => {
     expect(s.service.matchesInbound(s.event('hello there'))).toBe(false);
     expect(s.service.matchesInbound(s.event(undefined))).toBe(false);
     expect(s.service.matchesInbound(s.event({ x: 1 }))).toBe(false);
+  });
+});
+
+describe('runScheduled capability check', () => {
+  it('does not start without the script.run capability', async () => {
+    const s = setup({ capabilities: () => ({ allow: [], requireApproval: [] }) });
+    const r = await s.service.runScheduled(s.live);
+    expect(r._unsafeUnwrapErr()).toMatchObject({ reason: 'not-permitted' });
+    expect(s.createProvider).not.toHaveBeenCalled();
+    const refused = s.audits.filter((a) => a.action === 'script.run.refused');
+    expect(refused).toHaveLength(1);
+    expect(refused[0].details).toMatchObject({ reason: 'not-permitted' });
+    expect(s.service.lastScheduledRunFailed('p1', 'mail-intake')).toBe(true);
+  });
+
+  it('does not start when the persona is not loaded', async () => {
+    const s = setup({ capabilities: () => undefined });
+    expect((await s.service.runScheduled(s.live))._unsafeUnwrapErr()).toMatchObject({
+      reason: 'not-permitted',
+    });
+    expect(s.createProvider).not.toHaveBeenCalled();
+  });
+
+  it('does not start for a label of another script', async () => {
+    const s = setup({
+      capabilities: () => ({ allow: ['script.run:other'], requireApproval: [] }),
+    });
+    expect((await s.service.runScheduled(s.live))._unsafeUnwrapErr()).toMatchObject({
+      reason: 'not-permitted',
+    });
+  });
+
+  it('runs without a question when the label is only in requireApproval', async () => {
+    const s = setup({
+      capabilities: () => ({ allow: [], requireApproval: ['script.run:mail-intake'] }),
+    });
+    await s.toApproved();
+    play(s.backend, SCRIPT_CALLS, { ok: true, result: { sent: 1 } });
+    const run = (await s.service.runScheduled(s.live))._unsafeUnwrap();
+    expect(run).not.toBe('skipped');
+    if (run === 'skipped') return;
+    expect(run.ok).toBe(true);
+  });
+
+  it('tells the owner once why the run did not start', async () => {
+    const s = setup();
+    await s.service.notifyFailure({
+      threadId: 'sched',
+      scriptName: 'mail-intake',
+      errorCode: 'SCRIPT_FAILED',
+      reason: 'not-permitted',
+    });
+    expect(s.sent[0].body).toBe(
+      'Script mail-intake did not run: the persona has no script.run capability for it.',
+    );
   });
 });
 

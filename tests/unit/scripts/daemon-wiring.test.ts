@@ -10,6 +10,8 @@ import { ScriptRepository } from '../../../src/core/database/repositories/script
 import {
   buildScriptRuntime,
   createChannelSender,
+  createCapabilityResolver,
+  createCapabilityResolver,
   createChatResolver,
   reapScriptContainers,
 } from '../../../src/scripts/daemon-wiring.js';
@@ -90,6 +92,38 @@ describe('createChatResolver', () => {
       { findById: () => ok(null) } as never,
     );
     expect(throwing('t1')).toBeUndefined();
+  });
+});
+
+describe('createCapabilityResolver', () => {
+  const caps = { allow: ['script.run:*'], requireApproval: [] };
+  const repoWith = (name: string | null) =>
+    ({ findById: () => ok(name === null ? null : { name }) }) as never;
+
+  it('resolves the database ID through the name to the loaded capabilities', () => {
+    let current = caps;
+    const loader = {
+      getByName: (n: string) => ok(n === 'alpha' ? { resolvedCapabilities: current } : undefined),
+    } as never;
+    const resolve = createCapabilityResolver(repoWith('alpha'), loader);
+    expect(resolve('p1')).toEqual(caps);
+    // hot reload: the next call shows the new answer
+    current = { allow: [], requireApproval: ['script.run:x'] };
+    expect(resolve('p1')).toEqual(current);
+  });
+
+  it('returns undefined for an unknown or unloaded persona and never throws', () => {
+    const loaded = { getByName: () => ok(undefined) } as never;
+    expect(createCapabilityResolver(repoWith(null), loaded)('p1')).toBeUndefined();
+    expect(createCapabilityResolver(repoWith('alpha'), loaded)('p1')).toBeUndefined();
+    const failing = { findById: () => err(new Error('db')) } as never;
+    expect(createCapabilityResolver(failing, loaded)('p1')).toBeUndefined();
+    const throwing = {
+      findById: () => {
+        throw new Error('boom');
+      },
+    } as never;
+    expect(createCapabilityResolver(throwing, loaded)('p1')).toBeUndefined();
   });
 });
 

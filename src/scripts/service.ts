@@ -21,7 +21,9 @@ import { createLogger } from '../core/logging/index.js';
 import { ExecutionBrokerError, type ExecutionBroker } from '../execution-broker/index.js';
 import type { ApprovalService, CancelOutcome } from './approval.js';
 import { SCRIPT_PROFILE, SCRIPT_WORKSPACE } from './config.js';
+import type { ResolvedCapabilities } from '../personas/persona-types.js';
 import { runScript } from './runner.js';
+import { scriptRunAccess } from './run-policy.js';
 import type { ScriptStore, ScriptFile, StoredVersion } from './store.js';
 import { buildApprovalSummary } from './summary.js';
 import {
@@ -69,6 +71,8 @@ export interface ScriptServiceDeps {
     tool?: string;
     details: Record<string, unknown>;
   }): void;
+  /** Capabilities of a persona by database ID, or `undefined` if it is not loaded. Never throws. */
+  capabilities(personaId: string): ResolvedCapabilities | undefined;
   now?: () => number;
   logger?: Logger;
 }
@@ -122,8 +126,11 @@ export interface ScriptService {
   shutdown(): Promise<void>;
 }
 
-/** Why a scheduled run did not start: the files changed, or no version is approved. */
-export type ScriptNotRunReason = 'changed' | 'not-approved';
+/**
+ * Why a scheduled run did not start: the files changed, no version is approved,
+ * or the persona has no `script.run` capability for the script.
+ */
+export type ScriptNotRunReason = 'changed' | 'not-approved' | 'not-permitted';
 
 /** A `SCRIPT_FAILED` error of `runScheduled` for a run that did not start. */
 export class ScriptNotRunError extends ScriptError {
@@ -134,7 +141,9 @@ export class ScriptNotRunError extends ScriptError {
       'SCRIPT_FAILED',
       reason === 'changed'
         ? 'the files changed after the approval'
-        : 'no approved version of this script',
+        : reason === 'not-permitted'
+          ? 'the persona has no script.run capability for this script'
+          : 'no approved version of this script',
       cause,
     );
     this.reason = reason;
@@ -639,6 +648,26 @@ export function createScriptService(deps: ScriptServiceDeps): ScriptService {
     scheduleId: string;
   }): Promise<Result<ScriptRunReport | 'skipped', ScriptError>> {
     const noApproved = (): ScriptError => new ScriptNotRunError('not-approved');
+    // A scheduled run asks nobody: `approval` runs like `allowed`. `undefined`
+    // (persona not loaded) fails closed.
+    let permitted = false;
+    try {
+      const capabilities = deps.capabilities(input.personaId);
+      permitted =
+        capabilities !== undefined && scriptRunAccess(capabilities, input.scriptName) !== 'denied';
+    } catch {
+      permitted = false;
+    }
+    if (!permitted) {
+      audit({
+        action: 'script.run.refused',
+        personaId: input.personaId,
+        threadId: input.threadId,
+        runId: randomUUID(),
+        details: { script: input.scriptName, reason: 'not-permitted' },
+      });
+      return err(new ScriptNotRunError('not-permitted'));
+    }
     const script = repo.findScript(input.personaId, input.scriptName);
     if (script.isErr()) return err(sandbox(script.error));
     if (!script.value) return err(noApproved());
@@ -850,7 +879,9 @@ export function createScriptService(deps: ScriptServiceDeps): ScriptService {
             ? `Script "${name}" did not run: its files changed after the approval.`
             : input.reason === 'not-approved'
               ? `Script "${name}" did not run: it has no approved version.`
-              : `Script "${name}" failed (${code}). It stays scheduled. I will tell you again only if it fails after a success.`;
+              : input.reason === 'not-permitted'
+                ? `Script ${name} did not run: the persona has no script.run capability for it.`
+                : `Script "${name}" failed (${code}). It stays scheduled. I will tell you again only if it fails after a success.`;
         const chat = deps.resolveChat(input.threadId);
         const sent = chat
           ? await deps.send(chat.channelName, chat.externalThreadId, text)

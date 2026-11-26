@@ -12,7 +12,12 @@ import type { ScheduleRow } from '../core/database/repositories/schedule-reposit
 import type { PersonaLoader } from '../personas/persona-loader.js';
 import type { QueueManager } from '../queue/queue-manager.js';
 import { getNextCronTime } from './cron-evaluator.js';
-import type { ScheduleConfig, SchedulePayload, ScriptScheduleRunner } from './schedule-types.js';
+import type {
+  ScheduleConfig,
+  SchedulePayload,
+  ScriptNotRunReason,
+  ScriptScheduleRunner,
+} from './schedule-types.js';
 
 const SCRIPT_NAME_RE = /^[a-z][a-z0-9-]{1,48}$/;
 
@@ -339,7 +344,7 @@ export class Scheduler {
       return;
     }
 
-    const notify = (errorCode: string, reason?: 'changed' | 'not-approved'): void => {
+    const notify = (errorCode: string, reason?: ScriptNotRunReason): void => {
       try {
         const input = { threadId, scriptName, errorCode, ...(reason ? { reason } : {}) };
         runner.notifyFailure(input).catch((error: unknown) => {
@@ -361,11 +366,13 @@ export class Scheduler {
         })
         .then((result) => {
           let errorCode: string | undefined;
-          let reason: 'changed' | 'not-approved' | undefined;
+          let reason: ScriptNotRunReason | undefined;
           if (result.isErr()) {
             errorCode = result.error.scriptCode;
             const given = (result.error as { reason?: unknown }).reason;
-            if (given === 'changed' || given === 'not-approved') reason = given;
+            if (given === 'changed' || given === 'not-approved' || given === 'not-permitted') {
+              reason = given;
+            }
           } else if (result.value !== 'skipped' && !result.value.ok) {
             errorCode = result.value.errorCode ?? 'SCRIPT_FAILED';
           }

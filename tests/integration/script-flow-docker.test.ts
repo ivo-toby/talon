@@ -201,6 +201,7 @@ describe.skipIf(!enabled)('script flow against a real Docker daemon', () => {
       resolveChat: (threadId) =>
         threadId === 'thread-1' ? { channelName: CHANNEL, externalThreadId: CHAT } : undefined,
       audit: () => {},
+      capabilities: () => ({ allow: ['script.run:*'], requireApproval: [] }),
       logger,
     });
   });

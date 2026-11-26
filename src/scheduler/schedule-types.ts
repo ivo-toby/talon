@@ -30,6 +30,9 @@ export interface SchedulePayload {
 }
 
 /** What the scheduler needs from the script service. */
+/** Why a scheduled run did not start. */
+export type ScriptNotRunReason = 'changed' | 'not-approved' | 'not-permitted';
+
 export interface ScriptScheduleRunner {
   runScheduled(input: {
     personaId: string;
@@ -37,12 +40,12 @@ export interface ScriptScheduleRunner {
     scriptName: string;
     scheduleId: string;
   }): Promise<Result<ScriptRunReport | 'skipped', ScriptError>>;
-  /** `reason` is set when the run did not start: its files changed, or no version is approved. */
+  /** `reason` is set when the run did not start: its files changed, no version is approved, or the persona may not run it. */
   notifyFailure(input: {
     threadId: string;
     scriptName: string;
     errorCode: string;
-    reason?: 'changed' | 'not-approved';
+    reason?: ScriptNotRunReason;
   }): Promise<void>;
   /** True if the last scheduled run of this script failed or did not start. */
   lastScheduledRunFailed(personaId: string, scriptName: string): boolean;
