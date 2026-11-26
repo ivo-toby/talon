@@ -14,7 +14,7 @@
 
 Part 3 does not contain the mail intake script. The assistant on `talon-vm` writes it after the deploy, and Ivo approves it. No task of this plan touches `talon-vm`.
 
-Part 3 does not add an input argument to `script_run`. A run that the agent starts uses `liveInput` of the approved manifest, the same as a scheduled run.
+A live run can get an input from the agent or from the schedule. The manifest must declare the form of that input in `inputSchema`. See Task 4.
 
 ## Global Constraints
 
@@ -23,6 +23,8 @@ Part 3 does not add an input argument to `script_run`. A run that the agent star
 - A live run needs a `script.run` label that matches the script, in `allow` or in `requireApproval`. This applies to the agent trigger and to the schedule trigger.
 - A matching `script.run` label in `requireApproval` wins over `allow`. For each run that the agent starts, the user must send one `/approve`. If the agent attaches the script to a schedule, the user must also send one `/approve`. A scheduled run never asks.
 - The approval of a version is necessary before any live run. No label removes it.
+- If the approved manifest has no `inputSchema`, a run accepts no input. If the input does not match the schema, the run does not start. Talon makes this check before the container starts. With no input, the run uses `liveInput`.
+- An approval message for a run or for a schedule shows the input of that run.
 - The model never sees an approval code. A tool result never contains one.
 - The persona and the capabilities of a tool call come from the trusted run context. They never come from tool arguments.
 - A tool result that holds script output or dry-run data is untrusted data. It is cut to 8,000 characters.
@@ -77,7 +79,14 @@ runByAgent(input: {
   threadId: string;          // the conversation of the agent
   scriptName: string;
   access: 'allowed' | 'approval';
+  input?: unknown;           // absent: `liveInput` of the manifest
 }): Promise<Result<ScriptRunReport | 'awaiting-approval', ScriptError>>;
+
+// src/scripts/run-input.ts
+export function resolveRunInput(
+  manifest: AuthoredManifest,
+  input: unknown | undefined,
+): Result<unknown, ScriptError>;
 
 requestScheduleChange(input: {
   personaId: string;
@@ -101,6 +110,7 @@ export interface ScriptScheduleChange {
   scheduleId?: string;       // for update
   cronExpr?: string;
   label?: string;
+  input?: unknown;           // stored in the schedule payload as `input`
 }
 export interface ScriptToolInfo {
   name: string;              // the name that a manifest lists
@@ -128,7 +138,9 @@ applyScheduleChange(input: {
 }): Result<{ scheduleId: string }, ScriptError>;
 ```
 
-`ScriptNotRunReason` gets the value `'not-permitted'`. The trigger of a run that the agent starts is `'agent'`.
+`AuthoredManifest` gets `inputSchema?: object`. `SchedulePayload` gets `input?: unknown`. `ScriptScheduleRunner.runScheduled` and `ScriptService.runScheduled` get `input?: unknown`.
+
+`ScriptNotRunReason` gets the values `'not-permitted'` and `'bad-input'`. The trigger of a run that the agent starts is `'agent'`.
 
 ---
 
@@ -244,25 +256,67 @@ it('does not start when the persona is not loaded', async () => { /* 'not-permit
 - [ ] **Step 4: Run** `npx vitest run tests/unit/scripts tests/unit/daemon tests/unit/scheduler`. Expected: PASS.
 - [ ] **Step 5: Commit** `feat(scripts): require script.run for a scheduled run`.
 
-### Task 4: Runs that the agent starts
+### Task 4: Run input
+
+**Files:**
+- Create: `src/scripts/run-input.ts`
+- Modify: `src/scripts/types.ts`, `src/scripts/store.ts`, `src/scripts/summary.ts`, `src/scripts/service.ts`, `src/scripts/providers/judge.ts` (export the schema check only), `src/scheduler/scheduler.ts`, `src/scheduler/schedule-types.ts`
+- Test: `tests/unit/scripts/run-input.test.ts`, and the tests of the changed modules
+
+**Interfaces:**
+- Consumes: `isSafeSchema` and `z.fromJSONSchema`, as `model.judge` uses them.
+- Produces: `resolveRunInput`, `AuthoredManifest.inputSchema`, `SchedulePayload.input`, the `input` argument of `runScheduled`.
+
+Rules:
+
+- `inputSchema` is optional in `manifest.json`. The store refuses a manifest whose `inputSchema` fails `isSafeSchema` or `z.fromJSONSchema`, or whose JSON text is longer than 4,000 characters.
+- If the manifest has an `inputSchema`, the store also refuses a manifest whose `dryRunInput` does not match it. If `liveInput` is present, the same rule applies to it.
+- `resolveRunInput(manifest, undefined)` returns `manifest.liveInput ?? null`.
+- `resolveRunInput(manifest, input)` with no `inputSchema` returns `INVALID_ARGUMENT`, `this script accepts no input`.
+- `resolveRunInput(manifest, input)` with a schema: if the input matches, the result is the input. If not, the result is `INVALID_ARGUMENT`, `the input does not match the input schema of the script`. The JSON text of an input is at most 8,000 characters.
+- If the payload has the key `input`, the scheduler passes its value to `runScheduled`. `runScheduled` calls `resolveRunInput` after the capability check. A failure is `ScriptNotRunError('bad-input')` with the notice text `Script <name> did not run: the input of the schedule does not match the script.`
+- If the manifest has an `inputSchema`, the approval summary of a version gets one line: `Accepts input: <property names>`, or `Accepts input: yes` for a schema with no properties. The line is never cut.
+
+- [ ] **Step 1: Write the failing tests**
+
+```ts
+const schema = { type: 'object', properties: { quiet: { type: 'boolean' } }, additionalProperties: false };
+expect(resolveRunInput(manifest({ liveInput: { a: 1 } }), undefined)._unsafeUnwrap()).toEqual({ a: 1 });
+expect(resolveRunInput(manifest({}), undefined)._unsafeUnwrap()).toBeNull();
+expect(resolveRunInput(manifest({}), { quiet: true })._unsafeUnwrapErr().scriptCode).toBe('INVALID_ARGUMENT');
+expect(resolveRunInput(manifest({ inputSchema: schema }), { quiet: true })._unsafeUnwrap()).toEqual({ quiet: true });
+expect(resolveRunInput(manifest({ inputSchema: schema }), { quiet: 'yes' }).isErr()).toBe(true);
+expect(resolveRunInput(manifest({ inputSchema: schema }), { other: 1 }).isErr()).toBe(true);
+```
+
+Add store tests for the three refusals, a summary test for the new line, and a scheduler test that passes `payload.input`.
+
+- [ ] **Step 2: Run.** Expected: FAIL.
+- [ ] **Step 3: Implement.**
+- [ ] **Step 4: Run** `npx vitest run tests/unit/scripts tests/unit/scheduler`. Expected: PASS.
+- [ ] **Step 5: Commit** `feat(scripts): let a run take an input that the manifest declares`.
+
+### Task 5: Runs that the agent starts
 
 **Files:**
 - Modify: `src/scripts/service.ts`
 - Test: `tests/unit/scripts/service.test.ts`
 
 **Interfaces:**
-- Consumes: Task 2 (`purpose: 'run'`), the run path of `runScheduled`.
+- Consumes: Task 2 (`purpose: 'run'`), Task 4 (`resolveRunInput`), the run path of `runScheduled`.
 - Produces: `runByAgent` of the contract.
 
 Rules:
 
 - The run uses the newest approved version, `store.verify`, the active set, the run row and the audit entries of `runScheduled`. Put the shared part in one private function. The trigger is `'agent'` and `schedule_id` is null.
 - No approved version: `ScriptNotRunError('not-approved')`. A run of the same script is active: `SCRIPT_FAILED` with the message `the script is already running`.
+- The input goes through `resolveRunInput` before any other step. For access `approval`, the resolved input is stored in the payload of the approval, and the run after `/approve` uses that stored input.
 - `access: 'allowed'`: run now and return the report.
-- `access: 'approval'`: resolve the chat with `resolveChat(input.threadId)`. No chat: `INVALID_ARGUMENT`, `this conversation has no chat for an approval`. If an open run approval exists for the version (`findOpenApprovalFor`), send nothing and return `'awaiting-approval'`. Else create the approval and send this text:
+- `access: 'approval'`: resolve the chat with `resolveChat(input.threadId)`. No chat: `INVALID_ARGUMENT`, `this conversation has no chat for an approval`. If an open run approval exists for the version (`findOpenApprovalFor`) with the same input, send nothing and return `'awaiting-approval'`. If the input is different, expire the open approval and make a new one. If the message with the full input is longer than 3,500 characters, return `RESULT_TOO_LARGE` and send nothing. Else create the approval and send this text:
 
 ```
 <persona agent> wants to run script <name> (version <n>) now.
+Input: <JSON text of the input, or "none">
 /approve <code>
 /reject <code>
 ```
@@ -294,7 +348,7 @@ it('refuses an approved run when a newer version is approved', async () => {
 - [ ] **Step 4: Run** `npx vitest run tests/unit/scripts`. Expected: PASS.
 - [ ] **Step 5: Commit** `feat(scripts): let the agent start an approved script`.
 
-### Task 5: List, show and tool listing
+### Task 6: List, show and tool listing
 
 **Files:**
 - Modify: `src/scripts/service.ts`, `src/scripts/store.ts`, `src/scripts/types.ts`, `src/scripts/providers/host-tools.ts`, `mcp.ts`, `judge.ts`, `composite.ts`, `src/scripts/daemon-provider.ts`, `src/core/database/repositories/script-repository.ts`
@@ -318,7 +372,7 @@ Rules:
 - [ ] **Step 4: Run** `npx vitest run tests/unit/scripts tests/unit/core/database`. Expected: PASS.
 - [ ] **Step 5: Commit** `feat(scripts): list scripts, show a version and list script tools`.
 
-### Task 6: The `script_manage` tool and the authoring guide
+### Task 7: The `script_manage` tool and the authoring guide
 
 **Files:**
 - Create: `src/tools/host-tools/script-manage.ts`, `templates/script-authoring.md`, `templates/tool-instructions/script.manage.md`
@@ -356,7 +410,7 @@ The guide `templates/script-authoring.md` is at most 6,000 characters. It contai
 
 1. When a script is the right tool: a routine with fixed steps that repeats.
 2. The procedure, as numbered steps. The steps are `tools`, write the files, `save`, `test`, correct and save again, and `request_approval`. The last step is to wait for the user and then attach the script with `schedule_manage`.
-3. The files and their rules: `script.ts`, `manifest.json` (all fields of `AuthoredManifest`), `tests.json`, `prompts/<name>.md`, `fixtures/<name>.json`. Copy the limits from `src/scripts/store.ts`.
+3. The files and their rules, with `inputSchema` and an example of a mode switch: `script.ts`, `manifest.json` (all fields of `AuthoredManifest`), `tests.json`, `prompts/<name>.md`, `fixtures/<name>.json`. Copy the limits from `src/scripts/store.ts`.
 4. The SDK: read `src/scripts/sdk-assets/` and document each exported function with one example.
 5. The modes: what a unit case supplies, what a dry run does, and that a skipped write returns `{ dryRun: true }`.
 6. The rule that `dryRunInput` must send the script through its work path.
@@ -371,7 +425,7 @@ The guide `templates/script-authoring.md` is at most 6,000 characters. It contai
 - [ ] **Step 4: Run** `npx vitest run tests/unit/tools tests/unit/scripts tests/unit/daemon`. Expected: PASS.
 - [ ] **Step 5: Commit** `feat(tools): add the script_manage tool and the authoring guide`.
 
-### Task 7: The `script_run` tool
+### Task 8: The `script_run` tool
 
 **Files:**
 - Create: `src/tools/host-tools/script-run.ts`, `templates/tool-instructions/script.run.md`
@@ -379,10 +433,10 @@ The guide `templates/script-authoring.md` is at most 6,000 characters. It contai
 - Test: `tests/unit/tools/host-tools/script-run.test.ts`
 
 **Interfaces:**
-- Consumes: `scriptRunAccess` (Task 1), `runByAgent` (Task 4), the capabilities that the bridge resolves for the calling persona.
+- Consumes: `scriptRunAccess` (Task 1), `runByAgent` (Task 5), the capabilities that the bridge resolves for the calling persona.
 - Produces: registry entry `{ capabilityPrefix: 'script.run', internalName: 'script.run', mcpName: 'script_run' }`.
 
-Arguments: `name` (required).
+Arguments: `name` (required) and `input` (optional, any JSON value).
 
 Rules:
 
@@ -399,7 +453,7 @@ Rules:
 - [ ] **Step 4: Run** `npx vitest run tests/unit/tools`. Expected: PASS.
 - [ ] **Step 5: Commit** `feat(tools): add the script_run tool`.
 
-### Task 8: Script schedules from the agent
+### Task 9: Script schedules from the agent
 
 **Files:**
 - Modify: `src/tools/host-tools/schedule-manage.ts`, `src/tools/host-tools-mcp-server.ts`, `src/tools/host-tools-bridge.ts`, `src/scripts/service.ts`, `src/scripts/daemon-wiring.ts`
@@ -407,11 +461,12 @@ Rules:
 
 **Interfaces:**
 - Consumes: `scriptRunAccess`, Task 2 (`purpose: 'schedule'`), `hasApproved`.
-- Produces: `ScheduleManageArgs.script?: string`. `requestScheduleChange` and `applyScheduleChange` of the contract. `ScheduleManageHandler.applyScriptChange(input): Result<{ scheduleId: string }, ToolError>`, which the wiring binds to `applyScheduleChange`.
+- Produces: `ScheduleManageArgs.script?: string` and `ScheduleManageArgs.input?: unknown`. `requestScheduleChange` and `applyScheduleChange` of the contract. `ScheduleManageHandler.applyScriptChange(input): Result<{ scheduleId: string }, ToolError>`, which the wiring binds to `applyScheduleChange`.
 
 Rules for `create` and `update` with `script`:
 
 - `script` with `prompt` or `promptFile` is an error. The name must match the name pattern.
+- `input` is legal only with `script`. It goes through `resolveRunInput` with the manifest of the approved version before anything is written or sent.
 - With no script service: error `scripts are off`.
 - Access `denied`: error. No approved version: error `script <name> has no approved version`.
 - Access `allowed`: write the schedule now, with payload `{ label, script }`.
@@ -419,6 +474,7 @@ Rules for `create` and `update` with `script`:
 
 ```
 <persona agent> wants to run script <name> on this schedule: <cronExpr> (<label>).
+Input: <JSON text of the input, or "none">
 /approve <code>
 /reject <code>
 ```
@@ -435,7 +491,7 @@ Rules for `create` and `update` with `script`:
 - [ ] **Step 4: Run** `npx vitest run tests/unit/tools tests/unit/scripts tests/unit/scheduler`. Expected: PASS.
 - [ ] **Step 5: Commit** `feat(tools): let schedule_manage attach an approved script`.
 
-### Task 9: `talonctl`
+### Task 10: `talonctl`
 
 **Files:**
 - Create: `src/cli/commands/script.ts`
@@ -443,7 +499,7 @@ Rules for `create` and `update` with `script`:
 - Test: `tests/unit/cli/script.test.ts`, the tests of the two changed commands
 
 **Interfaces:**
-- Consumes: the repository methods of Task 5.
+- Consumes: the repository methods of Task 6, `resolveRunInput` (Task 4).
 - Produces: `listScripts`, `showScript`, `listScriptRuns` as pure functions, in the style of `listSchedules`.
 
 Commands:
@@ -451,7 +507,7 @@ Commands:
 - `talonctl script list [--persona <name>]`: persona, name, newest version and state, approved version, last run.
 - `talonctl script show <persona> <name> [--version <n>] [--code]`: the versions with state and hash. With `--code`, the files of the version from `scripts.root`.
 - `talonctl script runs <persona> <name> [--limit <n>]`: default 20. Trigger, mode, result, error code, call count, start time.
-- `talonctl add-schedule --script <name>`: excludes `--prompt` and `--prompt-file`. If the persona has no script with that name, it fails. If no version is approved, it prints a warning. It needs no approval.
+- `talonctl add-schedule --script <name> [--input <json>]`: excludes `--prompt` and `--prompt-file`. If an approved version exists, the input goes through `resolveRunInput` with its manifest. If the persona has no script with that name, it fails. If no version is approved, it prints a warning. It needs no approval.
 - `talonctl list-schedules` shows the script name of a script schedule.
 
 The commands read the database directly. They do not need a running daemon.
@@ -462,12 +518,12 @@ The commands read the database directly. They do not need a running daemon.
 - [ ] **Step 4: Run** `npx vitest run tests/unit/cli`. Expected: PASS.
 - [ ] **Step 5: Commit** `feat(cli): add talonctl script and script schedules`.
 
-### Task 10: Full flow test and documents (controller)
+### Task 11: Full flow test and documents (controller)
 
 **Files:**
 - Modify: `tests/integration/script-flow-docker.test.ts`, `README.md`, `CLAUDE.md`, `config/talond.example.yaml`, `.claude/skills/manage-schedules/SKILL.md`, `.claude/skills/talon-setup/SKILL.md`
 
-- [ ] **Step 1: Extend the Docker test.** Drive the flow through `HostToolsBridge` with the dispatch that an agent call uses: `script_manage` `save`, `test`, `request_approval`, then `/approve` through the pipeline handler, then `script_run`. Run it for a persona with `allow: ['script.manage:own', 'script.run:*']` and for one with the `script.run` label in `requireApproval`. For the second persona, make sure that the run starts only after `/approve`. Add the schedule path of Task 8 for both.
+- [ ] **Step 1: Extend the Docker test.** Drive the flow through `HostToolsBridge` with the dispatch that an agent call uses: `script_manage` `save`, `test`, `request_approval`, then `/approve` through the pipeline handler, then `script_run`. Run it for a persona with `allow: ['script.manage:own', 'script.run:*']` and for one with the `script.run` label in `requireApproval`. For the second persona, make sure that the run starts only after `/approve`. Add the schedule path of Task 9 for both. Give the test script an `inputSchema` with one boolean, and make sure that the script receives the input of `script_run` and of the schedule.
 - [ ] **Step 2: Run** `TALON_SCRIPT_IT_IMAGE=<digest> npx vitest run tests/integration/script-flow-docker.test.ts`. Expected: PASS, and no container with the label `talon.broker=1` stays behind.
 - [ ] **Step 3: Update the documents.** README: the two capabilities, the meaning of `requireApproval`, the two tools, `talonctl script`, the stop procedure (remove the label or the schedule). CLAUDE.md: tool count, command count, the `script.run` rule. Example configuration: a commented `script.manage:own` and `script.run:*`. The two Claude skills: script schedules and the capabilities.
 - [ ] **Step 4: Run** `npx tsc --noEmit`, `npm run lint` and the unit tests of the changed modules. Expected: clean.

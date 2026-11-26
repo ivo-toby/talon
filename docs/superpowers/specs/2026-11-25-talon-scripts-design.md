@@ -161,6 +161,8 @@ A `script.run` label in `requireApproval` adds one more step for the agent. Each
 
 The agent can attach a script to a schedule. If the script is under `requireApproval`, the user approves that change one time with `/approve <code>`. A schedule that the user makes with `talonctl` needs no approval.
 
+A run can get an input, for example a boolean that selects a mode. The agent passes it to `script_run`, and a schedule keeps it in its payload. The manifest must declare the form of the input in `inputSchema`, and Talon refuses an input that does not match. The schema is part of the approved content. An approval message for a run or for a schedule shows the input.
+
 The approval of a version does not change. Each version needs it before any live run, and no label removes it.
 
 ### Errors and audit
