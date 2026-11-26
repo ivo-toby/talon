@@ -23,3 +23,5 @@ export { createApprovalService } from './approval.js';
 export type { ApprovalService } from './approval.js';
 export { createScriptService, ScriptNotRunError } from './service.js';
 export type { ScriptService, ScriptServiceDeps, ScriptNotRunReason } from './service.js';
+export { scriptRunAccess, SCRIPT_RUN_CAPABILITY_PREFIX } from './run-policy.js';
+export type { ScriptRunAccess } from './run-policy.js';
