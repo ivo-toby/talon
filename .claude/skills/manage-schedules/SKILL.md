@@ -42,6 +42,8 @@ Ask what they want to do:
 8. Run: `npx talonctl add-schedule --persona <name> --channel <channel> --cron "<expr>" --label "<label>" --prompt "<prompt>" --config talond.yaml`
 9. Confirm with schedule ID and next run time.
 
+If the task is an approved Talon script and not a prompt, use `--script <name>` in place of `--prompt`. Add `--input '<json>'` if the script accepts an input. Run `npx talonctl script list --persona <name>` to see the scripts and their approved versions. The persona needs the capability `script.run:<name>` or `script.run:*`, or the scheduled run does not start.
+
 ## Phase 2b: List Schedules
 
 Run: `npx talonctl list-schedules --config talond.yaml`

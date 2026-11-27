@@ -17,7 +17,11 @@ import { ScheduleRepository } from '../../core/database/repositories/schedule-re
 import { PersonaRepository } from '../../core/database/repositories/persona-repository.js';
 import { ChannelRepository } from '../../core/database/repositories/channel-repository.js';
 import { ThreadRepository } from '../../core/database/repositories/thread-repository.js';
+import { ScriptRepository } from '../../core/database/repositories/script-repository.js';
 import { getNextCronTime, isValidCronExpression } from '../../scheduler/cron-evaluator.js';
+import { resolveRunInput } from '../../scripts/run-input.js';
+import type { AuthoredManifest } from '../../scripts/types.js';
+import { SCRIPT_NAME_PATTERN } from './script.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -39,6 +43,13 @@ export interface AddScheduleOptions {
    * `personaLoader.resolveTaskPrompt`. Mutually exclusive with `prompt`.
    */
   promptFile?: string;
+  /**
+   * Name of a stored script of the persona. Mutually exclusive with `prompt`
+   * and `promptFile`. Needs no approval to be scheduled.
+   */
+  script?: string;
+  /** JSON text of the input of a script run. Needs `script`. */
+  input?: string;
   db: Database.Database;
 }
 
@@ -48,6 +59,10 @@ export interface AddScheduleResult {
   expression: string;
   label: string;
   nextRunAt: number;
+  /** The script name of a script schedule, or null. */
+  script: string | null;
+  /** The approved version of the script when the schedule was added, or null. */
+  approvedVersion: number | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -64,18 +79,30 @@ export interface AddScheduleResult {
  * @throws Error with a descriptive message on any failure.
  */
 export function addSchedule(options: AddScheduleOptions): AddScheduleResult {
-  const { db, persona, channel, cron, label, prompt, promptFile } = options;
+  const { db, persona, channel, cron, label, prompt, promptFile, script, input } = options;
 
-  // --- Validate prompt vs promptFile (exactly one required) ---------------
+  // --- Validate prompt vs promptFile vs script ----------------------------
   // Match the host-tool contract (schedule-manage.ts buildSchedulePayload):
-  // a schedule needs either inline prompt text OR a promptFile alias —
-  // never both, never neither. Catching this here keeps the DB clean even
-  // when addSchedule() is called programmatically (e.g. from a setup skill).
-  if (prompt !== undefined && promptFile !== undefined) {
-    throw new Error('addSchedule: prompt and promptFile are mutually exclusive');
-  }
-  if (prompt === undefined && promptFile === undefined) {
-    throw new Error('addSchedule: one of prompt or promptFile is required');
+  // a schedule needs either inline prompt text OR a promptFile alias OR a
+  // script — never two of them, never none. Catching this here keeps the DB
+  // clean even when addSchedule() is called programmatically.
+  if (script !== undefined) {
+    if (prompt !== undefined || promptFile !== undefined) {
+      throw new Error('addSchedule: script is mutually exclusive with prompt and promptFile');
+    }
+    if (!SCRIPT_NAME_PATTERN.test(script)) {
+      throw new Error(`addSchedule: Invalid script name: "${script}"`);
+    }
+  } else {
+    if (input !== undefined) {
+      throw new Error('addSchedule: input needs a script');
+    }
+    if (prompt !== undefined && promptFile !== undefined) {
+      throw new Error('addSchedule: prompt and promptFile are mutually exclusive');
+    }
+    if (prompt === undefined && promptFile === undefined) {
+      throw new Error('addSchedule: one of prompt or promptFile is required');
+    }
   }
 
   // --- Validate cron expression (must be exactly 5 fields) ----------------
@@ -96,6 +123,45 @@ export function addSchedule(options: AddScheduleOptions): AddScheduleResult {
   const personaRow = personaResult.value;
   if (personaRow === null) {
     throw new Error(`Unknown persona: "${persona}"`);
+  }
+
+  // --- Script: look up, read the approved version, check the input -------
+  // The input is parsed here so that text that is not JSON fails before any
+  // row is written. A check against the manifest needs an approved version;
+  // without one the input is stored as given and checked at run time.
+  let scriptInput: unknown;
+  let approvedVersion: number | null = null;
+  if (script !== undefined) {
+    const scripts = new ScriptRepository(db);
+    const scriptResult = scripts.findScript(personaRow.id, script);
+    if (scriptResult.isErr()) {
+      throw new Error(`Database error looking up script: ${scriptResult.error.message}`);
+    }
+    if (scriptResult.value === null) {
+      throw new Error(`Unknown script: "${script}" for persona "${persona}"`);
+    }
+    if (input !== undefined) {
+      try {
+        scriptInput = JSON.parse(input) as unknown;
+      } catch {
+        throw new Error('addSchedule: --input is not valid JSON');
+      }
+    }
+    const approvedResult = scripts.latestApproved(scriptResult.value.id);
+    if (approvedResult.isErr()) {
+      throw new Error(`Database error looking up approved version: ${approvedResult.error.message}`);
+    }
+    const approved = approvedResult.value;
+    if (approved !== null) {
+      approvedVersion = approved.version;
+      if (input !== undefined) {
+        const manifest = JSON.parse(approved.manifest) as AuthoredManifest;
+        const checked = resolveRunInput(manifest, scriptInput);
+        if (checked.isErr()) {
+          throw new Error(`addSchedule: ${checked.error.message}`);
+        }
+      }
+    }
   }
 
   // --- Look up channel by name -------------------------------------------
@@ -142,14 +208,22 @@ export function addSchedule(options: AddScheduleOptions): AddScheduleResult {
 
   // --- Insert schedule row -----------------------------------------------
   // Payload shape matches what the scheduler reads at fire time:
-  //   { label, prompt }      — inline text used as-is
-  //   { label, promptFile }  — basename resolved to prompts/<name>.md content
-  // The two are mutually exclusive (validated above).
+  //   { label, prompt }            — inline text used as-is
+  //   { label, promptFile }        — basename resolved to prompts/<name>.md content
+  //   { label, script, input? }    — stored script; input only when given
+  // The three are mutually exclusive (validated above).
   const scheduleId = uuidv4();
   const scheduleRepo = new ScheduleRepository(db);
-  const payload = JSON.stringify(
-    promptFile !== undefined ? { label, promptFile } : { label, prompt },
-  );
+  let payload: string;
+  if (script !== undefined) {
+    payload = JSON.stringify(
+      input !== undefined ? { label, script, input: scriptInput } : { label, script },
+    );
+  } else {
+    payload = JSON.stringify(
+      promptFile !== undefined ? { label, promptFile } : { label, prompt },
+    );
+  }
 
   const insertResult = scheduleRepo.insert({
     id: scheduleId,
@@ -173,6 +247,8 @@ export function addSchedule(options: AddScheduleOptions): AddScheduleResult {
     expression: cron,
     label,
     nextRunAt,
+    script: script ?? null,
+    approvedVersion,
   };
 }
 
@@ -274,6 +350,8 @@ export async function addScheduleCommand(options: {
   label: string;
   prompt?: string;
   promptFile?: string;
+  script?: string;
+  input?: string;
   configPath?: string;
 }): Promise<void> {
   const { loadConfig } = await import('../../core/config/config-loader.js');
@@ -308,6 +386,8 @@ export async function addScheduleCommand(options: {
       label: options.label,
       ...(options.prompt !== undefined ? { prompt: options.prompt } : {}),
       ...(options.promptFile !== undefined ? { promptFile: options.promptFile } : {}),
+      ...(options.script !== undefined ? { script: options.script } : {}),
+      ...(options.input !== undefined ? { input: options.input } : {}),
       db,
     });
 
@@ -317,6 +397,14 @@ export async function addScheduleCommand(options: {
     console.log(`  Expression: ${result.expression}`);
     console.log(`  Label:      ${result.label}`);
     console.log(`  Next run:   ${new Date(result.nextRunAt).toISOString()}`);
+    if (result.script !== null) {
+      console.log(`  Script:     ${result.script}`);
+      if (result.approvedVersion === null) {
+        console.warn(
+          `Warning: script "${result.script}" has no approved version yet. Runs will not start until one is approved.`,
+        );
+      }
+    }
   } catch (error) {
     console.error(`Error: ${(error as Error).message}`);
     process.exit(1);

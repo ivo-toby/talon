@@ -10,7 +10,14 @@ import {
   filterAllowedTools,
   isToolAllowed,
   ALL_HOST_TOOLS,
+  HOST_TOOL_REGISTRY,
+  CAPABILITY_DESCRIPTIONS,
+  ALL_CAPABILITY_LABELS,
 } from '../../../src/tools/tool-filter.js';
+import {
+  getHostToolRequestTimeoutMs,
+  SCRIPT_TOOL_REQUEST_TIMEOUT_MS,
+} from '../../../src/tools/tool-timeouts.js';
 import type { ResolvedCapabilities } from '../../../src/personas/persona-types.js';
 
 // ---------------------------------------------------------------------------
@@ -377,10 +384,11 @@ describe('channel.react capability', () => {
 });
 
 describe('ALL_HOST_TOOLS', () => {
-  it('contains all sixteen host tools', () => {
-    expect(ALL_HOST_TOOLS).toHaveLength(16);
+  it('contains all eighteen host tools', () => {
+    expect(ALL_HOST_TOOLS).toHaveLength(18);
     expect(ALL_HOST_TOOLS).toContain('channel.react');
     expect(ALL_HOST_TOOLS).toContain('schedule.manage');
+    expect(ALL_HOST_TOOLS).toContain('script.run');
     expect(ALL_HOST_TOOLS).toContain('channel.send');
     expect(ALL_HOST_TOOLS).toContain('channel.list');
     expect(ALL_HOST_TOOLS).toContain('channel.broadcast');
@@ -395,5 +403,38 @@ describe('ALL_HOST_TOOLS', () => {
     expect(ALL_HOST_TOOLS).toContain('subagent.invoke');
     expect(ALL_HOST_TOOLS).toContain('subagent.background');
     expect(ALL_HOST_TOOLS).toContain('image.lookup');
+  });
+});
+
+describe('script.manage registry entry', () => {
+  it('is registered with the capability prefix and the MCP name', () => {
+    expect(HOST_TOOL_REGISTRY).toContainEqual({
+      capabilityPrefix: 'script.manage',
+      internalName: 'script.manage',
+      mcpName: 'script_manage',
+    });
+    expect(ALL_HOST_TOOLS).toContain('script.manage');
+  });
+
+  it('has a capability description for script.manage:own', () => {
+    const entry = CAPABILITY_DESCRIPTIONS.find((d) => d.toolPrefix === 'script.manage');
+    expect(entry?.mcpName).toBe('script_manage');
+    expect(entry?.labels).toEqual([
+      { label: 'script.manage:own', description: 'Write, test and send scripts for approval' },
+    ]);
+    expect(ALL_CAPABILITY_LABELS).toContain('script.manage:own');
+  });
+
+  it('is offered only to a persona with the capability', () => {
+    const allowed = filterAllowedMcpTools({ allow: ['script.manage:own'], requireApproval: [] });
+    expect(allowed).toContain('script_manage');
+    expect(filterAllowedMcpTools({ allow: ['schedule.manage'], requireApproval: [] })).not.toContain(
+      'script_manage',
+    );
+  });
+
+  it('uses the long timeout for script tools', () => {
+    expect(getHostToolRequestTimeoutMs('script.manage', {})).toBe(SCRIPT_TOOL_REQUEST_TIMEOUT_MS);
+    expect(getHostToolRequestTimeoutMs('script.run', {})).toBe(11 * 60 * 1000);
   });
 });

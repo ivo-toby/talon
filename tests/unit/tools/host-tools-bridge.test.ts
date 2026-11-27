@@ -1658,4 +1658,98 @@ describe('HostToolsBridge', () => {
       expect(result.error).toContain('image.read:thread');
     });
   });
+  describe('executeInProcess', () => {
+    const inProcessContext = {
+      runId: 'script-run-1',
+      threadId: 'thread-001',
+      personaId: 'persona-001',
+      requestId: 'req-inproc',
+    };
+
+    const setCapabilities = (allow: string[], requireApproval: string[] = []): void => {
+      vi.mocked(mockCtx.personaLoader.getByName).mockReturnValue(ok({
+        config: { skills: [] },
+        resolvedCapabilities: { allow, requireApproval },
+      }) as any);
+    };
+
+    it('reaches the handler without a bridge secret or a run row', async () => {
+      bridge = new HostToolsBridge(mockCtx);
+      const result = await bridge.executeInProcess('memory.access', { operation: 'list' }, inProcessContext);
+      expect(result.status).toBe('success');
+      expect(result.denied).toBeUndefined();
+      expect(result.result).toHaveProperty('items');
+      expect(mockCtx.repos.memory.findByThread).toHaveBeenCalledWith('thread-001', undefined);
+    });
+
+    it('refuses a persona without the capability and marks the result denied', async () => {
+      setCapabilities(['channel.send:*']);
+      bridge = new HostToolsBridge(mockCtx);
+      const result = await bridge.executeInProcess('memory.access', { operation: 'list' }, inProcessContext);
+      expect(result.status).toBe('error');
+      expect(result.denied).toBe(true);
+      expect(result.error).toContain('is not allowed for persona');
+      expect(mockCtx.repos.memory.findByThread).not.toHaveBeenCalled();
+    });
+
+    it('fails closed when the persona cannot be resolved', async () => {
+      vi.mocked(mockCtx.repos.persona.findById).mockReturnValue(ok(null) as any);
+      bridge = new HostToolsBridge(mockCtx);
+      const result = await bridge.executeInProcess('memory.access', { operation: 'list' }, inProcessContext);
+      expect(result.denied).toBe(true);
+    });
+
+    it('refuses a tool the persona holds only under requireApproval', async () => {
+      setCapabilities([], ['memory.access']);
+      bridge = new HostToolsBridge(mockCtx);
+      const result = await bridge.executeInProcess('memory.access', { operation: 'list' }, inProcessContext);
+      expect(result.status).toBe('error');
+      expect(result.denied).toBe(true);
+      expect(result.error).toContain('requires approval');
+      expect(mockCtx.repos.memory.findByThread).not.toHaveBeenCalled();
+    });
+
+    it('refuses a tool the persona holds under both allow and requireApproval', async () => {
+      setCapabilities(['memory.access'], ['memory.access']);
+      bridge = new HostToolsBridge(mockCtx);
+      const result = await bridge.executeInProcess('memory.access', { operation: 'list' }, inProcessContext);
+      expect(result.status).toBe('error');
+      expect(result.denied).toBe(true);
+      expect(result.error).toContain('requires approval');
+      expect(mockCtx.repos.memory.findByThread).not.toHaveBeenCalled();
+    });
+
+    it('turns a handler exception into an error result', async () => {
+      vi.mocked(mockCtx.repos.memory.findByThread).mockImplementation(() => {
+        throw new Error('db exploded');
+      });
+      bridge = new HostToolsBridge(mockCtx);
+      const result = await bridge.executeInProcess('memory.access', { operation: 'list' }, inProcessContext);
+      expect(result.status).toBe('error');
+      expect(result.denied).toBeUndefined();
+      expect(result.error).toContain('db exploded');
+    });
+
+    it('returns a timeout result when the handler outlives the time limit', async () => {
+      vi.useFakeTimers();
+      try {
+        // The memory handler is synchronous, so stall the dispatch itself.
+        bridge = new HostToolsBridge(mockCtx);
+        vi.spyOn(bridge as any, 'dispatch').mockReturnValue(new Promise(() => {}));
+        const pending = bridge.executeInProcess('memory.access', { operation: 'list' }, inProcessContext);
+        await vi.advanceTimersByTimeAsync(5 * 60 * 1000 + 1);
+        const result = await pending;
+        expect(result.status).toBe('timeout');
+        expect(result.denied).toBeUndefined();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('accepts the MCP spelling of a tool name', async () => {
+      bridge = new HostToolsBridge(mockCtx);
+      const result = await bridge.executeInProcess('memory_access', { operation: 'list' }, inProcessContext);
+      expect(result.status).toBe('success');
+    });
+  });
 });

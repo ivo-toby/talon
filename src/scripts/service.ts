@@ -1,0 +1,1759 @@
+/**
+ * The script service: the one object that the daemon and the agent tools call.
+ *
+ * It saves, tests and puts scripts up for approval, decides approval commands
+ * from the chat, and runs approved scripts for the scheduler. The script and
+ * everything it produces are untrusted. An approval is bound to one content
+ * hash, and the model never gets an approval code: the code leaves this module
+ * only inside the `send` call.
+ */
+
+import { randomUUID } from 'node:crypto';
+import { err, ok, type Result } from 'neverthrow';
+import type { Logger } from 'pino';
+import type { InboundEvent } from '../channels/channel-types.js';
+import type { ScriptsConfig } from '../core/config/config-schema.js';
+import type {
+  ScriptRepository,
+  ScriptVersionRow,
+} from '../core/database/repositories/script-repository.js';
+import { createLogger } from '../core/logging/index.js';
+import { ExecutionBrokerError, type ExecutionBroker } from '../execution-broker/index.js';
+import type { ApprovalService, CancelOutcome, Decision } from './approval.js';
+import { SCRIPT_PROFILE, SCRIPT_WORKSPACE } from './config.js';
+import type { ResolvedCapabilities } from '../personas/persona-types.js';
+import { runScript } from './runner.js';
+import { scriptRunAccess } from './run-policy.js';
+import type { ScriptStore, ScriptFile, StoredVersion } from './store.js';
+import { resolveRunInput } from './run-input.js';
+import { buildApprovalSummary, clean } from './summary.js';
+import {
+  runDryRun,
+  runUnitCases,
+  type DryRunOutcome,
+  type RunDeps,
+  type UnitOutcome,
+} from './test-runner.js';
+import {
+  ScriptError,
+  type AuthoredManifest,
+  type RunContext,
+  type RunProvider,
+  type ScriptErrorCode,
+  type CallRecord,
+  type ProviderOptions,
+  type ScriptToolInfo,
+  type ScriptRunReport,
+  type ToolClass,
+  type VersionState,
+} from './types.js';
+
+export interface ScriptServiceDeps {
+  store: ScriptStore;
+  repo: ScriptRepository;
+  approval: ApprovalService;
+  broker: Pick<ExecutionBroker, 'createLease' | 'executeStream' | 'revoke'>;
+  config: ScriptsConfig;
+  createProvider(
+    context: RunContext,
+    manifest: AuthoredManifest,
+    options?: ProviderOptions,
+  ): Promise<Result<RunProvider, ScriptError>>;
+  /** Sends a text to a chat: the approval message and failure notices. */
+  send(
+    channelName: string,
+    externalThreadId: string,
+    body: string,
+  ): Promise<Result<void, ScriptError>>;
+  /** The chat that a thread belongs to, or `undefined`. Synchronous. */
+  resolveChat(threadId: string): { channelName: string; externalThreadId: string } | undefined;
+  audit(entry: {
+    action: string;
+    personaId: string;
+    threadId: string;
+    runId: string;
+    tool?: string;
+    details: Record<string, unknown>;
+  }): void;
+  /** Capabilities of a persona by database ID, or `undefined` if it is not loaded. Never throws. */
+  capabilities(personaId: string): ResolvedCapabilities | undefined;
+  /** Writes an approved schedule change. Bound to the schedule tool by the wiring. */
+  applyScheduleChange(input: {
+    personaId: string;
+    threadId: string;
+    scriptName: string;
+    change: ScriptScheduleChange;
+  }): Result<{ scheduleId: string }, ScriptError>;
+  now?: () => number;
+  logger?: Logger;
+}
+
+export interface ScriptService {
+  save(input: {
+    personaId: string;
+    threadId: string;
+    files: ScriptFile[];
+  }): Result<StoredVersion, ScriptError>;
+  test(input: {
+    personaId: string;
+    versionId: string;
+  }): Promise<
+    Result<{ unit: UnitOutcome[]; dryRun?: DryRunOutcome; state: VersionState }, ScriptError>
+  >;
+  /** Sends the approval message to the chat of the thread that saved the version. */
+  requestApproval(input: {
+    personaId: string;
+    versionId: string;
+  }): Promise<Result<'sent' | 'already-sent', ScriptError>>;
+  /**
+   * True if the event is an approval command, holds a valid code of its chat,
+   * or starts like a command, in a chat with an open approval. Synchronous,
+   * never throws.
+   */
+  matchesInbound(event: InboundEvent): boolean;
+  /** An object means the event is consumed. Never rejects. */
+  handleInbound(event: InboundEvent): Promise<{ reply?: string } | undefined>;
+  runScheduled(input: {
+    personaId: string;
+    threadId: string;
+    scriptName: string;
+    scheduleId: string;
+    input?: unknown;
+  }): Promise<Result<ScriptRunReport | 'skipped', ScriptError>>;
+  /**
+   * A live run that the agent starts. `access` comes from the trusted run
+   * context: `allowed` runs now, `approval` asks the chat first and returns
+   * `awaiting-approval`. The capability check is the caller's.
+   */
+  runByAgent(input: {
+    personaId: string;
+    threadId: string;
+    scriptName: string;
+    access: 'allowed' | 'approval';
+    input?: unknown;
+  }): Promise<Result<ScriptRunReport | 'awaiting-approval', ScriptError>>;
+  /**
+   * Asks the chat of the conversation to approve a schedule that runs the
+   * approved version of a script. One open request for each version: the same
+   * request again sends nothing. The input, if present, goes through the manifest.
+   */
+  requestScheduleChange(input: {
+    personaId: string;
+    threadId: string;
+    scriptName: string;
+    change: ScriptScheduleChange;
+    /** For an update: the label of the schedule now, and whether it runs a prompt. */
+    previous?: { label: string; wasPrompt: boolean };
+  }): Promise<Result<'awaiting-approval', ScriptError>>;
+  /** The input of a schedule, checked against the manifest of the newest approved version. */
+  checkScheduleInput(input: {
+    personaId: string;
+    scriptName: string;
+    input: unknown;
+  }): Result<unknown, ScriptError>;
+  notifyFailure(input: {
+    threadId: string;
+    scriptName: string;
+    errorCode: string;
+    reason?: ScriptNotRunReason;
+  }): Promise<void>;
+  hasApproved(personaId: string, scriptName: string): boolean;
+  /** True if the last finished scheduled run of this script was a failure. */
+  lastScheduledRunFailed(personaId: string, scriptName: string): boolean;
+  /** The scripts of a persona with their newest version and last live run. */
+  list(personaId: string): Result<ScriptInfo[], ScriptError>;
+  /** The files of one version, the newest if `version` is absent. */
+  show(input: {
+    personaId: string;
+    scriptName: string;
+    version?: number;
+  }): Result<{ info: ScriptVersionInfo; files: ScriptFile[] }, ScriptError>;
+  /**
+   * The tools that a script of this persona can call. Connects the MCP servers
+   * of the persona for the length of the call. With `name`, one entry with its input schema.
+   */
+  listTools(input: {
+    personaId: string;
+    threadId: string;
+    name?: string;
+  }): Promise<Result<ScriptToolInfo[], ScriptError>>;
+  /** Marks runs that a crashed daemon left open as failed. Call one time at start. */
+  recoverStaleRuns(): Result<number, ScriptError>;
+  /**
+   * Refuses new runs and tests, revokes the leases of the active runs (so their
+   * containers go away) and waits at most 10 seconds for them to settle. Never throws.
+   */
+  shutdown(): Promise<void>;
+}
+
+export type { ScriptToolInfo } from './types.js';
+
+/** A change to a schedule that runs a script. */
+export interface ScriptScheduleChange {
+  action: 'create' | 'update';
+  /** For update. */
+  scheduleId?: string;
+  cronExpr?: string;
+  label?: string;
+  /** Stored in the schedule payload as `input`. `null` is a real input; no key means none. */
+  input?: unknown;
+}
+
+export interface ScriptInfo {
+  name: string;
+  latest: { version: number; state: VersionState; versionId: string };
+  approvedVersion?: number;
+  lastRun?: { ok: boolean; errorCode?: string; endedAt: number; trigger: string };
+}
+
+export type ScriptVersionInfo = ScriptInfo['latest'] & { name: string; contentHash: string };
+
+/**
+ * Why a scheduled run did not start: the files changed, no version is approved,
+ * or the persona has no `script.run` capability for the script.
+ */
+export type ScriptNotRunReason = 'changed' | 'not-approved' | 'not-permitted' | 'bad-input';
+
+/** A `SCRIPT_FAILED` error of `runScheduled` for a run that did not start. */
+export class ScriptNotRunError extends ScriptError {
+  readonly reason: ScriptNotRunReason;
+
+  constructor(reason: ScriptNotRunReason, cause?: Error) {
+    super(
+      'SCRIPT_FAILED',
+      reason === 'changed'
+        ? 'the files changed after the approval'
+        : reason === 'not-permitted'
+          ? 'the persona has no script.run capability for this script'
+          : reason === 'bad-input'
+            ? 'the input of the schedule does not match the script'
+            : 'no approved version of this script',
+      cause,
+    );
+    this.reason = reason;
+  }
+}
+
+const MAX_REPORT_CHARS = 1_000_000;
+/** The longest approval message for a run that the agent asks for. */
+const MAX_RUN_APPROVAL_CHARS = 3_500;
+/** The longest cron expression and label that an approval message shows. */
+const CRON_MAX = 100;
+const LABEL_MAX = 200;
+const CODE_CHARS = 8;
+const SHUTDOWN_WAIT_MS = 10_000;
+const NAME_MAX = 60;
+const KNOWN_CODES: ReadonlySet<string> = new Set<ScriptErrorCode>([
+  'INVALID_ARGUMENT',
+  'NOT_IN_MANIFEST',
+  'UNKNOWN_TOOL',
+  'NO_STUB',
+  'TOOL_FAILED',
+  'RESULT_TOO_LARGE',
+  'CALL_LIMIT',
+  'PROTOCOL',
+  'SCRIPT_FAILED',
+  'TIMEOUT',
+  'SANDBOX',
+]);
+
+const DESCRIPTION_MAX = 200;
+/** Runs of a script that `list` looks through for the last live run. */
+const LAST_RUN_WINDOW = 20;
+const unknownScript = (): ScriptError => new ScriptError('INVALID_ARGUMENT', 'unknown script');
+
+/**
+ * A description comes from an external server. Control characters go first,
+ * so they cannot count against the limit or reach the agent.
+ */
+function cleanDescription(description: string | undefined): string | undefined {
+  if (description === undefined) return undefined;
+  const text = description
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, '')
+    .slice(0, DESCRIPTION_MAX);
+  return text.length > 0 ? text : undefined;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+const unknownVersion = (): ScriptError =>
+  new ScriptError('INVALID_ARGUMENT', 'unknown script version');
+const sandbox = (cause?: unknown): ScriptError =>
+  new ScriptError(
+    'SANDBOX',
+    'the script service failed',
+    cause instanceof Error ? cause : cause === undefined ? undefined : new Error('non-error cause'),
+  );
+
+function cleanName(name: string | undefined): string {
+  return (name ?? '').replace(/[^a-z0-9-]/g, '').slice(0, NAME_MAX);
+}
+
+/** The notice for a run that did not run or failed. `scheduled` adds the sentence about the schedule. */
+function failureText(input: {
+  name: string;
+  code: string;
+  reason?: ScriptNotRunReason;
+  scheduled: boolean;
+}): string {
+  const { name, code } = input;
+  if (input.reason === 'changed') {
+    return `Script "${name}" did not run: its files changed after the approval.`;
+  }
+  if (input.reason === 'not-approved') {
+    return `Script "${name}" did not run: it has no approved version.`;
+  }
+  if (input.reason === 'not-permitted') {
+    return `Script ${name} did not run: the persona has no script.run capability for it.`;
+  }
+  if (input.reason === 'bad-input') {
+    return `Script ${name} did not run: the input of the schedule does not match the script.`;
+  }
+  return input.scheduled
+    ? `Script "${name}" failed (${code}). It stays scheduled. I will tell you again only if it fails after a success.`
+    : `Script "${name}" failed (${code}).`;
+}
+
+function isReport(value: unknown): value is ScriptRunReport {
+  if (typeof value !== 'object' || value === null) return false;
+  const report = value as { ok?: unknown; calls?: unknown };
+  return typeof report.ok === 'boolean' && Array.isArray(report.calls);
+}
+
+export function createScriptService(deps: ScriptServiceDeps): ScriptService {
+  const { store, repo, approval, config } = deps;
+  const now = deps.now ?? ((): number => Date.now());
+  const logger = deps.logger ?? createLogger({ level: 'info', pretty: false });
+  const active = new Set<string>();
+  /** `personaId \0 scriptName` of scripts whose last scheduled run failed or did not start. */
+  const failedScripts = new Set<string>();
+  /** Version ids with a `test` in flight. */
+  const testing = new Set<string>();
+
+  let closed = false;
+  /** Leases of the runs in flight, so `shutdown` can revoke them. */
+  const leases = new Set<string>();
+  /** Runs and tests in flight, so `shutdown` can wait for them. */
+  const inFlight = new Set<Promise<unknown>>();
+  type Broker = ScriptServiceDeps['broker'];
+  const broker: Broker = {
+    async createLease(input): ReturnType<Broker['createLease']> {
+      if (closed) {
+        return err(new ExecutionBrokerError('BACKEND_FAILURE', 'the script service is closed'));
+      }
+      const lease = await deps.broker.createLease(input);
+      if (lease.isOk()) {
+        if (closed) {
+          // `shutdown` started while the lease was made: it cannot see this one.
+          await deps.broker.revoke(lease.value.leaseId);
+        } else {
+          leases.add(lease.value.leaseId);
+        }
+      }
+      return lease;
+    },
+    executeStream: (request, handlers) => deps.broker.executeStream(request, handlers),
+    revoke(leaseId): ReturnType<Broker['revoke']> {
+      leases.delete(leaseId);
+      return deps.broker.revoke(leaseId);
+    },
+  };
+
+  /** Runs `fn` as tracked work, or refuses it when the service is closed. */
+  function tracked<T>(fn: () => Promise<Result<T, ScriptError>>): Promise<Result<T, ScriptError>> {
+    if (closed) {
+      return Promise.resolve(err(new ScriptError('SANDBOX', 'the script service is closed')));
+    }
+    const work = guard(fn);
+    inFlight.add(work);
+    void work.finally(() => inFlight.delete(work));
+    return work;
+  }
+
+  const runDeps: RunDeps = {
+    broker,
+    profile: SCRIPT_PROFILE,
+    workspace: SCRIPT_WORKSPACE,
+    timeoutMs: config.runTimeoutMs,
+    maxCalls: config.maxCallsPerRun,
+  };
+
+  function audit(entry: Parameters<ScriptServiceDeps['audit']>[0]): void {
+    try {
+      deps.audit(entry);
+    } catch (error) {
+      logger.error({ err: error, action: entry.action }, 'script audit failed');
+    }
+  }
+
+  async function closeProvider(provider: RunProvider): Promise<void> {
+    try {
+      await provider.close();
+    } catch (error) {
+      logger.error({ err: error }, 'script provider close failed');
+    }
+  }
+
+  /** Never throws. Returns true if the row was finished. */
+  function finishRun(
+    runId: string,
+    runOk: boolean,
+    errorCode: string | null,
+    calls: number,
+  ): boolean {
+    try {
+      const done = repo.finishRun(runId, runOk, errorCode, calls, now());
+      if (done.isErr()) {
+        logger.error({ runId }, 'could not finish a script run row');
+        return false;
+      }
+      return true;
+    } catch (error) {
+      logger.error({ err: error, runId }, 'could not finish a script run row');
+      return false;
+    }
+  }
+
+  /** Loads a version and checks that the persona owns its script. */
+  function loadOwned(
+    personaId: string,
+    versionId: string,
+  ): Result<{ version: StoredVersion; row: ScriptVersionRow }, ScriptError> {
+    const loaded = store.load(versionId);
+    if (loaded.isErr()) return err(loaded.error);
+    const script = repo.getScript(loaded.value.scriptId);
+    if (script.isErr()) return err(sandbox(script.error));
+    if (!script.value || script.value.persona_id !== personaId) return err(unknownVersion());
+    const row = repo.getVersion(versionId);
+    if (row.isErr()) return err(sandbox(row.error));
+    if (!row.value) return err(unknownVersion());
+    return ok({ version: loaded.value, row: row.value });
+  }
+
+  /** Ends a test: the one state write of `test`. */
+  function recordTest(
+    versionId: string,
+    report: string | null,
+    to: 'tested' | 'draft',
+  ): Result<void, ScriptError> {
+    const recorded = repo.recordTestResult(versionId, { report, to });
+    if (recorded.isErr()) return err(sandbox(recorded.error));
+    if (!recorded.value) {
+      return err(new ScriptError('INVALID_ARGUMENT', 'the version changed during the test'));
+    }
+    return ok(undefined);
+  }
+
+  function startRun(
+    versionId: string,
+    mode: string,
+    trigger: 'test' | 'dry-run' | 'schedule' | 'agent',
+    scheduleId?: string,
+  ): Result<string, ScriptError> {
+    const id = randomUUID();
+    const inserted = repo.insertRun({
+      id,
+      versionId,
+      mode,
+      trigger,
+      scheduleId: scheduleId ?? null,
+      startedAt: now(),
+    });
+    return inserted.isErr() ? err(sandbox(inserted.error)) : ok(id);
+  }
+
+  async function testImpl(input: {
+    personaId: string;
+    versionId: string;
+  }): Promise<
+    Result<{ unit: UnitOutcome[]; dryRun?: DryRunOutcome; state: VersionState }, ScriptError>
+  > {
+    const owned = loadOwned(input.personaId, input.versionId);
+    if (owned.isErr()) return err(owned.error);
+    const { version } = owned.value;
+    if (version.state !== 'draft' && version.state !== 'tested') {
+      return err(
+        new ScriptError('INVALID_ARGUMENT', 'only a draft or tested version can be tested'),
+      );
+    }
+    if (testing.has(version.versionId)) {
+      return err(new ScriptError('INVALID_ARGUMENT', 'the version is being tested'));
+    }
+    testing.add(version.versionId);
+    const rows = new Set<string>();
+    let provider: RunProvider | undefined;
+    try {
+      const verified = store.verify(version);
+      if (verified.isErr()) return err(verified.error);
+
+      const context: RunContext = {
+        personaId: input.personaId,
+        threadId: version.threadId,
+        scriptRunId: randomUUID(),
+        scriptName: version.manifest.name,
+        channels: version.manifest.channels,
+        versionDir: version.dir,
+      };
+      const created = await deps.createProvider(context, version.manifest);
+      if (created.isErr()) return err(created.error);
+      const usable = created.value;
+      provider = usable;
+
+      const cases = store.readUnitCases(version);
+      if (cases.isErr()) return err(cases.error);
+
+      const begin = (mode: string, trigger: 'test' | 'dry-run'): Result<string, ScriptError> => {
+        const row = startRun(version.versionId, mode, trigger);
+        if (row.isOk()) rows.add(row.value);
+        return row;
+      };
+      const end = (id: string, runOk: boolean, code: string | null, calls: number): void => {
+        if (finishRun(id, runOk, code, calls)) rows.delete(id);
+      };
+
+      const unitRun = begin('unit', 'test');
+      if (unitRun.isErr()) return err(unitRun.error);
+      const unit = await runUnitCases(runDeps, version, input.personaId, cases.value, (name) =>
+        usable.describe(name),
+      );
+      if (unit.isErr()) {
+        end(unitRun.value, false, unit.error.scriptCode, 0);
+        return err(unit.error);
+      }
+      const allPassed = unit.value.every((outcome) => outcome.passed);
+      end(unitRun.value, allPassed, allPassed ? null : 'SCRIPT_FAILED', unit.value.length);
+
+      if (!allPassed) {
+        const moved = recordTest(version.versionId, null, 'draft');
+        if (moved.isErr()) return err(moved.error);
+        return ok({ unit: unit.value, state: 'draft' });
+      }
+
+      const dryRow = begin('dry-run', 'dry-run');
+      if (dryRow.isErr()) return err(dryRow.error);
+      const dry = await runDryRun(runDeps, version, input.personaId, usable);
+      if (dry.isErr()) {
+        end(dryRow.value, false, dry.error.scriptCode, 0);
+        return err(dry.error);
+      }
+      const { report, didWork } = dry.value;
+      end(
+        dryRow.value,
+        report.ok,
+        report.ok ? null : (report.errorCode ?? 'SCRIPT_FAILED'),
+        report.calls.length,
+      );
+
+      if (report.ok && didWork) {
+        const text = JSON.stringify(report);
+        if (text.length > MAX_REPORT_CHARS) {
+          const moved = recordTest(version.versionId, null, 'draft');
+          if (moved.isErr()) return err(moved.error);
+          return err(new ScriptError('RESULT_TOO_LARGE', 'the dry-run report is too large'));
+        }
+        const moved = recordTest(version.versionId, text, 'tested');
+        if (moved.isErr()) return err(moved.error);
+        return ok({ unit: unit.value, dryRun: dry.value, state: 'tested' });
+      }
+      const moved = recordTest(version.versionId, null, 'draft');
+      if (moved.isErr()) return err(moved.error);
+      return ok({ unit: unit.value, dryRun: dry.value, state: 'draft' });
+    } finally {
+      for (const id of rows) finishRun(id, false, 'SANDBOX', 0);
+      if (provider) await closeProvider(provider);
+      testing.delete(version.versionId);
+    }
+  }
+
+  /** The class of each manifest tool, from a provider that is closed again at once. */
+  async function describeTools(
+    personaId: string,
+    version: StoredVersion,
+  ): Promise<Result<Map<string, ToolClass | undefined>, ScriptError>> {
+    const created = await deps.createProvider(
+      {
+        personaId,
+        threadId: version.threadId,
+        scriptRunId: randomUUID(),
+        scriptName: version.manifest.name,
+        channels: version.manifest.channels,
+        versionDir: version.dir,
+      },
+      version.manifest,
+    );
+    if (created.isErr()) return err(created.error);
+    try {
+      return ok(
+        new Map(
+          version.manifest.tools.map((tool) => [tool, created.value.describe(tool)?.toolClass]),
+        ),
+      );
+    } finally {
+      await closeProvider(created.value);
+    }
+  }
+
+  function listImpl(personaId: string): Result<ScriptInfo[], ScriptError> {
+    const scripts = repo.listScripts(personaId);
+    if (scripts.isErr()) return err(sandbox(scripts.error));
+    const out: ScriptInfo[] = [];
+    for (const script of scripts.value) {
+      const versions = repo.listVersions(script.id);
+      if (versions.isErr()) return err(sandbox(versions.error));
+      const latest = versions.value[0];
+      if (!latest) continue;
+      const approved = repo.latestApproved(script.id);
+      if (approved.isErr()) return err(sandbox(approved.error));
+      const runs = repo.listRuns(script.id, LAST_RUN_WINDOW);
+      if (runs.isErr()) return err(sandbox(runs.error));
+      const last = runs.value.find(
+        (r) => r.ended_at !== null && (r.trigger === 'schedule' || r.trigger === 'agent'),
+      );
+      out.push({
+        name: script.name,
+        latest: { version: latest.version, state: latest.state, versionId: latest.id },
+        ...(approved.value ? { approvedVersion: approved.value.version } : {}),
+        ...(last && last.ended_at !== null
+          ? {
+              lastRun: {
+                ok: last.ok === 1,
+                ...(last.error_code ? { errorCode: last.error_code } : {}),
+                endedAt: last.ended_at,
+                trigger: last.trigger,
+              },
+            }
+          : {}),
+      });
+    }
+    return ok(out);
+  }
+
+  function showImpl(input: {
+    personaId: string;
+    scriptName: string;
+    version?: number;
+  }): Result<{ info: ScriptVersionInfo; files: ScriptFile[] }, ScriptError> {
+    // An unknown name, the script of another persona and an unknown number look the same.
+    const script = repo.findScript(input.personaId, input.scriptName);
+    if (script.isErr()) return err(sandbox(script.error));
+    if (!script.value) return err(unknownScript());
+    if (input.version !== undefined && !Number.isInteger(input.version)) {
+      return err(unknownScript());
+    }
+    const row =
+      input.version === undefined
+        ? repo.latestVersion(script.value.id)
+        : repo.getVersionByNumber(script.value.id, input.version);
+    if (row.isErr()) return err(sandbox(row.error));
+    if (!row.value) return err(unknownScript());
+    const stored = store.load(row.value.id);
+    if (stored.isErr()) return err(stored.error);
+    const files = store.readFiles(stored.value);
+    if (files.isErr()) return err(files.error);
+    return ok({
+      info: {
+        name: script.value.name,
+        version: row.value.version,
+        state: row.value.state,
+        versionId: row.value.id,
+        contentHash: row.value.content_hash,
+      },
+      files: files.value,
+    });
+  }
+
+  async function listToolsImpl(input: {
+    personaId: string;
+    threadId: string;
+    name?: string;
+  }): Promise<Result<ScriptToolInfo[], ScriptError>> {
+    const created = await deps.createProvider(
+      {
+        personaId: input.personaId,
+        threadId: input.threadId,
+        scriptRunId: randomUUID(),
+        scriptName: 'tool-listing',
+        channels: [],
+        versionDir: '',
+      },
+      {
+        name: 'tool-listing',
+        description: 'Lists tools.',
+        tools: [],
+        channels: [],
+        dryRunInput: null,
+      },
+      { allServers: true },
+    );
+    if (created.isErr()) return err(created.error);
+    const provider = created.value;
+    try {
+      const tools: ScriptToolInfo[] = provider
+        .list()
+        .map(({ name, toolClass, description }) => {
+          const text = cleanDescription(description);
+          return { name, toolClass, ...(text !== undefined ? { description: text } : {}) };
+        })
+        .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+      if (input.name === undefined) return ok(tools);
+      const one = tools.find((t) => t.name === input.name);
+      if (!one) return err(new ScriptError('INVALID_ARGUMENT', 'unknown tool'));
+      const schema = provider.inputSchema(one.name);
+      return ok([schema === undefined ? one : { ...one, inputSchema: schema }]);
+    } finally {
+      await closeProvider(provider);
+    }
+  }
+
+  async function requestApprovalImpl(input: {
+    personaId: string;
+    versionId: string;
+  }): Promise<Result<'sent' | 'already-sent', ScriptError>> {
+    const owned = loadOwned(input.personaId, input.versionId);
+    if (owned.isErr()) return err(owned.error);
+    const { version, row } = owned.value;
+    const chat = deps.resolveChat(version.threadId);
+    if (!chat) {
+      return err(new ScriptError('INVALID_ARGUMENT', 'the thread of the version has no chat'));
+    }
+    if (testing.has(version.versionId)) {
+      return err(new ScriptError('INVALID_ARGUMENT', 'the version is being tested'));
+    }
+    if (version.state !== 'tested' && version.state !== 'awaiting-approval') {
+      return err(new ScriptError('INVALID_ARGUMENT', 'version cannot be put up for approval'));
+    }
+    // An open approval means the message went out already: send nothing again.
+    if (version.state === 'awaiting-approval') {
+      const open = repo.findOpenApprovalFor(version.versionId, 'version', now());
+      if (open.isErr()) return err(new ScriptError('SANDBOX', 'could not read the approvals'));
+      if (open.value !== null) return ok('already-sent');
+    }
+    let report: unknown;
+    try {
+      report =
+        row.dry_run_report === null ? undefined : (JSON.parse(row.dry_run_report) as unknown);
+    } catch {
+      report = undefined;
+    }
+    if (!isReport(report)) {
+      return err(new ScriptError('INVALID_ARGUMENT', 'version has no usable dry-run report'));
+    }
+    const verified = store.verify(version);
+    if (verified.isErr()) return err(verified.error);
+
+    const classes = await describeTools(input.personaId, version);
+    if (classes.isErr()) return err(classes.error);
+    const summaryOf = (code: string): Result<string, ScriptError> =>
+      buildApprovalSummary({
+        name: version.manifest.name,
+        version: version.version,
+        description: version.manifest.description,
+        manifest: version.manifest,
+        toolClass: (name) => classes.value.get(name),
+        report,
+        code,
+        ttlMinutes: config.approvalTtlMinutes,
+      });
+    // A code always has 8 characters, so a probe with 8 characters has the final length.
+    if (summaryOf('0'.repeat(CODE_CHARS)).isErr()) {
+      return err(
+        new ScriptError(
+          'RESULT_TOO_LARGE',
+          'the dry-run writes do not fit in the approval message',
+        ),
+      );
+    }
+
+    const requested = approval.request({
+      versionId: version.versionId,
+      channelName: chat.channelName,
+      externalThreadId: chat.externalThreadId,
+    });
+    if (requested.isErr()) return err(requested.error);
+
+    const summary = summaryOf(requested.value.code);
+    let sent: Result<void, ScriptError>;
+    try {
+      sent = summary.isErr()
+        ? err(summary.error)
+        : await deps.send(chat.channelName, chat.externalThreadId, summary.value);
+    } catch {
+      sent = err(new ScriptError('TOOL_FAILED', 'send threw'));
+    }
+    if (sent.isErr()) {
+      const expired = approval.expireVersion(version.versionId);
+      const back = repo.setVersionState(version.versionId, ['awaiting-approval'], 'tested');
+      if (expired.isErr() || back.isErr()) {
+        logger.error(
+          { versionId: version.versionId },
+          'could not roll back a failed approval request',
+        );
+      }
+      return err(new ScriptError('TOOL_FAILED', 'the approval message could not be sent'));
+    }
+    return ok('sent');
+  }
+
+  /** True if the persona does not hold a `script.run` label for the script right now. */
+  function runDenied(personaId: string, scriptName: string): boolean {
+    try {
+      const capabilities = deps.capabilities(personaId);
+      return capabilities === undefined || scriptRunAccess(capabilities, scriptName) === 'denied';
+    } catch {
+      return true;
+    }
+  }
+
+  /** The thread that asked for a run, from the stored payload, or `undefined`. */
+  function runRequestThread(payload: string | undefined): string | undefined {
+    try {
+      const parsed: unknown = payload === undefined ? undefined : JSON.parse(payload);
+      return isPlainObject(parsed) && typeof parsed.threadId === 'string'
+        ? parsed.threadId
+        : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  function decideCommand(event: InboundEvent): { reply?: string } {
+    const command =
+      typeof event.content === 'string' ? approval.parseCommand(event.content) : undefined;
+    if (!command) return { reply: 'This code is not valid.' };
+
+    const decided = approval.decide({
+      code: command.code,
+      decision: command.decision,
+      channelName: event.channelName,
+      externalThreadId: event.externalThreadId,
+    });
+    if (decided.isErr()) {
+      logger.error({ scriptCode: decided.error.scriptCode }, 'script approval decision failed');
+      return { reply: 'This code is not valid.' };
+    }
+    const outcome = decided.value;
+    // A chat held by the attempt limiter gets no answer at all.
+    if (outcome.outcome === 'blocked') return {};
+    if (outcome.outcome === 'refused') return { reply: 'This code is not valid.' };
+
+    if (outcome.versionId !== undefined && outcome.personaId !== undefined) {
+      audit({
+        action: 'script.approval',
+        personaId: outcome.personaId,
+        threadId:
+          (outcome.purpose === 'run' ? runRequestThread(outcome.payload) : undefined) ??
+          outcome.threadId ??
+          '',
+        runId: randomUUID(),
+        details: {
+          versionId: outcome.versionId,
+          decision: outcome.outcome,
+          channelName: event.channelName,
+          ...(outcome.purpose !== undefined && outcome.purpose !== 'version'
+            ? { purpose: outcome.purpose }
+            : {}),
+        },
+      });
+    }
+    if (outcome.purpose === 'run') return decideRun(event, outcome);
+    if (outcome.purpose === 'schedule') return decideSchedule(outcome);
+    const name = cleanName(outcome.scriptName);
+    const label =
+      name !== '' && outcome.version !== undefined
+        ? ` script "${name}" v${outcome.version}.`
+        : ' the script.';
+    return outcome.outcome === 'approved'
+      ? { reply: `Approved:${label} It can now run on a schedule.` }
+      : { reply: `Rejected:${label}` };
+  }
+
+  /** The decision on a run that the agent asked for. */
+  function decideRun(event: InboundEvent, outcome: Decision): { reply?: string } {
+    const name = cleanName(outcome.scriptName);
+    if (name === '' || outcome.personaId === undefined || outcome.versionId === undefined) {
+      return { reply: 'This request could not be started. Ask again.' };
+    }
+    if (outcome.outcome === 'rejected') return { reply: `Script ${name} was not started.` };
+    const { personaId, versionId } = outcome;
+    const changed = { reply: `Script ${name} changed after this request. Ask again.` };
+
+    let stored: { has: boolean; value?: unknown };
+    try {
+      const parsed: unknown = outcome.payload === undefined ? {} : JSON.parse(outcome.payload);
+      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+        return { reply: `Script ${name} was not started.` };
+      }
+      stored = 'input' in parsed ? { has: true, value: parsed.input } : { has: false };
+    } catch {
+      return { reply: `Script ${name} was not started.` };
+    }
+    const version = repo.getVersion(versionId);
+    if (version.isErr() || !version.value) return { reply: `Script ${name} was not started.` };
+    const newest = repo.latestApproved(version.value.script_id);
+    if (newest.isErr()) return { reply: `Script ${name} was not started.` };
+    if (!newest.value || newest.value.id !== versionId) return changed;
+    if (runDenied(personaId, name)) {
+      return {
+        reply: `Script ${name} was not started: the persona has no script.run capability for it.`,
+      };
+    }
+
+    const replyChat = { channelName: event.channelName, externalThreadId: event.externalThreadId };
+    const work = (async (): Promise<void> => {
+      const result = await tracked(() =>
+        agentLive({
+          personaId,
+          threadId: runRequestThread(outcome.payload) ?? outcome.threadId ?? '',
+          scriptName: name,
+          scriptId: version.value!.script_id,
+          versionId,
+          ...(stored.has ? { input: stored.value } : {}),
+        }),
+      );
+      let text: string;
+      if (result.isErr()) {
+        const reason = result.error instanceof ScriptNotRunError ? result.error.reason : undefined;
+        text = failureText({ name, code: result.error.scriptCode, reason, scheduled: false });
+      } else if (result.value.ok) {
+        text = `Script ${name} finished.`;
+      } else {
+        const code = result.value.errorCode ?? 'SCRIPT_FAILED';
+        text = failureText({
+          name,
+          code: KNOWN_CODES.has(code) ? code : 'SCRIPT_FAILED',
+          scheduled: false,
+        });
+      }
+      const sent = await deps.send(replyChat.channelName, replyChat.externalThreadId, text);
+      if (sent.isErr()) {
+        logger.error({ scriptCode: sent.error.scriptCode }, 'script run notice not sent');
+      }
+    })().catch((error: unknown) => {
+      logger.error({ err: error }, 'script run by the agent failed unexpectedly');
+    });
+    inFlight.add(work);
+    void work.finally(() => inFlight.delete(work));
+    return { reply: `Script ${name} started.` };
+  }
+
+  /** The stored change of a schedule approval, or `undefined` if the payload is not of this form. */
+  function parseScheduleChange(
+    payload: string | undefined,
+  ): { threadId: string; change: ScriptScheduleChange } | undefined {
+    try {
+      const parsed: unknown = payload === undefined ? undefined : JSON.parse(payload);
+      if (!isPlainObject(parsed) || typeof parsed.threadId !== 'string') return undefined;
+      const raw = parsed.change;
+      if (!isPlainObject(raw) || (raw.action !== 'create' && raw.action !== 'update')) {
+        return undefined;
+      }
+      for (const key of ['scheduleId', 'cronExpr', 'label'] as const) {
+        if (raw[key] !== undefined && typeof raw[key] !== 'string') return undefined;
+      }
+      const change: ScriptScheduleChange = { action: raw.action };
+      if (typeof raw.scheduleId === 'string') change.scheduleId = raw.scheduleId;
+      if (typeof raw.cronExpr === 'string') change.cronExpr = raw.cronExpr;
+      if (typeof raw.label === 'string') change.label = raw.label;
+      if ('input' in raw) change.input = raw.input;
+      return { threadId: parsed.threadId, change };
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** The decision on a schedule that the agent asked for. */
+  function decideSchedule(outcome: Decision): { reply?: string } {
+    const name = cleanName(outcome.scriptName);
+    if (name === '' || outcome.personaId === undefined || outcome.versionId === undefined) {
+      return { reply: 'This request could not be started. Ask again.' };
+    }
+    if (outcome.outcome === 'rejected') return { reply: 'The schedule was not changed.' };
+    const { personaId, versionId } = outcome;
+    const notSaved = { reply: `The schedule for script ${name} was not saved.` };
+
+    const stored = parseScheduleChange(outcome.payload);
+    if (!stored) return notSaved;
+    const version = repo.getVersion(versionId);
+    if (version.isErr() || !version.value) return notSaved;
+    const newest = repo.latestApproved(version.value.script_id);
+    if (newest.isErr()) return notSaved;
+    if (!newest.value || newest.value.id !== versionId) {
+      return { reply: `Script ${name} changed after this request. Ask again.` };
+    }
+    if (runDenied(personaId, name)) {
+      return {
+        reply: `The schedule for script ${name} was not saved: the persona has no script.run capability for it.`,
+      };
+    }
+    try {
+      if ('input' in stored.change) {
+        const loaded = store.load(versionId);
+        if (loaded.isErr() || resolveRunInput(loaded.value.manifest, stored.change.input).isErr()) {
+          return notSaved;
+        }
+      }
+      const applied = deps.applyScheduleChange({
+        personaId,
+        threadId: stored.threadId,
+        scriptName: name,
+        change: stored.change,
+      });
+      if (applied.isErr()) {
+        logger.error({ scriptCode: applied.error.scriptCode }, 'script schedule not saved');
+        return notSaved;
+      }
+    } catch {
+      logger.error('script schedule failed unexpectedly');
+      return notSaved;
+    }
+    return { reply: `Schedule for script ${name} saved.` };
+  }
+
+  function cancelReply(
+    event: InboundEvent,
+    outcome: CancelOutcome,
+    reason: 'leak' | 'wrong-chat',
+    reply: string,
+  ): { reply?: string } {
+    for (const item of outcome.cancelled) {
+      audit({
+        action: 'script.approval.expired',
+        personaId: item.personaId ?? '',
+        threadId: item.threadId ?? '',
+        runId: randomUUID(),
+        details: {
+          versionId: item.versionId,
+          reason,
+          channelName: event.channelName,
+          ...(item.purpose !== 'version' ? { purpose: item.purpose } : {}),
+        },
+      });
+    }
+    // Nothing was cancelled, or a write failed: the code stays guarded, but do not claim a cancel.
+    const done = outcome.cancelled.length > 0 && !outcome.failed;
+    const purpose = outcome.cancelled[0]?.purpose;
+    const agentPurpose =
+      (purpose === 'run' || purpose === 'schedule') &&
+      outcome.cancelled.every((item) => item.purpose === purpose)
+        ? purpose
+        : undefined;
+    const agentText = done && agentPurpose ? agentCancelText(outcome, agentPurpose) : undefined;
+    return attemptReply(
+      event,
+      agentText ?? (done ? reply : 'This code cannot be used here. Ask for a new approval.'),
+    );
+  }
+
+  /** The notice for cancelled run or schedule requests, or a general one if no script name is known. */
+  function agentCancelText(outcome: CancelOutcome, purpose: 'run' | 'schedule'): string {
+    const names = new Set<string>();
+    for (const item of outcome.cancelled) {
+      try {
+        const row = repo.getVersion(item.versionId);
+        const parsed: unknown =
+          row.isOk() && row.value ? JSON.parse(row.value.manifest) : undefined;
+        const name = cleanName((parsed as { name?: string } | undefined)?.name);
+        if (name !== '') names.add(name);
+      } catch {
+        // an unreadable manifest: no name
+      }
+    }
+    if (names.size === 0) return `The ${purpose} request was cancelled and must be asked again.`;
+    return [...names]
+      .map(
+        (name) => `The ${purpose} request of script ${name} was cancelled and must be asked again.`,
+      )
+      .join('\n');
+  }
+
+  /** A reply for a claimed message that was no valid decision. A blocked chat gets none. */
+  function attemptReply(event: InboundEvent, reply: string): { reply?: string } {
+    const isBlocked = approval.noteAttempt(event.channelName, event.externalThreadId);
+    return isBlocked ? {} : { reply };
+  }
+
+  function handleInboundImpl(event: InboundEvent): { reply?: string } | undefined {
+    switch (approval.classify(event)) {
+      case 'command':
+        return decideCommand(event);
+      case 'leak':
+        // The code is cancelled also in a blocked chat: it was seen outside a command.
+        return cancelReply(
+          event,
+          approval.cancelLeaked(event),
+          'leak',
+          'The code was not in a valid command, so I cancelled it. Ask for a new approval.',
+        );
+      case 'wrong-chat':
+        return cancelReply(
+          event,
+          approval.cancelWrongChat(event),
+          'wrong-chat',
+          'This code belongs to another chat, so I cancelled it. Ask for a new approval.',
+        );
+      case 'malformed':
+        return attemptReply(event, 'Use: /approve CODE or /reject CODE');
+      case 'none':
+        return undefined;
+    }
+  }
+
+  async function runScheduledImpl(input: {
+    personaId: string;
+    threadId: string;
+    scriptName: string;
+    scheduleId: string;
+    input?: unknown;
+  }): Promise<Result<ScriptRunReport | 'skipped', ScriptError>> {
+    const noApproved = (): ScriptError => new ScriptNotRunError('not-approved');
+    // A scheduled run asks nobody: `approval` runs like `allowed`. `undefined`
+    // (persona not loaded) fails closed.
+    let permitted = false;
+    try {
+      const capabilities = deps.capabilities(input.personaId);
+      permitted =
+        capabilities !== undefined && scriptRunAccess(capabilities, input.scriptName) !== 'denied';
+    } catch {
+      permitted = false;
+    }
+    if (!permitted) {
+      audit({
+        action: 'script.run.refused',
+        personaId: input.personaId,
+        threadId: input.threadId,
+        runId: randomUUID(),
+        details: { script: input.scriptName, reason: 'not-permitted' },
+      });
+      return err(new ScriptNotRunError('not-permitted'));
+    }
+    const script = repo.findScript(input.personaId, input.scriptName);
+    if (script.isErr()) return err(sandbox(script.error));
+    if (!script.value) return err(noApproved());
+    const scriptId = script.value.id;
+    const approved = repo.latestApproved(scriptId);
+    if (approved.isErr()) return err(sandbox(approved.error));
+    if (!approved.value) return err(noApproved());
+
+    const result = await runLive({
+      personaId: input.personaId,
+      threadId: input.threadId,
+      scriptName: input.scriptName,
+      trigger: 'schedule',
+      scheduleId: input.scheduleId,
+      scriptId,
+      versionId: approved.value.id,
+      input: input.input,
+    });
+    if (result.isOk() && result.value === 'active') {
+      audit({
+        action: 'script.run.skipped',
+        personaId: input.personaId,
+        threadId: input.threadId,
+        runId: randomUUID(),
+        details: { script: input.scriptName, scheduleId: input.scheduleId },
+      });
+      return ok('skipped');
+    }
+    return result as Result<ScriptRunReport, ScriptError>;
+  }
+
+  /**
+   * The live run that a schedule and the agent share: the active set, the run
+   * row, the provider, the audits. `active` means a run of the script is in flight.
+   */
+  async function runLive(input: {
+    personaId: string;
+    threadId: string;
+    scriptName: string;
+    trigger: 'schedule' | 'agent';
+    scheduleId?: string;
+    scriptId: string;
+    versionId: string;
+    input?: unknown;
+  }): Promise<Result<ScriptRunReport | 'active', ScriptError>> {
+    const { scriptId } = input;
+    // Only a run of the agent names its trigger in a refusal.
+    const tag = input.trigger === 'agent' ? { trigger: 'agent' } : {};
+    if (active.has(scriptId)) return ok('active');
+    active.add(scriptId);
+    let provider: RunProvider | undefined;
+    let runId: string | undefined;
+    let finished = false;
+    let runAudited = false;
+    let known: { name: string; version: number } | undefined;
+    const runAudit = (runOk: boolean, errorCode: string | null, calls: number): void => {
+      if (runId === undefined || runAudited) return;
+      runAudited = true;
+      audit({
+        action: 'script.run',
+        personaId: input.personaId,
+        threadId: input.threadId,
+        runId,
+        details: {
+          script: known?.name ?? input.scriptName,
+          version: known?.version ?? null,
+          mode: 'live',
+          ok: runOk,
+          errorCode,
+          calls,
+        },
+      });
+    };
+    /** Write audits first, then the row, then the run audit. */
+    const conclude = (
+      runOk: boolean,
+      errorCode: string | null,
+      calls: readonly CallRecord[],
+    ): void => {
+      if (runId === undefined) return;
+      for (const call of calls) {
+        if (
+          call.toolClass === 'write' &&
+          (call.outcome === 'executed' || call.outcome === 'aborted')
+        ) {
+          audit({
+            action: 'script.write',
+            personaId: input.personaId,
+            threadId: input.threadId,
+            runId,
+            tool: call.name,
+            details: { outcome: call.outcome },
+          });
+        }
+      }
+      finished = finishRun(runId, runOk, errorCode, calls.length);
+      runAudit(runOk, errorCode, calls.length);
+    };
+    try {
+      const loaded = store.load(input.versionId);
+      if (loaded.isErr()) return err(loaded.error);
+      const version = loaded.value;
+      known = { name: version.manifest.name, version: version.version };
+      // After the capability check, before a run row or a provider exists.
+      const liveInput = resolveRunInput(version.manifest, input.input);
+      if (liveInput.isErr()) {
+        audit({
+          action: 'script.run.refused',
+          personaId: input.personaId,
+          threadId: input.threadId,
+          runId: randomUUID(),
+          details: {
+            script: input.scriptName,
+            version: version.version,
+            reason: 'bad-input',
+            ...tag,
+          },
+        });
+        return err(new ScriptNotRunError('bad-input', liveInput.error));
+      }
+      const runRow = startRun(version.versionId, 'live', input.trigger, input.scheduleId);
+      if (runRow.isErr()) return err(runRow.error);
+      runId = runRow.value;
+
+      const verified = store.verify(version);
+      if (verified.isErr()) {
+        finished = finishRun(runId, false, 'SCRIPT_FAILED', 0);
+        audit({
+          action: 'script.run.refused',
+          personaId: input.personaId,
+          threadId: input.threadId,
+          runId,
+          details: { script: input.scriptName, version: version.version, ...tag },
+        });
+        return err(new ScriptNotRunError('changed', verified.error));
+      }
+
+      const manifest = version.manifest;
+      const created = await deps.createProvider(
+        {
+          personaId: input.personaId,
+          // The thread that saved the version, as in the dry run, so memory tools see the same memory.
+          threadId: version.threadId,
+          scriptRunId: runId,
+          scriptName: manifest.name,
+          channels: manifest.channels,
+          versionDir: version.dir,
+        },
+        manifest,
+      );
+      if (created.isErr()) {
+        conclude(false, created.error.scriptCode, []);
+        return err(created.error);
+      }
+      provider = created.value;
+
+      const run = await runScript(broker, {
+        manifest: {
+          name: manifest.name,
+          personaId: input.personaId,
+          tools: manifest.tools,
+          channels: manifest.channels,
+        },
+        mode: 'live',
+        provider,
+        scriptPath: version.scriptPath,
+        input: liveInput.value,
+        timeoutMs: config.runTimeoutMs,
+        maxCalls: config.maxCallsPerRun,
+        profile: SCRIPT_PROFILE,
+        workspace: SCRIPT_WORKSPACE,
+      });
+      if (run.isErr()) {
+        conclude(false, run.error.scriptCode, []);
+        return err(run.error);
+      }
+      const report = run.value;
+      conclude(report.ok, report.ok ? null : (report.errorCode ?? 'SCRIPT_FAILED'), report.calls);
+      return ok(report);
+    } finally {
+      if (runId !== undefined && !finished) {
+        // An exception ended the run before its row was finished.
+        finishRun(runId, false, 'SANDBOX', 0);
+        runAudit(false, 'SANDBOX', 0);
+      }
+      if (provider) await closeProvider(provider);
+      active.delete(scriptId);
+    }
+  }
+
+  /** A live run for the agent. After `/approve` the stored input goes through the manifest again. */
+  async function agentLive(input: {
+    personaId: string;
+    threadId: string;
+    scriptName: string;
+    scriptId: string;
+    versionId: string;
+    input?: unknown;
+  }): Promise<Result<ScriptRunReport, ScriptError>> {
+    const result = await runLive({ ...input, trigger: 'agent' });
+    if (result.isErr()) {
+      const error = result.error;
+      // A bad input keeps the plain error of the input check, not the scheduler's reason.
+      if (error instanceof ScriptNotRunError && error.reason === 'bad-input' && error.cause) {
+        return err(error.cause as ScriptError);
+      }
+      return err(error);
+    }
+    if (result.value === 'active') {
+      return err(new ScriptError('SCRIPT_FAILED', 'the script is already running'));
+    }
+    return ok(result.value);
+  }
+
+  async function runByAgentImpl(input: {
+    personaId: string;
+    threadId: string;
+    scriptName: string;
+    access: 'allowed' | 'approval';
+    input?: unknown;
+  }): Promise<Result<ScriptRunReport | 'awaiting-approval', ScriptError>> {
+    const script = repo.findScript(input.personaId, input.scriptName);
+    if (script.isErr()) return err(sandbox(script.error));
+    if (!script.value) return err(new ScriptNotRunError('not-approved'));
+    const scriptId = script.value.id;
+    const approved = repo.latestApproved(scriptId);
+    if (approved.isErr()) return err(sandbox(approved.error));
+    if (!approved.value) return err(new ScriptNotRunError('not-approved'));
+    const versionId = approved.value.id;
+
+    if (input.access === 'allowed') {
+      return agentLive({
+        personaId: input.personaId,
+        threadId: input.threadId,
+        scriptName: input.scriptName,
+        scriptId,
+        versionId,
+        ...(input.input !== undefined ? { input: input.input } : {}),
+      });
+    }
+
+    const loaded = store.load(versionId);
+    if (loaded.isErr()) return err(loaded.error);
+    const version = loaded.value;
+    const resolved = resolveRunInput(version.manifest, input.input);
+    if (resolved.isErr()) {
+      audit({
+        action: 'script.run.refused',
+        personaId: input.personaId,
+        threadId: input.threadId,
+        runId: randomUUID(),
+        details: {
+          script: input.scriptName,
+          version: version.version,
+          reason: 'bad-input',
+          trigger: 'agent',
+        },
+      });
+      return err(resolved.error);
+    }
+    const chat = deps.resolveChat(input.threadId);
+    if (!chat) {
+      return err(
+        new ScriptError('INVALID_ARGUMENT', 'this conversation has no chat for an approval'),
+      );
+    }
+    const inputText = describeInput(input.input !== undefined, resolved.value);
+    const payload = safeStringify({
+      threadId: input.threadId,
+      ...(input.input === undefined ? {} : { input: resolved.value }),
+    });
+    if (inputText === undefined || payload === undefined) {
+      return err(new ScriptError('INVALID_ARGUMENT', 'the input cannot be shown as JSON'));
+    }
+    return askAgentApproval({
+      versionId,
+      purpose: 'run',
+      chat,
+      payload,
+      messageOf: (code) =>
+        `The agent wants to run script ${version.manifest.name} (version ${version.version}) now.\n` +
+        `Input: ${inputText}\n/approve ${code}\n/reject ${code}`,
+    });
+  }
+
+  /** The JSON text of a value, or `undefined` if it cannot be serialized. */
+  function safeStringify(value: unknown): string | undefined {
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * The `Input:` line of an approval message: the JSON of a given input, the
+   * default of the script, or `none`. `undefined` if the input is not JSON.
+   */
+  function describeInput(given: boolean, value: unknown): string | undefined {
+    const json = safeStringify(value);
+    if (json === undefined) return undefined;
+    // Unsafe characters become \uXXXX escapes: the text stays valid JSON and cannot break a line.
+    const text = json.replace(
+      // eslint-disable-next-line no-control-regex
+      /[\u0000-\u001f\u007f-\u009f\u2028\u2029\p{Cf}]/gu,
+      (ch) => `\\u${ch.charCodeAt(0).toString(16).padStart(4, '0')}`,
+    );
+    return given ? text : value === null ? 'none' : `${text} (default of the script)`;
+  }
+
+  /**
+   * Asks a chat to approve something that the agent wants. One open approval for
+   * each version and purpose: the same request again sends nothing; a different
+   * one replaces it. A failed send rolls the new approval back.
+   */
+  async function askAgentApproval(input: {
+    versionId: string;
+    purpose: 'run' | 'schedule';
+    chat: { channelName: string; externalThreadId: string };
+    payload: string;
+    messageOf: (code: string) => string;
+  }): Promise<Result<'awaiting-approval', ScriptError>> {
+    const { versionId, purpose, chat, payload, messageOf } = input;
+    if (messageOf('0'.repeat(CODE_CHARS)).length > MAX_RUN_APPROVAL_CHARS) {
+      return err(
+        new ScriptError('RESULT_TOO_LARGE', 'the input does not fit in the approval message'),
+      );
+    }
+    const open = repo.findOpenApprovalFor(versionId, purpose, now());
+    if (open.isErr()) return err(sandbox(open.error));
+    if (
+      open.value &&
+      open.value.payload === payload &&
+      open.value.channel_name === chat.channelName &&
+      open.value.external_thread_id === chat.externalThreadId
+    ) {
+      return ok('awaiting-approval');
+    }
+
+    // A new request expires the open approval of the same purpose.
+    const requested = approval.request({
+      versionId,
+      channelName: chat.channelName,
+      externalThreadId: chat.externalThreadId,
+      purpose,
+      payload,
+    });
+    if (requested.isErr()) return err(requested.error);
+    let sent: Result<void, ScriptError>;
+    try {
+      sent = await deps.send(
+        chat.channelName,
+        chat.externalThreadId,
+        messageOf(requested.value.code),
+      );
+    } catch {
+      sent = err(new ScriptError('TOOL_FAILED', 'send threw'));
+    }
+    if (sent.isErr()) {
+      if (approval.expireVersion(versionId, purpose).isErr()) {
+        logger.error({ versionId }, `could not roll back a failed ${purpose} approval request`);
+      }
+      return err(new ScriptError('TOOL_FAILED', 'the approval message could not be sent'));
+    }
+    return ok('awaiting-approval');
+  }
+
+  /** The newest approved version of a script, loaded, or an error. */
+  function loadApproved(
+    personaId: string,
+    scriptName: string,
+  ): Result<{ versionId: string; loaded: StoredVersion }, ScriptError> {
+    const script = repo.findScript(personaId, scriptName);
+    if (script.isErr()) return err(sandbox(script.error));
+    if (!script.value) return err(new ScriptNotRunError('not-approved'));
+    const approved = repo.latestApproved(script.value.id);
+    if (approved.isErr()) return err(sandbox(approved.error));
+    if (!approved.value) return err(new ScriptNotRunError('not-approved'));
+    const loaded = store.load(approved.value.id);
+    if (loaded.isErr()) return err(loaded.error);
+    return ok({ versionId: approved.value.id, loaded: loaded.value });
+  }
+
+  async function requestScheduleChangeImpl(input: {
+    personaId: string;
+    threadId: string;
+    scriptName: string;
+    change: ScriptScheduleChange;
+    previous?: { label: string; wasPrompt: boolean };
+  }): Promise<Result<'awaiting-approval', ScriptError>> {
+    const found = loadApproved(input.personaId, input.scriptName);
+    if (found.isErr()) return err(found.error);
+    const { versionId, loaded: version } = found.value;
+    const hasInput = 'input' in input.change && input.change.input !== undefined;
+    const resolved = resolveRunInput(version.manifest, hasInput ? input.change.input : undefined);
+    if (resolved.isErr()) return err(resolved.error);
+    const chat = deps.resolveChat(input.threadId);
+    if (!chat) {
+      return err(
+        new ScriptError('INVALID_ARGUMENT', 'this conversation has no chat for an approval'),
+      );
+    }
+    // What the user reads is what is stored: a cron expression that cleaning would change is refused.
+    const cronExpr = clean(input.change.cronExpr ?? '', CRON_MAX);
+    if (cronExpr !== (input.change.cronExpr ?? '')) {
+      return err(new ScriptError('INVALID_ARGUMENT', 'the cron expression is not valid'));
+    }
+    const label = clean(input.change.label ?? '', LABEL_MAX);
+    const inputText = describeInput(hasInput, resolved.value);
+    const change: ScriptScheduleChange = { action: input.change.action };
+    if (input.change.scheduleId !== undefined) change.scheduleId = input.change.scheduleId;
+    if (input.change.cronExpr !== undefined) change.cronExpr = cronExpr;
+    if (input.change.label !== undefined) change.label = label;
+    if (hasInput) change.input = resolved.value;
+    const payload = safeStringify({
+      threadId: input.threadId,
+      scriptName: version.manifest.name,
+      change,
+    });
+    if (inputText === undefined || payload === undefined) {
+      return err(new ScriptError('INVALID_ARGUMENT', 'the input cannot be shown as JSON'));
+    }
+    return askAgentApproval({
+      versionId,
+      purpose: 'schedule',
+      chat,
+      payload,
+      messageOf: (code) => {
+        const tail = `Input: ${inputText}\n/approve ${code}\n/reject ${code}`;
+        const name = version.manifest.name;
+        if (input.change.action !== 'update') {
+          return `The agent wants to run script ${name} on this schedule: ${cronExpr} (${label}).\n${tail}`;
+        }
+        const old = clean(input.previous?.label ?? '', LABEL_MAX);
+        return (
+          `The agent wants to change schedule ${old} to run script ${name} (version ${version.version}).\n` +
+          `New schedule: ${cronExpr} (${label}).\n` +
+          (input.previous?.wasPrompt === true ? 'The prompt of the schedule is removed.\n' : '') +
+          tail
+        );
+      },
+    });
+  }
+
+  function checkScheduleInputImpl(input: {
+    personaId: string;
+    scriptName: string;
+    input: unknown;
+  }): Result<unknown, ScriptError> {
+    const found = loadApproved(input.personaId, input.scriptName);
+    if (found.isErr()) return err(found.error);
+    return resolveRunInput(found.value.loaded.manifest, input.input);
+  }
+
+  async function guard<T>(
+    fn: () => Promise<Result<T, ScriptError>>,
+  ): Promise<Result<T, ScriptError>> {
+    try {
+      return await fn();
+    } catch (error) {
+      logger.error({ err: error }, 'script service failed unexpectedly');
+      return err(sandbox());
+    }
+  }
+
+  return {
+    save(input): Result<StoredVersion, ScriptError> {
+      try {
+        return store.save(input);
+      } catch (error) {
+        logger.error({ err: error }, 'script save failed unexpectedly');
+        return err(sandbox());
+      }
+    },
+
+    test: (input) => tracked(() => testImpl(input)),
+
+    requestApproval: (input) =>
+      closed
+        ? Promise.resolve(err(new ScriptError('SANDBOX', 'the script service is closed')))
+        : guard(() => requestApprovalImpl(input)),
+
+    matchesInbound(event): boolean {
+      try {
+        return approval.classify(event) !== 'none';
+      } catch {
+        return false;
+      }
+    },
+
+    handleInbound(event): Promise<{ reply?: string } | undefined> {
+      try {
+        return Promise.resolve(handleInboundImpl(event));
+      } catch (error) {
+        // `matches` claimed the event, so it can hold a code: keep it away from the agent.
+        logger.error(
+          { errName: error instanceof Error ? error.name : 'unknown' },
+          'script approval handling failed unexpectedly',
+        );
+        return Promise.resolve({});
+      }
+    },
+
+    async runScheduled(input): Promise<Result<ScriptRunReport | 'skipped', ScriptError>> {
+      const result = await tracked(() => runScheduledImpl(input));
+      const key = `${input.personaId}\0${input.scriptName}`;
+      if (result.isErr() || (result.value !== 'skipped' && !result.value.ok)) {
+        failedScripts.add(key);
+      } else if (result.value !== 'skipped') {
+        failedScripts.delete(key);
+      }
+      return result;
+    },
+
+    runByAgent: (input) => tracked(() => runByAgentImpl(input)),
+
+    requestScheduleChange: (input) => tracked(() => requestScheduleChangeImpl(input)),
+
+    checkScheduleInput(input): Result<unknown, ScriptError> {
+      try {
+        return checkScheduleInputImpl(input);
+      } catch (error) {
+        logger.error({ err: error }, 'script schedule input check failed unexpectedly');
+        return err(sandbox());
+      }
+    },
+
+    list(personaId): Result<ScriptInfo[], ScriptError> {
+      try {
+        return listImpl(personaId);
+      } catch (error) {
+        logger.error({ err: error }, 'script list failed unexpectedly');
+        return err(sandbox());
+      }
+    },
+
+    show(input): Result<{ info: ScriptVersionInfo; files: ScriptFile[] }, ScriptError> {
+      try {
+        return showImpl(input);
+      } catch (error) {
+        logger.error({ err: error }, 'script show failed unexpectedly');
+        return err(sandbox());
+      }
+    },
+
+    listTools: (input) => tracked(() => listToolsImpl(input)),
+
+    async notifyFailure(input): Promise<void> {
+      try {
+        const code = KNOWN_CODES.has(input.errorCode) ? input.errorCode : 'SCRIPT_FAILED';
+        const name = cleanName(input.scriptName);
+        const text = failureText({ name, code, reason: input.reason, scheduled: true });
+        const chat = deps.resolveChat(input.threadId);
+        const sent = chat
+          ? await deps.send(chat.channelName, chat.externalThreadId, text)
+          : err(new ScriptError('TOOL_FAILED', 'the thread of the script has no chat'));
+        if (sent.isErr()) {
+          logger.error({ scriptCode: sent.error.scriptCode }, 'script failure notice not sent');
+        }
+      } catch (error) {
+        logger.error({ err: error }, 'script failure notice failed unexpectedly');
+      }
+    },
+
+    hasApproved(personaId, scriptName): boolean {
+      try {
+        const script = repo.findScript(personaId, scriptName);
+        if (script.isErr() || !script.value) return false;
+        const approved = repo.latestApproved(script.value.id);
+        return approved.isOk() && approved.value !== null;
+      } catch {
+        return false;
+      }
+    },
+
+    lastScheduledRunFailed(personaId, scriptName): boolean {
+      // A run that did not start writes no row, so the database alone cannot tell.
+      if (failedScripts.has(`${personaId}\0${scriptName}`)) return true;
+      try {
+        const script = repo.findScript(personaId, scriptName);
+        if (script.isErr() || !script.value) return false;
+        const last = repo.lastFinishedRun(script.value.id, 'schedule');
+        return last.isOk() && last.value !== null && last.value.ok === 0;
+      } catch {
+        return false;
+      }
+    },
+
+    async shutdown(): Promise<void> {
+      closed = true;
+      try {
+        const revoked = [...leases].map(async (leaseId) => {
+          leases.delete(leaseId);
+          try {
+            const result = await deps.broker.revoke(leaseId);
+            if (result.isErr()) logger.warn('scripts: a lease could not be revoked at shutdown');
+          } catch {
+            logger.warn('scripts: a lease could not be revoked at shutdown');
+          }
+        });
+        let timer: NodeJS.Timeout | undefined;
+        const bound = new Promise<'timeout'>((resolve) => {
+          timer = setTimeout(() => resolve('timeout'), SHUTDOWN_WAIT_MS);
+        });
+        const settled = Promise.allSettled([...revoked, ...inFlight]).then(
+          () => 'settled' as const,
+        );
+        const outcome = await Promise.race([settled, bound]);
+        clearTimeout(timer);
+        if (outcome === 'timeout') {
+          logger.warn({ active: inFlight.size }, 'scripts: runs were still active at shutdown');
+        }
+      } catch (error) {
+        logger.error({ err: error }, 'scripts: shutdown failed unexpectedly');
+      }
+    },
+
+    recoverStaleRuns(): Result<number, ScriptError> {
+      try {
+        const failed = repo.failOpenRuns(now());
+        return failed.isErr() ? err(sandbox(failed.error)) : ok(failed.value);
+      } catch (error) {
+        logger.error({ err: error }, 'recovering stale script runs failed unexpectedly');
+        return err(sandbox());
+      }
+    },
+  };
+}

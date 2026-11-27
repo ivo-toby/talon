@@ -52,6 +52,22 @@ export function loadToolInstructions(dir: string): Map<string, string> {
 }
 
 /**
+ * Reads the script authoring guide from the first path that holds a non-empty
+ * file. Returns undefined when none does.
+ */
+export function loadScriptGuide(paths: readonly string[]): string | undefined {
+  for (const path of paths) {
+    try {
+      const text = readFileSync(path, 'utf-8').trim();
+      if (text) return text;
+    } catch {
+      // Missing or unreadable: try the next path.
+    }
+  }
+  return undefined;
+}
+
+/**
  * Given the cached instruction map and a list of allowed MCP tool names,
  * returns the concatenated instruction blocks for the persona's tools.
  *

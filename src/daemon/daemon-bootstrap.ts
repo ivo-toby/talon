@@ -49,10 +49,7 @@ import {
   BROWSER_VOICE_CHANNEL_NAME,
 } from '../channels/channel-setup.js';
 import { MessagePipeline } from '../pipeline/message-pipeline.js';
-import {
-  createQueueDiagnosticResolver,
-  QueueManager,
-} from '../queue/queue-manager.js';
+import { createQueueDiagnosticResolver, QueueManager } from '../queue/queue-manager.js';
 import { Scheduler } from '../scheduler/scheduler.js';
 import { migrateLegacySchedules } from '../scheduler/legacy-schedule-migration.js';
 import { DaemonError } from '../core/errors/error-types.js';
@@ -87,13 +84,10 @@ import { CodexCliProvider } from '../providers/codex-cli-provider.js';
 import { OpenAiCompatibleProvider } from '../providers/openai-compatible-provider.js';
 import { ProviderRegistry, type ProviderFactoryMap } from '../providers/provider-registry.js';
 import { recoverFromCrash } from './lifecycle.js';
-import {
-  ContextRoller,
-  normalizeContextRollerDiagnostics,
-} from './context-roller.js';
+import { ContextRoller, normalizeContextRollerDiagnostics } from './context-roller.js';
 import { ContextAssembler } from './context-assembler.js';
 import type { DaemonContext } from './daemon-context.js';
-import { loadToolInstructions } from '../tools/tool-instructions.js';
+import { loadToolInstructions, loadScriptGuide } from '../tools/tool-instructions.js';
 import { createObservabilityService } from '../observability/langfuse/index.js';
 import { NoopObservabilityService } from '../observability/langfuse/noop-observability.js';
 import type { ObservabilityService } from '../observability/langfuse/observability-types.js';
@@ -106,7 +100,10 @@ import { OAuthTokenStore } from '../auth/oauth-token-store.js';
 import { VoiceRepository } from '../core/database/repositories/voice-repository.js';
 import { VoiceAuthRepository } from '../core/database/repositories/voice-auth-repository.js';
 import { DurableVoiceStore } from '../voice/voice-store.js';
-import { DurableVoiceBackendBridge, type VoiceExecutionGateInput } from '../voice/voice-backend-bridge.js';
+import {
+  DurableVoiceBackendBridge,
+  type VoiceExecutionGateInput,
+} from '../voice/voice-backend-bridge.js';
 import { VoiceOutputSink } from '../voice/voice-output-sink.js';
 import { getVoiceNativeToolNames, VoicePolicy } from '../voice/voice-policy.js';
 import {
@@ -116,10 +113,7 @@ import {
 } from '../voice/voice-session-service.js';
 import { reconcileVoiceSessions } from '../voice/voice-session-reconciler.js';
 import { OpenAiLiveVoiceProvider } from '../voice/providers/openai-live-provider.js';
-import {
-  createVoiceAdapterSelection,
-  VoiceCallAdmission,
-} from '../voice/voice-adapters.js';
+import { createVoiceAdapterSelection, VoiceCallAdmission } from '../voice/voice-adapters.js';
 import { createVoiceAuthorization } from '../voice/voice-authorization.js';
 import { BrowserVoiceServer } from '../voice/transports/browser/browser-server.js';
 import { VoiceTelemetry } from '../voice/voice-telemetry.js';
@@ -134,9 +128,12 @@ import { ImageIngestionCoordinator } from '../images/image-ingestion.js';
 import { ImageService } from '../images/image-service.js';
 import { ImageLifecycleManager } from '../images/image-lifecycle.js';
 import {
-  DaemonImageContextSource,
-  ImageLookupAccessAdapter,
-} from './image-context-source.js';
+  buildScriptRuntime,
+  createChannelSender,
+  reapScriptContainers,
+} from '../scripts/daemon-wiring.js';
+import type { ScriptService } from '../scripts/service.js';
+import { DaemonImageContextSource, ImageLookupAccessAdapter } from './image-context-source.js';
 
 // ---------------------------------------------------------------------------
 // Bootstrap
@@ -332,6 +329,15 @@ export async function bootstrap(
   }
   logger.info({ count: toolInstructions.size }, 'bootstrap: tool instructions loaded');
 
+  // 8a'. The script authoring guide, loaded one time. Same lookup order as above.
+  const scriptGuide = loadScriptGuide([
+    join(import.meta.dirname, '../templates/script-authoring.md'),
+    join(process.cwd(), 'templates/script-authoring.md'),
+  ]);
+  if (scriptGuide === undefined) {
+    logger.warn('bootstrap: the script authoring guide was not found');
+  }
+
   // 8b. Load sub-agents (optional — if the directory does not exist, skip)
   //     Load from three sources in priority order (later overrides earlier):
   //       1. Built-in default sub-agents (compiled alongside daemon code)
@@ -388,12 +394,11 @@ export async function bootstrap(
 
   if (!config.subagentSandbox.codex.enabled) {
     const subAgentOverrides = config.subagents ?? {};
-    const codexSandboxAgents = [...mergedAgentMap.values()]
-      .flatMap((agent) =>
-        buildSubAgentModelChain(agent, subAgentOverrides[agent.manifest.name])
-          .filter((model) => model.provider === 'codex-sandbox')
-          .map((model) => `${agent.manifest.name} (${model.source}: ${model.name})`),
-      );
+    const codexSandboxAgents = [...mergedAgentMap.values()].flatMap((agent) =>
+      buildSubAgentModelChain(agent, subAgentOverrides[agent.manifest.name])
+        .filter((model) => model.provider === 'codex-sandbox')
+        .map((model) => `${agent.manifest.name} (${model.source}: ${model.name})`),
+    );
 
     if (codexSandboxAgents.length > 0) {
       await cleanupBootstrapFailure(db, observability, logger);
@@ -619,10 +624,15 @@ export async function bootstrap(
         const isVoiceOrUnknown = resolvedDiagnostics.privacy !== 'nonvoice';
         const modelChainLogger = isVoiceOrUnknown ? createVoiceSafeLogger(logger) : logger;
         const voiceObservation = isVoiceOrUnknown
-          ? resolvedDiagnostics.voiceObservation ??
-            createVoiceObservationContext({ threadId, personaId })
+          ? (resolvedDiagnostics.voiceObservation ??
+            createVoiceObservationContext({ threadId, personaId }))
           : undefined;
-        const run = async (): Promise<Result<import('../subagents/subagent-types.js').SubAgentResult, import('../core/errors/index.js').SubAgentError>> => {
+        const run = async (): Promise<
+          Result<
+            import('../subagents/subagent-types.js').SubAgentResult,
+            import('../core/errors/index.js').SubAgentError
+          >
+        > => {
           const result = await runSubAgentModelChain({
             name: summarizerName,
             agent: summarizerAgent,
@@ -749,7 +759,7 @@ export async function bootstrap(
   const voiceRuntimeConfig = { current: config };
   const voiceGeneration = { value: 0 };
   const daemonContextRef: {
-    current?: Pick<DaemonContext, 'loadedSkills'>;
+    current?: Pick<DaemonContext, 'loadedSkills' | 'config'>;
   } = {};
   if (config.voice?.enabled) {
     const voicePersonaName = config.voice.persona ?? config.personas[0]?.name;
@@ -784,11 +794,7 @@ export async function bootstrap(
     const voiceProviderEntry = providerRegistry.get(voiceProviderName);
     if (!voiceProviderEntry) {
       await cleanupBootstrapFailure(db, observability, logger);
-      return err(
-        new DaemonError(
-          `Voice provider "${voiceProviderName}" is not enabled`,
-        ),
-      );
+      return err(new DaemonError(`Voice provider "${voiceProviderName}" is not enabled`));
     }
     const voiceAccessToken =
       config.voice.accessToken ??
@@ -827,23 +833,23 @@ export async function bootstrap(
       const personaName = currentConfig.voice?.persona ?? voicePersonaName;
       const currentPersona = personaLoader.getByName(personaName);
       if (currentPersona.isErr()) return err(currentPersona.error);
-      if (!currentPersona.value) return err(new DaemonError(`Voice persona not found: ${personaName}`));
+      if (!currentPersona.value)
+        return err(new DaemonError(`Voice persona not found: ${personaName}`));
       const persona = currentPersona.value;
       const currentPersonaRow = repos.persona.findByName(personaName);
       if (currentPersonaRow.isErr()) return err(currentPersonaRow.error);
       if (!currentPersonaRow.value) {
         return err(new DaemonError(`Voice persona not found: ${personaName}`));
       }
-      const currentProvider =
-        persona.config.provider ?? currentConfig.agentRunner.defaultProvider;
+      const currentProvider = persona.config.provider ?? currentConfig.agentRunner.defaultProvider;
       const currentModel = persona.config.model;
       const currentProviderEntry = providerRegistry.get(currentProvider);
       if (!currentProviderEntry) {
         return err(new DaemonError(`Voice provider "${currentProvider}" is not enabled`));
       }
-      const personaSkills = (
-        daemonContextRef.current?.loadedSkills ?? loadedSkills.value
-      ).filter((skill) => persona.config.skills.includes(skill.manifest.name));
+      const personaSkills = (daemonContextRef.current?.loadedSkills ?? loadedSkills.value).filter(
+        (skill) => persona.config.skills.includes(skill.manifest.name),
+      );
       let personaRuntimeContext;
       try {
         personaRuntimeContext = buildPersonaRuntimeContext({
@@ -878,10 +884,7 @@ export async function bootstrap(
         ],
         allowedToolNames: voiceTools.allowedMcpTools,
         allowedMcpServerNames,
-        nativeToolNames: getVoiceNativeToolNames(
-          currentProviderEntry.type,
-          nativeToolsDisabled,
-        ),
+        nativeToolNames: getVoiceNativeToolNames(currentProviderEntry.type, nativeToolsDisabled),
         requireApproval: false,
         loginRevision: owner.loginRevision,
       });
@@ -889,8 +892,7 @@ export async function bootstrap(
     const currentVoicePolicy = (
       owner: VoiceOwnerContext,
       _session: VoiceSessionRecord,
-    ): VoiceResult<VoicePolicySnapshot> =>
-      captureVoicePolicy(owner);
+    ): VoiceResult<VoicePolicySnapshot> => captureVoicePolicy(owner);
     const voiceInstructions = [
       `You are the live speech interface for the Talon persona "${voicePersonaName}".`,
       'Speech role: handle greetings and clarification locally. Delegate substantive tasks, questions, memory, and current data to the Talon backend. Wait for a verified backend result before claiming completion; an acknowledgement is not a completion. Respect backend refusals and uncertainty.',
@@ -912,7 +914,9 @@ export async function bootstrap(
     });
     if (voiceAdapterSelection.isErr()) {
       await cleanupBootstrapFailure(db, observability, logger);
-      return err(new DaemonError('Configured voice transport and engine capabilities are not proven'));
+      return err(
+        new DaemonError('Configured voice transport and engine capabilities are not proven'),
+      );
     }
     const voiceCallAdmission = new VoiceCallAdmission(config.voice.maxConcurrentSessions, {
       maxSessionCreations: config.voice.maxSessionCreations,
@@ -938,7 +942,9 @@ export async function bootstrap(
     );
     if (voiceChannel.isErr()) {
       await cleanupBootstrapFailure(db, observability, logger);
-      return err(new DaemonError(`Failed to register browser voice channel: ${voiceChannel.error.message}`));
+      return err(
+        new DaemonError(`Failed to register browser voice channel: ${voiceChannel.error.message}`),
+      );
     }
     voiceChannelId = voiceChannel.value;
     const voiceExecutionGate = (input: VoiceExecutionGateInput): VoiceResult<void> => {
@@ -958,7 +964,9 @@ export async function bootstrap(
       });
       if (eligible.isErr()) return err(eligible.error);
       if (!eligible.value.eligible) {
-        return err(new PolicyError(`Voice execution denied: ${eligible.value.reason ?? 'policy_changed'}`));
+        return err(
+          new PolicyError(`Voice execution denied: ${eligible.value.reason ?? 'policy_changed'}`),
+        );
       }
       return ok(undefined);
     };
@@ -967,9 +975,13 @@ export async function bootstrap(
       telemetry: voiceTelemetry,
       logger,
     });
-    voiceOutputSink = new VoiceOutputSink(voiceStore, (result) => {
-      voiceBackendBridge?.notifyResult(result);
-    }, { telemetry: voiceTelemetry });
+    voiceOutputSink = new VoiceOutputSink(
+      voiceStore,
+      (result) => {
+        voiceBackendBridge?.notifyResult(result);
+      },
+      { telemetry: voiceTelemetry },
+    );
     voiceSessionService = new DurableVoiceSessionService({
       store: voiceStore,
       provider: voiceProvider,
@@ -1159,7 +1171,9 @@ export async function bootstrap(
     if (voiceConnector.isErr()) {
       await cleanupBootstrapFailure(db, observability, logger);
       return err(
-        new DaemonError(`Failed to register browser voice connector: ${voiceConnector.error.message}`),
+        new DaemonError(
+          `Failed to register browser voice connector: ${voiceConnector.error.message}`,
+        ),
       );
     }
   }
@@ -1238,6 +1252,55 @@ export async function bootstrap(
   });
   backgroundAgentManager?.setHostToolsBridge(hostToolsBridge);
   partialCtx.hostToolsBridge = hostToolsBridge;
+  hostToolsBridge.setScriptGuide(scriptGuide);
+
+  // 18. Talon scripts (off by default). The `scripts` section is fixed for the
+  // life of the process: the broker allowlist and the scripts root are built
+  // here one time. With the section off nothing below runs and the pipeline
+  // and the scheduler behave exactly as before.
+  let scriptService: ScriptService | null = null;
+  if (config.scripts?.enabled === true) {
+    const scriptRuntime = buildScriptRuntime({
+      config: config.scripts,
+      db,
+      personaRepo: repos.persona,
+      threadRepo: repos.thread,
+      channelRepo: repos.channel,
+      channelRegistry,
+      auditLogger,
+      applyScheduleChange: (input) => hostToolsBridge.applyScriptScheduleChange(input),
+      provider: {
+        hostTools: hostToolsBridge,
+        personaLoader,
+        skillResolver,
+        loadedSkills: () => daemonContextRef.current?.loadedSkills ?? loadedSkills.value,
+        config: () => daemonContextRef.current?.config ?? config,
+        tokenStore: oauthTokenStore,
+      },
+      logger,
+    });
+    if (scriptRuntime.isErr()) {
+      await cleanupBootstrapFailure(db, observability, logger);
+      return err(
+        new DaemonError(`Failed to start the script runtime: ${scriptRuntime.error.message}`),
+      );
+    }
+    scriptService = scriptRuntime.value;
+    hostToolsBridge.setScriptService(scriptService);
+    await reapScriptContainers(config.scripts, logger);
+    const service = scriptService;
+    messagePipeline.setInboundCommandHandler(
+      {
+        matches: (event) => service.matchesInbound(event),
+        handle: (event) => service.handleInbound(event),
+      },
+      createChannelSender(channelRegistry),
+    );
+    scheduler.setScriptRunner(service);
+    logger.info('bootstrap: script runtime ready');
+  }
+  (partialCtx as { scriptService?: ScriptService | null }).scriptService = scriptService;
+
   const ctx = partialCtx as DaemonContext;
   daemonContextRef.current = ctx;
 

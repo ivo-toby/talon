@@ -38,11 +38,14 @@ import type { QueueManager } from '../queue/queue-manager.js';
 import type { AuditLogger } from '../core/logging/audit-logger.js';
 import type { InboundEvent } from '../channels/channel-types.js';
 import { MessageNormalizer } from './message-normalizer.js';
+import type { ImageIngestionRequest, ImageIngestionService } from '../images/image-ingestion.js';
 import type {
-  ImageIngestionRequest,
-  ImageIngestionService,
-} from '../images/image-ingestion.js';
-import type { NormalizedMessage, PipelineResult, PipelineStats } from './pipeline-types.js';
+  InboundCommandHandler,
+  InboundReplySender,
+  NormalizedMessage,
+  PipelineResult,
+  PipelineStats,
+} from './pipeline-types.js';
 import {
   prependReplyHeader,
   renderReactionContent,
@@ -70,6 +73,9 @@ export class MessagePipeline {
     errors: 0,
   };
 
+  private commandHandler: InboundCommandHandler | null = null;
+  private sendReply: InboundReplySender | null = null;
+
   constructor(
     private readonly messageRepo: MessageRepository,
     private readonly threadRepo: ThreadRepository,
@@ -94,12 +100,94 @@ export class MessagePipeline {
   ) {}
 
   /**
+   * Installs the handler that may claim inbound commands before a thread is
+   * touched. `sendReply` delivers the handler's reply text to the chat. With
+   * no handler set the pipeline behaves as before.
+   */
+  setInboundCommandHandler(handler: InboundCommandHandler, sendReply: InboundReplySender): void {
+    this.commandHandler = handler;
+    this.sendReply = sendReply;
+  }
+
+  /**
+   * Synchronous claim: true only when a handler is set and the handler's
+   * `matches` agrees. Every non-reaction event is offered, also a long one or
+   * one with attachments, because the handler must see each message that can
+   * hold an approval code. Nothing is awaited when `matches` is false, so
+   * ordinary messages reach the thread lookup exactly as without a handler.
+   * Never logs event content.
+   */
+  private isCommand(event: InboundEvent): boolean {
+    const handler = this.commandHandler;
+    if (handler === null || this.sendReply === null) return false;
+    try {
+      return handler.matches(event);
+    } catch (cause) {
+      this.logger.error(
+        {
+          errName: cause instanceof Error ? cause.name : 'unknown',
+          channelName: event.channelName,
+        },
+        'pipeline: inbound command matcher failed; continuing as a normal message',
+      );
+      return false;
+    }
+  }
+
+  /**
+   * Runs a claimed command. Returns true when the event was consumed (reply
+   * sent, attempted, or none to send). A claimed command is deliberately not recorded in the
+   * idempotency store: a connector redelivery reaches the handler again, so
+   * the handler is responsible for one-time use.
+   */
+  private async runCommand(event: InboundEvent): Promise<boolean> {
+    const handler = this.commandHandler;
+    const sendReply = this.sendReply;
+    if (handler === null || sendReply === null) return false;
+
+    let handled: { reply?: string } | undefined;
+    try {
+      handled = await handler.handle(event);
+    } catch (cause) {
+      this.logger.error(
+        {
+          errName: cause instanceof Error ? cause.name : 'unknown',
+          channelName: event.channelName,
+        },
+        'pipeline: inbound command handler failed; continuing as a normal message',
+      );
+      return false;
+    }
+    if (handled === undefined || handled === null) return false;
+    const reply = handled.reply;
+    if (typeof reply !== 'string') return true;
+
+    try {
+      const sent = await sendReply(event.channelName, event.externalThreadId, reply);
+      if (sent.isErr()) {
+        this.logger.warn(
+          { channelName: event.channelName },
+          'pipeline: command reply could not be sent',
+        );
+      }
+    } catch {
+      this.logger.warn(
+        { channelName: event.channelName },
+        'pipeline: command reply could not be sent',
+      );
+    }
+    return true;
+  }
+
+  /**
    * Processes a single InboundEvent through the full pipeline.
    *
    * Steps:
    *  1. Resolve channel by name.
    *  1a. Reaction events: resolve the reacted-to message through the ledger
    *      and continue at step 4 on that message's thread, or ignore the event.
+   *  1b. Commands claimed by the inbound command handler (synchronous
+   *      `matches`) are answered directly and stop here.
    *  2. Resolve (or create) thread by external ID.
    *  2a. Native replies: prefix the content with the resolved reply header.
    *  3. Normalize event to canonical NormalizedMessage.
@@ -144,6 +232,14 @@ export class MessagePipeline {
       // ------------------------------------------------------------------
       if (event.reaction !== undefined) {
         return this.handleReactionEvent(event, channelId);
+      }
+
+      // ------------------------------------------------------------------
+      // Step 1b: Commands are consumed here, before any thread or message
+      // row exists, so an agent can never read or produce them.
+      // ------------------------------------------------------------------
+      if (this.isCommand(event) && (await this.runCommand(event))) {
+        return ok('ignored');
       }
 
       // ------------------------------------------------------------------
@@ -204,11 +300,7 @@ export class MessagePipeline {
       // events; the text steps below must not double-write them.
       // ------------------------------------------------------------------
       const ingestion = this.imageIngestion;
-      if (
-        ingestion !== null &&
-        event.attachments !== undefined &&
-        event.attachments.length > 0
-      ) {
+      if (ingestion !== null && event.attachments !== undefined && event.attachments.length > 0) {
         const imageResult = await this.handleImageEvent(
           event,
           ingestion,
@@ -248,7 +340,6 @@ export class MessagePipeline {
     threadId: string,
     normalized: NormalizedMessage,
   ): Result<PipelineResult, PipelineError> {
-
     // ------------------------------------------------------------------
     // Step 4: Persist with INSERT OR IGNORE deduplication.
     // Check before inserting to distinguish duplicate from first insert.

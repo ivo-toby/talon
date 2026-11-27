@@ -167,6 +167,8 @@ vi.mock('../../../src/tools/host-tools-bridge.js', () => ({
     path: '/tmp/host-tools.sock',
     start: vi.fn(),
     stop: vi.fn(),
+    setScriptGuide: vi.fn(),
+    setScriptService: vi.fn(),
   })),
 }));
 
@@ -225,6 +227,8 @@ import { recoverFromCrash } from '../../../src/daemon/lifecycle.js';
 import { reconcileVoiceSessions } from '../../../src/voice/voice-session-reconciler.js';
 import { registerChannels } from '../../../src/channels/channel-setup.js';
 import { MessagePipeline } from '../../../src/pipeline/message-pipeline.js';
+import { Scheduler } from '../../../src/scheduler/scheduler.js';
+import { ScriptsConfigSchema, TalondConfigSchema } from '../../../src/core/config/config-schema.js';
 import {
   BackgroundTaskRepository,
   PersonaRepository,
@@ -424,8 +428,8 @@ function makeMockDb() {
     get: vi.fn().mockReturnValue(undefined),
     all: vi.fn().mockReturnValue([]),
   };
-
   return {
+    name: ':memory:',
     prepare: vi.fn().mockReturnValue(mockStatement),
     pragma: vi.fn().mockReturnValue(0),
     exec: vi.fn(),
@@ -2577,5 +2581,84 @@ describe('bootstrap', () => {
       expect(result.isOk()).toBe(true);
       expect(FindingRepository).toHaveBeenCalledWith(db);
     });
+  });
+});
+
+describe('bootstrap with scripts enabled', () => {
+  const DIGEST_IMAGE = `node@sha256:${'b'.repeat(64)}`;
+  let logger: pino.Logger;
+  let root: string;
+  let setInboundCommandHandler: ReturnType<typeof vi.fn>;
+  let setScriptRunner: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    logger = createSilentLogger();
+    vi.clearAllMocks();
+    root = mkdtempSync(join(tmpdir(), 'bootstrap-scripts-'));
+    const { config } = setupSuccessfulMocks();
+    const scripts = ScriptsConfigSchema.parse({
+      enabled: true,
+      root: join(root, 'scripts'),
+      image: DIGEST_IMAGE,
+      // No Docker in a unit test: the reaper fails to connect and only warns.
+      dockerSocket: join(root, 'no-docker.sock'),
+    });
+    vi.mocked(loadConfig).mockReturnValue(ok({ ...(config as object), scripts } as any));
+    vi.mocked(PersonaRepository).mockImplementation(
+      () => ({ findAll: vi.fn().mockReturnValue(ok([{ id: 'persona-1' }])) }) as any,
+    );
+    setInboundCommandHandler = vi.fn();
+    vi.mocked(MessagePipeline).mockImplementation(() => ({ setInboundCommandHandler }) as any);
+    setScriptRunner = vi.fn();
+    vi.mocked(Scheduler).mockImplementation(() => ({ setScriptRunner }) as any);
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+    vi.mocked(MessagePipeline).mockImplementation(() => ({}) as any);
+    vi.mocked(Scheduler).mockImplementation(() => ({}) as any);
+  });
+
+  it('builds the script service and gives the pipeline a handler and the scheduler a runner', async () => {
+    const result = await bootstrap('/config.yaml', logger);
+
+    expect(result.isOk()).toBe(true);
+    const ctx = result._unsafeUnwrap();
+    expect(ctx.scriptService).toBeDefined();
+    expect(ctx.scriptService).not.toBeNull();
+    expect(setInboundCommandHandler).toHaveBeenCalledTimes(1);
+    const [handler, sendReply] = setInboundCommandHandler.mock.calls[0];
+    expect(typeof handler.matches).toBe('function');
+    expect(typeof handler.handle).toBe('function');
+    expect(typeof sendReply).toBe('function');
+    expect(handler.matches({ channelName: 'c', externalThreadId: 't', content: 'hi' })).toBe(false);
+    expect(setScriptRunner).toHaveBeenCalledWith(ctx.scriptService);
+    // script_manage reads the service through the bridge, and the guide loads from templates/.
+    expect(ctx.hostToolsBridge.setScriptService).toHaveBeenCalledWith(ctx.scriptService);
+    expect(ctx.hostToolsBridge.setScriptGuide).toHaveBeenCalledWith(
+      expect.stringContaining('script'),
+    );
+  });
+
+  it('fails when the image is not pinned by digest', async () => {
+    const loaded = vi.mocked(loadConfig).getMockImplementation()!('/config.yaml') as any;
+    vi.mocked(loadConfig).mockReturnValue(
+      ok({ ...loaded.value, scripts: { ...loaded.value.scripts, image: 'node:24' } }),
+    );
+
+    const result = await bootstrap('/config.yaml', logger);
+
+    expect(result.isErr()).toBe(true);
+    expect(result._unsafeUnwrapErr().message).toContain('script runtime');
+    expect(setInboundCommandHandler).not.toHaveBeenCalled();
+    expect(setScriptRunner).not.toHaveBeenCalled();
+  });
+
+  it('rejects an image that is not pinned at config load', () => {
+    const unpinned = TalondConfigSchema.safeParse({ scripts: { enabled: true, image: 'node:24' } });
+    expect(unpinned.success).toBe(false);
+    expect(unpinned.error?.issues.map((issue) => issue.path.join('.'))).toContain('scripts.image');
+    const pinned = TalondConfigSchema.safeParse({ scripts: { enabled: true, image: DIGEST_IMAGE } });
+    expect(pinned.success).toBe(true);
   });
 });

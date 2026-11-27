@@ -129,6 +129,12 @@ personas:
         - memory.access:*
         - subagent.invoke:*
         - subagent.background
+        # Scripts (see the `scripts` section). `script.manage:own` lets the
+        # agent write and test scripts. `script.run:*` lets the persona run
+        # its approved scripts. Put `script.run:*` in `requireApproval` and
+        # the user must approve each run that the agent starts.
+        # - script.manage:own
+        # - script.run:*
         # Text-only discovery of this thread's Images and saved Findings
         # (exposed to the model as `image_lookup`). Needs no vision assignment,
         # no `subagent.invoke`, no model credential, and never calls a model.
@@ -622,6 +628,26 @@ images:
 # message for remote media fetch (including retries), a separate 60-second
 # normalization deadline per message, at most 3 attempts per Image, and sweeps
 # at most every 60 seconds. Neither redelivery nor a restart resets them.
+
+# Scripts let a persona run a model-written TypeScript script in a hardened
+# Docker container. The feature is off by default. The image must be a
+# digest-pinned Node.js 22.18+ image that is already present locally. Talon
+# does not pull it. The root directory is mounted read-only into the
+# container. The configuration is fixed for the process lifetime. The key
+# toolClasses overrides the read or write class of an MCP tool by its script
+# name <server>.<tool>. A persona also needs the capability `script.run:*`
+# or `script.run:<name>` to run a script, and `script.manage:own` to write one.
+#
+scripts:
+  enabled: false
+  root: data/scripts
+  image: ""                 # name@sha256:<64 hex>, required when enabled
+  dockerSocket: /var/run/docker.sock
+  runTimeoutMs: 120000      # 1000-600000
+  maxCallsPerRun: 200       # 1-2000
+  judgeTimeoutMs: 60000     # 1000-300000
+  approvalTtlMinutes: 1440  # 5-10080
+  toolClasses: {}           # e.g. { "mailbox.send": write, "mailbox.list": read }
 
 logLevel: info
 dataDir: data

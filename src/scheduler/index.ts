@@ -8,4 +8,10 @@
 
 export { Scheduler } from './scheduler.js';
 export { getNextCronTime, isValidCronExpression } from './cron-evaluator.js';
-export type { ScheduleConfig, ScheduleType, ScheduleRow } from './schedule-types.js';
+export type {
+  ScheduleConfig,
+  SchedulePayload,
+  ScriptScheduleRunner,
+  ScheduleType,
+  ScheduleRow,
+} from './schedule-types.js';

@@ -22,8 +22,14 @@ import {
   type ChannelBroadcastArgs,
 } from './host-tools/channel-broadcast.js';
 import { PersonaSendHandler, type PersonaSendArgs } from './host-tools/persona-send.js';
-import { PersonaTaskStatusHandler, type PersonaTaskStatusArgs } from './host-tools/persona-task-status.js';
-import { PersonaTaskCancelHandler, type PersonaTaskCancelArgs } from './host-tools/persona-task-cancel.js';
+import {
+  PersonaTaskStatusHandler,
+  type PersonaTaskStatusArgs,
+} from './host-tools/persona-task-status.js';
+import {
+  PersonaTaskCancelHandler,
+  type PersonaTaskCancelArgs,
+} from './host-tools/persona-task-cancel.js';
 import { PersonaListHandler } from './host-tools/persona-list.js';
 import { HttpProxyHandler, type HttpProxyArgs } from './host-tools/http-proxy.js';
 import { DbQueryHandler, type DbQueryArgs } from './host-tools/db-query.js';
@@ -36,6 +42,9 @@ import {
   type ImageLookupFindings,
 } from './host-tools/image-lookup.js';
 import { ExecutionEnvHandler, type ExecutionEnvArgs } from './host-tools/execution-env.js';
+import { ScriptManageHandler, type ScriptManageArgs } from './host-tools/script-manage.js';
+import { ScriptRunHandler, type ScriptRunArgs } from './host-tools/script-run.js';
+import type { ScriptService } from '../scripts/service.js';
 import { filterVoiceMcpTools, isToolAllowed, MCP_TO_INTERNAL } from './tool-filter.js';
 import { createDatabase } from '../core/database/connection.js';
 import type { ResolvedCapabilities } from '../personas/persona-types.js';
@@ -91,6 +100,23 @@ export interface ImageLookupServices {
   findings: ImageLookupFindings;
 }
 
+/** Result of {@link HostToolsBridge.executeInProcess}. */
+export interface InProcessToolResult extends ToolCallResult {
+  /** True when the capability check refused the call. */
+  denied?: true;
+}
+
+class HostToolTimeoutError extends Error {
+  constructor() {
+    super('Request timeout');
+  }
+}
+
+/** True when a `requireApproval` label of the persona grants the tool. */
+function isGrantedByApprovalLabel(toolName: string, capabilities: ResolvedCapabilities): boolean {
+  return isToolAllowed(toolName, { allow: [], requireApproval: capabilities.requireApproval });
+}
+
 export class HostToolsBridge {
   private server: net.Server | null = null;
   private readonly socketPath: string;
@@ -113,6 +139,10 @@ export class HostToolsBridge {
   private backgroundAgentHandler: BackgroundAgentHandler | null = null;
   private executionEnvHandler: ExecutionEnvHandler | null = null;
   private imageLookupHandler: ImageLookupHandler | null = null;
+  private scriptService: ScriptService | null = null;
+  private scriptGuide: string | undefined;
+  private scriptManageHandler: ScriptManageHandler;
+  private scriptRunHandler: ScriptRunHandler;
 
   constructor(
     private readonly ctx: DaemonContext,
@@ -127,6 +157,20 @@ export class HostToolsBridge {
       threadRepository: ctx.repos.thread,
       channelRepository: ctx.repos.channel,
       personaRepository: ctx.repos.persona,
+      getService: () => this.scriptService,
+      resolveCapabilities: (personaId) => this.resolvePersonaCapabilities(personaId),
+      logger: handlerLogger,
+    });
+
+    this.scriptManageHandler = new ScriptManageHandler({
+      getService: () => this.scriptService,
+      getGuide: () => this.scriptGuide,
+      logger: handlerLogger,
+    });
+
+    this.scriptRunHandler = new ScriptRunHandler({
+      getService: () => this.scriptService,
+      resolveCapabilities: (personaId) => this.resolvePersonaCapabilities(personaId),
       logger: handlerLogger,
     });
 
@@ -171,9 +215,7 @@ export class HostToolsBridge {
       // actually hold one. Background-agent runs (backgroundTaskId set) are not
       // queue-dispatched, so they must not free a slot.
       const waitScope = <T>(fn: () => Promise<T>, context: ToolExecutionContext): Promise<T> =>
-        context.backgroundTaskId
-          ? fn()
-          : ctx.queueManager.runWithSlotReleased(fn, context.runId);
+        context.backgroundTaskId ? fn() : ctx.queueManager.runWithSlotReleased(fn, context.runId);
       this.personaSendHandler = new PersonaSendHandler({
         taskMapper: ctx.a2aTaskMapper,
         taskRepo: ctx.repos.a2aTask,
@@ -302,6 +344,29 @@ export class HostToolsBridge {
       ...(input.voiceObservation ? { voiceObservation: input.voiceObservation } : {}),
       ...(input.traceparent ? { trustedTraceparent: input.traceparent } : {}),
     });
+  }
+
+  /**
+   * Sets the script service that `script_manage` uses. The service is built after
+   * the bridge, and only with `scripts.enabled`. Null means scripts are off.
+   */
+  setScriptService(service: ScriptService | null): void {
+    this.scriptService = service;
+  }
+
+  /**
+   * Writes a schedule change that the user approved in the chat. The script
+   * service calls it through the wiring; it writes like the direct path of `schedule_manage`.
+   */
+  applyScriptScheduleChange(
+    input: Parameters<ScheduleManageHandler['applyScriptChange']>[0],
+  ): ReturnType<ScheduleManageHandler['applyScriptChange']> {
+    return this.scheduleHandler.applyScriptChange(input);
+  }
+
+  /** Sets the text of the script authoring guide. Undefined: the guide is not available. */
+  setScriptGuide(text: string | undefined): void {
+    this.scriptGuide = text;
   }
 
   /** Bind a provider observation parent after the generation span is created. */
@@ -442,7 +507,6 @@ export class HostToolsBridge {
     const normalizedTool = TOOL_NAME_MAP[tool] || tool;
     const loggedToolName = authenticatedContext.voiceObservation ? 'voice-tool' : normalizedTool;
     const dispatchPrivacy = this.getDispatchPrivacy(authenticatedContext);
-    const requestLogger = this.dispatchLogger.logger;
 
     try {
       if (normalizedTool === 'skill.load') {
@@ -465,97 +529,19 @@ export class HostToolsBridge {
         },
       };
       const dispatchTool = async (toolObservation: ObservationHandle): Promise<ToolCallResult> => {
-        return await this.dispatchLogger.run(dispatchPrivacy, async () => {
-          const registered = this.bridgeAuthByRunId.get(context.runId);
-          const resolvedCaps = this.resolvePersonaCapabilities(
-            authenticatedContext.personaId,
-            authenticatedContext.voiceObservation,
-          );
-          const deniedToolNames = new Set(registered?.deniedToolNames);
-          if (isVoiceObservationContext(authenticatedContext.voiceObservation)) {
-            for (const deniedTool of filterVoiceMcpTools(resolvedCaps).deniedMcpTools) {
-              deniedToolNames.add(TOOL_NAME_MAP[deniedTool] ?? deniedTool);
-            }
-          }
-          if (deniedToolNames.has(normalizedTool)) {
-            const toolResult: ToolCallResult = {
-              requestId: context.requestId ?? 'unknown',
-              tool: normalizedTool,
-              status: 'error',
-              error: `Tool "${normalizedTool}" requires approval and is unavailable for voice execution`,
-            };
-            toolObservation.update({
-              output: toolResult,
-              level: 'ERROR',
-              statusMessage: toolResult.error,
-            });
-            requestLogger.warn(
-              { runId: context.runId, tool: loggedToolName },
-              'host-tools-bridge: rejected approval-gated voice tool call',
-            );
-            return toolResult;
-          }
-
-          // Defense-in-depth: enforce persona capabilities at the bridge level.
-          // Even if the MCP server somehow exposes a disallowed tool, the bridge
-          // will reject it here. Uses fail-closed semantics — if the persona
-          // cannot be resolved, no tools are allowed.
-          if (!isToolAllowed(normalizedTool, resolvedCaps)) {
-            const toolResult: ToolCallResult = {
-              requestId: context.requestId ?? 'unknown',
-              tool: normalizedTool,
-              status: 'error',
-              error: `Tool "${normalizedTool}" is not allowed for persona "${context.personaId}"`,
-            };
-            toolObservation.update({
-              output: toolResult,
-              level: 'ERROR',
-              statusMessage: toolResult.error,
-            });
-            requestLogger.warn(
-              { personaId: context.personaId, tool: loggedToolName },
-              'host-tools-bridge: rejected disallowed tool call',
-            );
-            return toolResult;
-          }
-
-          let timeoutId: ReturnType<typeof setTimeout> | undefined;
-          const requestTimeoutMs = getHostToolRequestTimeoutMs(normalizedTool, args);
-
-          try {
-            const toolResult = await Promise.race([
-              this.dispatch(normalizedTool, args, authenticatedContext),
-              new Promise<never>((_, reject) => {
-                timeoutId = setTimeout(() => {
-                  requestLogger.warn(
-                    { id, tool: loggedToolName },
-                    'host-tools-bridge: request timed out',
-                  );
-                  reject(new Error('Request timeout'));
-                }, requestTimeoutMs);
-              }),
-            ]);
-
-            toolObservation.update({
-              output: toolResult,
-              level: toolResult.status === 'error' ? 'ERROR' : undefined,
-              statusMessage: toolResult.status === 'error' ? toolResult.error : undefined,
-            });
-
-            return toolResult;
-          } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            toolObservation.update({
-              level: 'ERROR',
-              statusMessage: message,
-            });
-            throw error;
-          } finally {
-            if (timeoutId) {
-              clearTimeout(timeoutId);
-            }
-          }
+        const guarded = await this.guardedDispatch({
+          normalizedTool,
+          args,
+          context,
+          authenticatedContext,
+          dispatchPrivacy,
+          loggedToolName,
+          toolObservation,
+          registeredDeniedToolNames: this.bridgeAuthByRunId.get(context.runId)?.deniedToolNames,
+          refuseApprovalGated: false,
+          requestLogId: id,
         });
+        return guarded.result;
       };
       const result = authenticatedContext.voiceObservation
         ? await observeVoiceSafely({
@@ -576,6 +562,200 @@ export class HostToolsBridge {
         id,
         error: err instanceof Error ? err.message : String(err),
       });
+    }
+  }
+
+  /**
+   * The capability check and the time limit that every host-tool call passes,
+   * whether it arrives over the socket or in process. Authentication happens
+   * before this method. A refused call returns `denied: true` so callers do
+   * not have to read the error text. A timeout throws.
+   */
+  private async guardedDispatch(opts: {
+    normalizedTool: string;
+    args: Record<string, unknown>;
+    context: ToolExecutionContext;
+    authenticatedContext: ToolExecutionContext;
+    dispatchPrivacy: VoicePrivacyClassification;
+    loggedToolName: string;
+    toolObservation: ObservationHandle;
+    registeredDeniedToolNames: ReadonlySet<string> | undefined;
+    /** In-process callers have no human to approve at call time. */
+    refuseApprovalGated: boolean;
+    requestLogId: string;
+  }): Promise<{ result: ToolCallResult; denied: boolean }> {
+    const { normalizedTool, args, context, authenticatedContext, loggedToolName, toolObservation } =
+      opts;
+    const requestLogger = this.dispatchLogger.logger;
+    return await this.dispatchLogger.run(opts.dispatchPrivacy, async () => {
+      const resolvedCaps = this.resolvePersonaCapabilities(
+        authenticatedContext.personaId,
+        authenticatedContext.voiceObservation,
+      );
+      const deniedToolNames = new Set(opts.registeredDeniedToolNames);
+      if (isVoiceObservationContext(authenticatedContext.voiceObservation)) {
+        for (const deniedTool of filterVoiceMcpTools(resolvedCaps).deniedMcpTools) {
+          deniedToolNames.add(TOOL_NAME_MAP[deniedTool] ?? deniedTool);
+        }
+      }
+      if (deniedToolNames.has(normalizedTool)) {
+        const toolResult: ToolCallResult = {
+          requestId: context.requestId ?? 'unknown',
+          tool: normalizedTool,
+          status: 'error',
+          error: `Tool "${normalizedTool}" requires approval and is unavailable for voice execution`,
+        };
+        toolObservation.update({
+          output: toolResult,
+          level: 'ERROR',
+          statusMessage: toolResult.error,
+        });
+        requestLogger.warn(
+          { runId: context.runId, tool: loggedToolName },
+          'host-tools-bridge: rejected approval-gated voice tool call',
+        );
+        return { result: toolResult, denied: true };
+      }
+
+      // Defense-in-depth: enforce persona capabilities at the bridge level.
+      // Even if the MCP server somehow exposes a disallowed tool, the bridge
+      // will reject it here. Uses fail-closed semantics — if the persona
+      // cannot be resolved, no tools are allowed.
+      if (!isToolAllowed(normalizedTool, resolvedCaps)) {
+        const toolResult: ToolCallResult = {
+          requestId: context.requestId ?? 'unknown',
+          tool: normalizedTool,
+          status: 'error',
+          error: `Tool "${normalizedTool}" is not allowed for persona "${context.personaId}"`,
+        };
+        toolObservation.update({
+          output: toolResult,
+          level: 'ERROR',
+          statusMessage: toolResult.error,
+        });
+        requestLogger.warn(
+          { personaId: context.personaId, tool: loggedToolName },
+          'host-tools-bridge: rejected disallowed tool call',
+        );
+        return { result: toolResult, denied: true };
+      }
+
+      if (opts.refuseApprovalGated && isGrantedByApprovalLabel(normalizedTool, resolvedCaps)) {
+        const toolResult: ToolCallResult = {
+          requestId: context.requestId ?? 'unknown',
+          tool: normalizedTool,
+          status: 'error',
+          error: `Tool "${normalizedTool}" requires approval and is unavailable without a human in the loop`,
+        };
+        toolObservation.update({
+          output: toolResult,
+          level: 'ERROR',
+          statusMessage: toolResult.error,
+        });
+        requestLogger.warn(
+          { personaId: context.personaId, tool: loggedToolName },
+          'host-tools-bridge: rejected approval-gated in-process tool call',
+        );
+        return { result: toolResult, denied: true };
+      }
+
+      let timeoutId: ReturnType<typeof setTimeout> | undefined;
+      const requestTimeoutMs = getHostToolRequestTimeoutMs(normalizedTool, args);
+
+      try {
+        const toolResult = await Promise.race([
+          this.dispatch(normalizedTool, args, authenticatedContext),
+          new Promise<never>((_, reject) => {
+            timeoutId = setTimeout(() => {
+              requestLogger.warn(
+                { id: opts.requestLogId, tool: loggedToolName },
+                'host-tools-bridge: request timed out',
+              );
+              reject(new HostToolTimeoutError());
+            }, requestTimeoutMs);
+          }),
+        ]);
+
+        toolObservation.update({
+          output: toolResult,
+          level: toolResult.status === 'error' ? 'ERROR' : undefined,
+          statusMessage: toolResult.status === 'error' ? toolResult.error : undefined,
+        });
+
+        return { result: toolResult, denied: false };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        toolObservation.update({
+          level: 'ERROR',
+          statusMessage: message,
+        });
+        throw error;
+      } finally {
+        if (timeoutId) {
+          clearTimeout(timeoutId);
+        }
+      }
+    });
+  }
+
+  /**
+   * Runs a host tool for a caller in this process (the script runtime). There
+   * is no socket and no bridge secret, so only the authentication is skipped:
+   * the persona capability check and the time limit are the ones the socket
+   * path applies. A tool that the persona holds only under `requireApproval`
+   * is refused. Never throws. `denied` is set when the capability check
+   * refused the call.
+   */
+  async executeInProcess(
+    tool: string,
+    args: Record<string, unknown>,
+    context: ToolExecutionContext,
+  ): Promise<InProcessToolResult> {
+    const requestId = context.requestId ?? 'unknown';
+    const normalizedTool = TOOL_NAME_MAP[tool] || tool;
+    try {
+      const observationInput = {
+        type: 'tool' as const,
+        name: normalizedTool,
+        input: args,
+        metadata: {
+          runId: context.runId,
+          threadId: context.threadId,
+          personaId: context.personaId,
+          requestId: context.requestId ?? null,
+        },
+      };
+      let denied = false;
+      const result = await this.ctx.observability.observe(
+        observationInput,
+        async (toolObservation: ObservationHandle): Promise<ToolCallResult> => {
+          const guarded = await this.guardedDispatch({
+            normalizedTool,
+            args,
+            context,
+            authenticatedContext: context,
+            dispatchPrivacy: this.getDispatchPrivacy(context),
+            loggedToolName: normalizedTool,
+            toolObservation,
+            registeredDeniedToolNames: undefined,
+            refuseApprovalGated: true,
+            requestLogId: requestId,
+          });
+          denied = guarded.denied;
+          return guarded.result;
+        },
+      );
+      return denied ? { ...result, denied: true } : result;
+    } catch (error) {
+      if (error instanceof HostToolTimeoutError) {
+        return { requestId, tool: normalizedTool, status: 'timeout', error: error.message };
+      }
+      return {
+        requestId,
+        tool: normalizedTool,
+        status: 'error',
+        error: error instanceof Error ? error.message : String(error),
+      };
     }
   }
 
@@ -737,9 +917,7 @@ export class HostToolsBridge {
       const loadedResult = this.ctx.personaLoader.getByName(personaName);
       if (loadedResult.isErr() || loadedResult.value === undefined) {
         logger.warn(
-          voiceObservation
-            ? { voice: true, errorCategory: 'unknown' }
-            : { personaId, personaName },
+          voiceObservation ? { voice: true, errorCategory: 'unknown' } : { personaId, personaName },
           voiceObservation
             ? 'host-tools-bridge: loaded persona lookup failed, failing closed (no tools allowed)'
             : 'host-tools-bridge: loaded persona not found, failing closed (no tools allowed)',
@@ -800,6 +978,12 @@ export class HostToolsBridge {
       case 'schedule.manage':
         return this.scheduleHandler.execute(args as unknown as ScheduleManageArgs, context);
 
+      case 'script.manage':
+        return this.scriptManageHandler.execute(args as unknown as ScriptManageArgs, context);
+
+      case 'script.run':
+        return this.scriptRunHandler.execute(args as unknown as ScriptRunArgs, context);
+
       case 'channel.send':
         return this.channelHandler.execute(args as unknown as ChannelSendArgs, context);
 
@@ -849,7 +1033,10 @@ export class HostToolsBridge {
             error: 'A2A task mapper not initialized',
           };
         }
-        return this.personaTaskCancelHandler.execute(args as unknown as PersonaTaskCancelArgs, context);
+        return this.personaTaskCancelHandler.execute(
+          args as unknown as PersonaTaskCancelArgs,
+          context,
+        );
 
       case 'persona.list':
         return this.personaListHandler.execute({}, context);

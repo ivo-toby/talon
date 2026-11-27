@@ -1,6 +1,9 @@
 /** Default maximum time a host-tool roundtrip may take over the MCP bridge. */
 export const HOST_TOOLS_REQUEST_TIMEOUT_MS = 5 * 60 * 1000;
 
+/** Budget of a script tool roundtrip: a live script run can take up to ten minutes. */
+export const SCRIPT_TOOL_REQUEST_TIMEOUT_MS = 11 * 60 * 1000;
+
 /** Extra transport headroom so a tool can return a structured timeout first. */
 export const HOST_TOOLS_TIMEOUT_GRACE_MS = 5_000;
 
@@ -34,6 +37,10 @@ export function getHostToolRequestTimeoutMs(
 
   if (normalizedToolName === 'persona.task_status') {
     return resolvePersonaTaskWaitMs(args.wait_ms, 0) + HOST_TOOLS_TIMEOUT_GRACE_MS;
+  }
+
+  if (normalizedToolName === 'script.manage' || normalizedToolName === 'script.run') {
+    return SCRIPT_TOOL_REQUEST_TIMEOUT_MS;
   }
 
   return HOST_TOOLS_REQUEST_TIMEOUT_MS;

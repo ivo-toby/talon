@@ -16,6 +16,7 @@ import { DbQueryHandler, extractTableNames } from '../../../../src/tools/host-to
 import type { DbQueryArgs } from '../../../../src/tools/host-tools/db-query.js';
 import type { ToolExecutionContext } from '../../../../src/tools/host-tools/channel-send.js';
 import type Database from 'better-sqlite3';
+import BetterSqlite from 'better-sqlite3';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -78,7 +79,9 @@ describe('extractTableNames', () => {
   });
 
   it('extracts JOIN table', () => {
-    const tables = extractTableNames('SELECT * FROM memory_items JOIN threads ON memory_items.thread_id = threads.id');
+    const tables = extractTableNames(
+      'SELECT * FROM memory_items JOIN threads ON memory_items.thread_id = threads.id',
+    );
     expect(tables).toContain('memory_items');
     expect(tables).toContain('threads');
   });
@@ -185,7 +188,7 @@ describe('DbQueryHandler — happy paths', () => {
     const handler = new DbQueryHandler({ db, logger: makeLogger() });
 
     await handler.execute(
-      makeArgs({ sql: "SELECT * FROM memory_items WHERE type = ?", params: ['note'] }),
+      makeArgs({ sql: 'SELECT * FROM memory_items WHERE type = ?', params: ['note'] }),
       makeContext({ threadId: 'thread-abc' }),
     );
 
@@ -206,7 +209,10 @@ describe('DbQueryHandler — happy paths', () => {
     expect(result.status).toBe('success');
     expect(result.result).toEqual({
       columns: ['id', 'content'],
-      rows: [['1', 'hello'], ['2', 'world']],
+      rows: [
+        ['1', 'hello'],
+        ['2', 'world'],
+      ],
       rowCount: 2,
     });
   });
@@ -289,7 +295,9 @@ describe('DbQueryHandler — blocked tables', () => {
     const handler = new DbQueryHandler({ db, logger: makeLogger() });
 
     const result = await handler.execute(
-      makeArgs({ sql: 'SELECT * FROM memory_items JOIN personas ON memory_items.id = personas.id' }),
+      makeArgs({
+        sql: 'SELECT * FROM memory_items JOIN personas ON memory_items.id = personas.id',
+      }),
       makeContext(),
     );
 
@@ -498,7 +506,7 @@ describe('DbQueryHandler — adversarial', () => {
     const handler = new DbQueryHandler({ db, logger: makeLogger() });
 
     const result = await handler.execute(
-      makeArgs({ sql: "SELECT id, content FROM memory_items UNION SELECT id, name FROM personas" }),
+      makeArgs({ sql: 'SELECT id, content FROM memory_items UNION SELECT id, name FROM personas' }),
       makeContext(),
     );
 
@@ -579,10 +587,7 @@ describe('DbQueryHandler — adversarial', () => {
     const db = makeDb();
     const handler = new DbQueryHandler({ db, logger: makeLogger() });
 
-    const result = await handler.execute(
-      makeArgs({ sql: 'SELECT 1' }),
-      makeContext(),
-    );
+    const result = await handler.execute(makeArgs({ sql: 'SELECT 1' }), makeContext());
 
     expect(result.status).toBe('error');
     expect(result.error).toContain('could not identify any table');
@@ -619,7 +624,10 @@ describe('DbQueryHandler — arg validation', () => {
     const handler = new DbQueryHandler({ db, logger: makeLogger() });
 
     const result = await handler.execute(
-      makeArgs({ sql: 'SELECT * FROM memory_items', params: 'not-an-array' as unknown as unknown[] }),
+      makeArgs({
+        sql: 'SELECT * FROM memory_items',
+        params: 'not-an-array' as unknown as unknown[],
+      }),
       makeContext(),
     );
 
@@ -660,5 +668,82 @@ describe('DbQueryHandler — database errors', () => {
 
     expect(result.status).toBe('error');
     expect(result.error).toMatch(/query execution failed/);
+  });
+});
+
+describe('DbQueryHandler — hidden tables (real SQLite)', () => {
+  function realDb(): Database.Database {
+    const db = new BetterSqlite(':memory:');
+    db.exec(`
+      CREATE TABLE messages (id TEXT, thread_id TEXT, body TEXT);
+      CREATE TABLE memory_items (id TEXT, thread_id TEXT);
+      CREATE TABLE schedules (id TEXT, thread_id TEXT, persona_id TEXT);
+      CREATE TABLE threads (id TEXT);
+      CREATE TABLE script_approvals (code_hash TEXT);
+      INSERT INTO messages VALUES ('m1', 'thread-001', 'hi');
+      INSERT INTO script_approvals VALUES ('SECRETHASH');
+    `);
+    return db;
+  }
+
+  const refused = [
+    'SELECT code_hash FROM messages m, script_approvals',
+    'SELECT a.code_hash FROM messages m JOIN "script_approvals" a ON 1=1',
+    'SELECT code_hash FROM messages, "script_approvals"',
+    'SELECT 1 FROM messages m, (script_approvals)',
+    'SELECT code_hash FROM messages, `script_approvals`',
+    'SELECT code_hash FROM messages, [script_approvals]',
+    'SELECT 1 FROM messages m, (`script_approvals`)',
+    'SELECT name FROM messages, sqlite_schema',
+  ];
+
+  it.each(refused)('refuses %s', async (sql) => {
+    const handler = new DbQueryHandler({ db: realDb(), logger: makeLogger() });
+    const result = await handler.execute({ sql }, makeContext());
+    expect(result.status).toBe('error');
+    expect(JSON.stringify(result)).not.toContain('SECRETHASH');
+  });
+
+  it('refuses at the EXPLAIN layer when the regex layer is blind', async () => {
+    const handler = new DbQueryHandler({ db: realDb(), logger: makeLogger() });
+    const result = await handler.execute(
+      { sql: 'SELECT code_hash FROM messages m, (script_approvals)' },
+      makeContext(),
+    );
+    expect(result.status).toBe('error');
+    expect(result.error).toMatch(/script_approvals|not accessible/);
+  });
+
+  it('still answers an aliased query with a schema prefix', async () => {
+    const handler = new DbQueryHandler({ db: realDb(), logger: makeLogger() });
+    const result = await handler.execute(
+      { sql: 'SELECT m.id FROM main.messages m' },
+      makeContext(),
+    );
+    expect(result.status).toBe('success');
+  });
+
+  it('answers a plain query of one allowed table', async () => {
+    const handler = new DbQueryHandler({ db: realDb(), logger: makeLogger() });
+    const result = await handler.execute(
+      { sql: "SELECT id FROM messages WHERE body = 'hi'" },
+      makeContext(),
+    );
+    expect(result.status).toBe('success');
+    expect((result.result as { rowCount: number }).rowCount).toBe(1);
+  });
+
+  it('refuses when EXPLAIN throws', async () => {
+    const db = {
+      prepare: vi.fn().mockImplementation((s: string) => {
+        if (s.startsWith('EXPLAIN')) throw new Error('boom');
+        return makeStatement([]);
+      }),
+    } as unknown as Database.Database;
+    const result = await new DbQueryHandler({ db, logger: makeLogger() }).execute(
+      makeArgs(),
+      makeContext(),
+    );
+    expect(result.status).toBe('error');
   });
 });

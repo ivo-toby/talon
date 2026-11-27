@@ -3,6 +3,7 @@ import Database from 'better-sqlite3';
 import { ScheduleRepository } from '../../../src/core/database/repositories/schedule-repository.js';
 import { PersonaRepository } from '../../../src/core/database/repositories/persona-repository.js';
 import { ChannelRepository } from '../../../src/core/database/repositories/channel-repository.js';
+import { ScriptRepository } from '../../../src/core/database/repositories/script-repository.js';
 import { addSchedule, seedFromConfig } from '../../../src/cli/commands/add-schedule.js';
 import { listSchedules } from '../../../src/cli/commands/list-schedules.js';
 import { removeSchedule } from '../../../src/cli/commands/remove-schedule.js';
@@ -635,5 +636,284 @@ describe('addSchedule() — seeding from config', () => {
     const row = personaRepo.findByName('james')._unsafeUnwrap()!;
     expect(row.id).toBe(personaId);
     expect(row.model).toBe('claude-sonnet-4-6');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// addSchedule() — script schedules
+// ---------------------------------------------------------------------------
+
+describe('addSchedule() — script schedules', () => {
+  let db: Database.Database;
+  let scripts: ScriptRepository;
+
+  const digestManifest = JSON.stringify({
+    name: 'digest',
+    description: 'Builds the digest',
+    tools: [],
+    channels: [],
+    dryRunInput: null,
+    inputSchema: {
+      type: 'object',
+      properties: { days: { type: 'number' } },
+      required: ['days'],
+      additionalProperties: false,
+    },
+  });
+
+  beforeEach(() => {
+    db = createTestDb();
+    scripts = new ScriptRepository(db);
+    new PersonaRepository(db).insert({
+      id: uuid(),
+      name: 'james',
+      model: 'claude-sonnet-4-6',
+      system_prompt_file: null,
+      skills: '[]',
+      capabilities: '{}',
+      mounts: '[]',
+      max_concurrent: null,
+    });
+    new ChannelRepository(db).insert({
+      id: uuid(),
+      type: 'telegram',
+      name: 'tg',
+      config: '{}',
+      credentials_ref: null,
+      enabled: 1,
+    });
+  });
+
+  afterEach(() => {
+    db.close();
+  });
+
+  /** Adds a script with one version; approves it when `approved` is true. */
+  function seedScript(name: string, manifest: string, approved: boolean): void {
+    const personaId = new PersonaRepository(db).findByName('james')._unsafeUnwrap()!.id;
+    const script = scripts.upsertScript(personaId, name, uuid())._unsafeUnwrap();
+    const version = scripts
+      .insertVersion({ id: uuid(), scriptId: script.id, contentHash: 'h', manifest, threadId: null })
+      ._unsafeUnwrap();
+    if (approved) {
+      scripts.setVersionState(version.id, ['draft'], 'approved');
+    }
+  }
+
+  function scheduleRow(id: string): { payload: string; expression: string } {
+    return new ScheduleRepository(db).findById(id)._unsafeUnwrap()!;
+  }
+
+  it('writes a {label, script} payload with no prompt fields', () => {
+    seedScript('digest', digestManifest, false);
+
+    const result = addSchedule({
+      persona: 'james',
+      channel: 'tg',
+      cron: '0 7 * * *',
+      label: 'morning',
+      script: 'digest',
+      db,
+    });
+
+    expect(result.script).toBe('digest');
+    expect(result.approvedVersion).toBeNull();
+    expect(JSON.parse(scheduleRow(result.id).payload)).toEqual({
+      label: 'morning',
+      script: 'digest',
+    });
+  });
+
+  it('reports the approved version and stores a valid input', () => {
+    seedScript('digest', digestManifest, true);
+
+    const result = addSchedule({
+      persona: 'james',
+      channel: 'tg',
+      cron: '0 7 * * *',
+      label: 'morning',
+      script: 'digest',
+      input: '{"days": 3}',
+      db,
+    });
+
+    expect(result.approvedVersion).toBe(1);
+    expect(JSON.parse(scheduleRow(result.id).payload)).toEqual({
+      label: 'morning',
+      script: 'digest',
+      input: { days: 3 },
+    });
+  });
+
+  it('checks the input against the manifest of the approved version', () => {
+    seedScript('digest', digestManifest, true);
+
+    expect(() =>
+      addSchedule({
+        persona: 'james',
+        channel: 'tg',
+        cron: '0 7 * * *',
+        label: 'bad',
+        script: 'digest',
+        input: '{"days": "three"}',
+        db,
+      }),
+    ).toThrow('does not match the input schema');
+  });
+
+  it('refuses an input for a script whose manifest declares no input schema', () => {
+    seedScript('plain', JSON.stringify({ name: 'plain', description: 'x', tools: [], channels: [] }), true);
+
+    expect(() =>
+      addSchedule({
+        persona: 'james',
+        channel: 'tg',
+        cron: '0 7 * * *',
+        label: 'plain',
+        script: 'plain',
+        input: '{"a": 1}',
+        db,
+      }),
+    ).toThrow('this script accepts no input');
+  });
+
+  it('rejects an input that is not JSON', () => {
+    seedScript('digest', digestManifest, true);
+
+    expect(() =>
+      addSchedule({
+        persona: 'james',
+        channel: 'tg',
+        cron: '0 7 * * *',
+        label: 'bad',
+        script: 'digest',
+        input: 'three days',
+        db,
+      }),
+    ).toThrow('--input is not valid JSON');
+  });
+
+  it('fails for a persona that has no script with that name', () => {
+    seedScript('digest', digestManifest, true);
+
+    expect(() =>
+      addSchedule({
+        persona: 'james',
+        channel: 'tg',
+        cron: '0 7 * * *',
+        label: 'x',
+        script: 'other',
+        db,
+      }),
+    ).toThrow('Unknown script: "other" for persona "james"');
+  });
+
+  it('rejects a script name that does not match the name pattern', () => {
+    expect(() =>
+      addSchedule({
+        persona: 'james',
+        channel: 'tg',
+        cron: '0 7 * * *',
+        label: 'x',
+        script: 'Bad_Name',
+        db,
+      }),
+    ).toThrow('Invalid script name');
+  });
+
+  it('rejects a script together with a prompt or a prompt file', () => {
+    seedScript('digest', digestManifest, true);
+
+    expect(() =>
+      addSchedule({
+        persona: 'james',
+        channel: 'tg',
+        cron: '0 7 * * *',
+        label: 'x',
+        script: 'digest',
+        prompt: 'hello',
+        db,
+      }),
+    ).toThrow('script is mutually exclusive with prompt and promptFile');
+    expect(() =>
+      addSchedule({
+        persona: 'james',
+        channel: 'tg',
+        cron: '0 7 * * *',
+        label: 'x',
+        script: 'digest',
+        promptFile: 'hello',
+        db,
+      }),
+    ).toThrow('script is mutually exclusive with prompt and promptFile');
+  });
+
+  it('rejects an input without a script', () => {
+    expect(() =>
+      addSchedule({
+        persona: 'james',
+        channel: 'tg',
+        cron: '0 7 * * *',
+        label: 'x',
+        prompt: 'hello',
+        input: '{}',
+        db,
+      }),
+    ).toThrow('input needs a script');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// listSchedules() — script name
+// ---------------------------------------------------------------------------
+
+describe('listSchedules() — script name', () => {
+  it('returns the script name of a script schedule and an empty name for a prompt schedule', () => {
+    const db = createTestDb();
+    try {
+      new PersonaRepository(db).insert({
+        id: uuid(),
+        name: 'james',
+        model: 'claude-sonnet-4-6',
+        system_prompt_file: null,
+        skills: '[]',
+        capabilities: '{}',
+        mounts: '[]',
+        max_concurrent: null,
+      });
+      new ChannelRepository(db).insert({
+        id: uuid(),
+        type: 'telegram',
+        name: 'tg',
+        config: '{}',
+        credentials_ref: null,
+        enabled: 1,
+      });
+      const personaId = new PersonaRepository(db).findByName('james')._unsafeUnwrap()!.id;
+      new ScriptRepository(db).upsertScript(personaId, 'digest', uuid());
+      const scriptSchedule = addSchedule({
+        persona: 'james',
+        channel: 'tg',
+        cron: '0 7 * * *',
+        label: 'scripted',
+        script: 'digest',
+        db,
+      });
+      expect(scriptSchedule.approvedVersion).toBeNull();
+      addSchedule({
+        persona: 'james',
+        channel: 'tg',
+        cron: '0 8 * * *',
+        label: 'prompted',
+        prompt: 'hello',
+        db,
+      });
+
+      const infos = listSchedules({ db, persona: 'james' });
+      const byLabel = Object.fromEntries(infos.map((i) => [i.label, i.script]));
+      expect(byLabel).toEqual({ scripted: 'digest', prompted: '' });
+    } finally {
+      db.close();
+    }
   });
 });

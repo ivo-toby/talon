@@ -5,6 +5,9 @@
  * from inbound event normalization through to queue submission.
  */
 
+import type { Result } from 'neverthrow';
+import type { InboundEvent } from '../channels/channel-types.js';
+
 // ---------------------------------------------------------------------------
 // NormalizedMessage
 // ---------------------------------------------------------------------------
@@ -49,10 +52,44 @@ export interface NormalizedMessage {
  * - `'duplicate'`  — message was already present (idempotency_key matched).
  * - `'no_persona'` — no persona binding found for the channel+thread pair.
  * - `'ignored'`    — a reaction event that does not target a message Talon
- *                    sent (or a removed reaction); nothing was persisted.
+ *                    sent (or a removed reaction), or a command consumed by
+ *                    the inbound command handler; nothing was persisted.
  * - `'error'`      — an unexpected error occurred (details in the Err wrapper).
  */
 export type PipelineResult = 'enqueued' | 'duplicate' | 'no_persona' | 'ignored' | 'error';
+
+// ---------------------------------------------------------------------------
+// Inbound commands
+// ---------------------------------------------------------------------------
+
+/**
+ * Claims inbound chat commands (for example `/approve CODE`) before they can
+ * reach a thread, the message store or an agent.
+ */
+export interface InboundCommandHandler {
+  /**
+   * Synchronous and cheap. Offered every non-reaction event, whatever its
+   * length or attachments. True only for a message that the handler claims.
+   * Must not throw.
+   */
+  matches(event: InboundEvent): boolean;
+  /**
+   * Called only after matches() returned true. An object means the event is
+   * consumed: the pipeline sends `reply` if present and stops. `undefined`
+   * means not handled: the event continues as a normal message. Never throws.
+   */
+  handle(event: InboundEvent): Promise<{ reply?: string } | undefined>;
+}
+
+/**
+ * Sends a command reply to a chat. Resolves the connector by channel name;
+ * a missing connector or a failed send is reported as an Err.
+ */
+export type InboundReplySender = (
+  channelName: string,
+  externalThreadId: string,
+  body: string,
+) => Promise<Result<unknown, unknown>>;
 
 // ---------------------------------------------------------------------------
 // PipelineStats

@@ -1,0 +1,296 @@
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { err, ok } from 'neverthrow';
+import pino from 'pino';
+import { ScriptsConfigSchema } from '../../../src/core/config/config-schema.js';
+import { PersonaRepository } from '../../../src/core/database/repositories/persona-repository.js';
+import { ScriptRepository } from '../../../src/core/database/repositories/script-repository.js';
+import {
+  buildScriptRuntime,
+  createChannelSender,
+  createCapabilityResolver,
+  createCapabilityResolver,
+  createChatResolver,
+  reapScriptContainers,
+} from '../../../src/scripts/daemon-wiring.js';
+import type { ScriptRuntimeDeps } from '../../../src/scripts/daemon-wiring.js';
+import { createTestDb } from '../core/database/repositories/helpers.js';
+
+const IMAGE = `node@sha256:${'a'.repeat(64)}`;
+const roots: string[] = [];
+afterEach(() => {
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+
+describe('createChannelSender', () => {
+  it('sends the body to the chat through the connector of the channel', async () => {
+    const send = vi.fn(() => Promise.resolve(ok(undefined)));
+    const sender = createChannelSender({ get: () => ({ send }) as never });
+    expect((await sender('tg', 'chat-1', 'hello')).isOk()).toBe(true);
+    expect(send).toHaveBeenCalledWith('chat-1', { body: 'hello' });
+  });
+
+  it('returns TOOL_FAILED for a channel with no connector', async () => {
+    const sender = createChannelSender({ get: () => undefined });
+    expect((await sender('tg', 'chat-1', 'hello'))._unsafeUnwrapErr().scriptCode).toBe(
+      'TOOL_FAILED',
+    );
+  });
+
+  it('returns TOOL_FAILED when the connector reports an error or throws', async () => {
+    const failing = createChannelSender({
+      get: () => ({ send: () => Promise.resolve(err(new Error('down'))) }) as never,
+    });
+    expect((await failing('tg', 'c', 'x'))._unsafeUnwrapErr().scriptCode).toBe('TOOL_FAILED');
+    const throwing = createChannelSender({
+      get: () => ({ send: () => Promise.reject(new Error('secret detail')) }) as never,
+    });
+    const error = (await throwing('tg', 'c', 'x'))._unsafeUnwrapErr();
+    expect(error.scriptCode).toBe('TOOL_FAILED');
+    expect(error.message).not.toContain('secret detail');
+  });
+});
+
+describe('createChatResolver', () => {
+  const threads: Record<
+    string,
+    { channel_id: string; external_id: string; metadata: string | null }
+  > = {
+    t1: { channel_id: 'c1', external_id: 'chat-1', metadata: null },
+    sched: { channel_id: 'c1', external_id: 'schedule:abc', metadata: null },
+    lost: { channel_id: 'gone', external_id: 'chat-2', metadata: null },
+  };
+  const resolve = createChatResolver(
+    { findById: (id: string) => ok(threads[id] ?? null) } as never,
+    { findById: (id: string) => ok(id === 'c1' ? { name: 'tg' } : null) } as never,
+  );
+
+  it('returns the channel name and recipient of a thread', () => {
+    expect(resolve('t1')).toEqual({ channelName: 'tg', externalThreadId: 'chat-1' });
+  });
+
+  it('returns undefined for an unknown thread, a lost channel or a schedule thread', () => {
+    expect(resolve('nope')).toBeUndefined();
+    expect(resolve('lost')).toBeUndefined();
+    expect(resolve('sched')).toBeUndefined();
+  });
+
+  it('returns undefined when a repository fails or throws', () => {
+    const failing = createChatResolver(
+      { findById: () => err(new Error('db')) } as never,
+      { findById: () => ok(null) } as never,
+    );
+    expect(failing('t1')).toBeUndefined();
+    const throwing = createChatResolver(
+      {
+        findById: () => {
+          throw new Error('db');
+        },
+      } as never,
+      { findById: () => ok(null) } as never,
+    );
+    expect(throwing('t1')).toBeUndefined();
+  });
+});
+
+describe('createCapabilityResolver', () => {
+  const caps = { allow: ['script.run:*'], requireApproval: [] };
+  const repoWith = (name: string | null) =>
+    ({ findById: () => ok(name === null ? null : { name }) }) as never;
+
+  it('resolves the database ID through the name to the loaded capabilities', () => {
+    let current = caps;
+    const loader = {
+      getByName: (n: string) => ok(n === 'alpha' ? { resolvedCapabilities: current } : undefined),
+    } as never;
+    const resolve = createCapabilityResolver(repoWith('alpha'), loader);
+    expect(resolve('p1')).toEqual(caps);
+    // hot reload: the next call shows the new answer
+    current = { allow: [], requireApproval: ['script.run:x'] };
+    expect(resolve('p1')).toEqual(current);
+  });
+
+  it('returns undefined for an unknown or unloaded persona and never throws', () => {
+    const loaded = { getByName: () => ok(undefined) } as never;
+    expect(createCapabilityResolver(repoWith(null), loaded)('p1')).toBeUndefined();
+    expect(createCapabilityResolver(repoWith('alpha'), loaded)('p1')).toBeUndefined();
+    const failing = { findById: () => err(new Error('db')) } as never;
+    expect(createCapabilityResolver(failing, loaded)('p1')).toBeUndefined();
+    const throwing = {
+      findById: () => {
+        throw new Error('boom');
+      },
+    } as never;
+    expect(createCapabilityResolver(throwing, loaded)('p1')).toBeUndefined();
+  });
+});
+
+describe('reapScriptContainers', () => {
+  const root = '/srv/scripts';
+  const fake = (listing: unknown, status = 200) => {
+    const calls: Array<{ method: string; path: string }> = [];
+    return {
+      calls,
+      client: {
+        request: (r: { method: string; path: string }) => {
+          calls.push(r);
+          return Promise.resolve(
+            ok({
+              status: r.method === 'GET' ? status : 204,
+              body: Buffer.from(r.method === 'GET' ? JSON.stringify(listing) : ''),
+            }),
+          );
+        },
+        openStream: () => Promise.reject(new Error('unused')),
+      } as never,
+    };
+  };
+
+  it('removes only labelled containers that mount the scripts root', async () => {
+    const logger = pino({ level: 'silent' });
+    const warn = vi.spyOn(logger, 'warn');
+    const f = fake([
+      { Id: 'a1', Labels: { 'talon.broker': '1' }, Mounts: [{ Source: root }] },
+      { Id: 'b2', Labels: {}, Mounts: [{ Source: root }] },
+    ]);
+    await reapScriptContainers({ root, dockerSocket: '/nope' }, logger, f.client);
+    expect(f.calls.filter((c) => c.method === 'DELETE').map((c) => c.path)).toEqual([
+      '/containers/a1?force=true&v=true',
+    ]);
+    expect(warn).toHaveBeenCalledWith({ count: 1 }, expect.any(String));
+  });
+
+  it('gives up after the bound with a warning when Docker does not answer', async () => {
+    const logger = pino({ level: 'silent' });
+    const warn = vi.spyOn(logger, 'warn');
+    const client = {
+      request: () => new Promise(() => {}),
+      openStream: () => Promise.reject(new Error('unused')),
+    } as never;
+    const started = Date.now();
+    await reapScriptContainers({ root, dockerSocket: '/nope' }, logger, client, 20);
+    expect(Date.now() - started).toBeLessThan(2000);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('took too long'));
+  });
+
+  it('only warns when Docker fails, and never throws', async () => {
+    const logger = pino({ level: 'silent' });
+    const warn = vi.spyOn(logger, 'warn');
+    await expect(
+      reapScriptContainers({ root, dockerSocket: '/nope' }, logger, fake([], 500).client),
+    ).resolves.toBeUndefined();
+    await expect(
+      reapScriptContainers({ root, dockerSocket: '/nonexistent/docker.sock' }, logger),
+    ).resolves.toBeUndefined();
+    expect(warn).toHaveBeenCalledTimes(2);
+  });
+});
+
+/** The same database under another file name (better-sqlite3 `name` cannot be redefined). */
+function withName(db: ScriptRuntimeDeps['db'], name: string): ScriptRuntimeDeps['db'] {
+  return new Proxy(db, {
+    get(target, key) {
+      if (key === 'name') return name;
+      const value: unknown = Reflect.get(target, key, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+}
+
+function deps(over: Partial<ScriptRuntimeDeps> = {}, withPersona = true): ScriptRuntimeDeps {
+  const base = mkdtempSync(join(tmpdir(), 'wiring-'));
+  roots.push(base);
+  const db = createTestDb();
+  const personaRepo = new PersonaRepository(db);
+  if (withPersona) {
+    personaRepo
+      .insert({
+        id: 'p1',
+        name: 'p1',
+        model: 'm',
+        system_prompt_file: null,
+        skills: '[]',
+        capabilities: '{}',
+        mounts: '[]',
+        max_concurrent: null,
+      })
+      ._unsafeUnwrap();
+  }
+  return {
+    config: ScriptsConfigSchema.parse({
+      enabled: true,
+      root: join(base, 'nested', 'scripts'),
+      image: IMAGE,
+    }),
+    db,
+    personaRepo,
+    threadRepo: { findById: () => ok(null) } as never,
+    channelRepo: { findById: () => ok(null) } as never,
+    channelRegistry: { get: () => undefined },
+    auditLogger: { logToolExecution: vi.fn(), logApprovalDecision: vi.fn() },
+    provider: {} as never,
+    logger: pino({ level: 'silent' }),
+    ...over,
+  };
+}
+
+describe('buildScriptRuntime', () => {
+  it('creates the scripts root, installs the script module and returns a service', () => {
+    const d = deps();
+    const service = buildScriptRuntime(d)._unsafeUnwrap();
+    expect(existsSync(join(d.config.root, 'node_modules', 'talon', 'index.js'))).toBe(true);
+    expect(service.hasApproved('p1', 'nothing')).toBe(false);
+    // no open approval anywhere: nothing is claimed
+    expect(service.matchesInbound({ content: '/approve ABCDEFGH' } as never)).toBe(false);
+  });
+
+  it('fails when the open approvals cannot be read', () => {
+    const d = deps();
+    const spy = vi
+      .spyOn(ScriptRepository.prototype, 'listOpenApprovals')
+      .mockReturnValue(err(new Error('down') as never));
+    const result = buildScriptRuntime(d);
+    spy.mockRestore();
+    expect(result._unsafeUnwrapErr().scriptCode).toBe('SANDBOX');
+    expect(result._unsafeUnwrapErr().message).toContain('open approvals');
+  });
+
+  it('fails the boot when the database file is inside the scripts root', () => {
+    const d = deps();
+    const result = buildScriptRuntime({
+      ...d,
+      db: withName(d.db, join(d.config.root, 'talond.db')),
+    });
+    expect(result._unsafeUnwrapErr().message).toContain('the approval key could not be read');
+    expect(existsSync(join(d.config.root, 'script-approval.key'))).toBe(false);
+  });
+
+  it('creates the key file next to a database file outside the root', () => {
+    const d = deps();
+    const dbDir = mkdtempSync(join(tmpdir(), 'wiring-db-'));
+    roots.push(dbDir);
+    buildScriptRuntime({ ...d, db: withName(d.db, join(dbDir, 'talond.db')) })._unsafeUnwrap();
+    expect(existsSync(join(dbDir, 'script-approval.key'))).toBe(true);
+  });
+
+  it('fails when there is no persona to grant', () => {
+    const result = buildScriptRuntime(deps({}, false));
+    expect(result._unsafeUnwrapErr().scriptCode).toBe('INVALID_ARGUMENT');
+  });
+
+  it('fails when the image is not pinned by digest', () => {
+    const d = deps();
+    const result = buildScriptRuntime({ ...d, config: { ...d.config, image: 'node:24' } });
+    expect(result._unsafeUnwrapErr().scriptCode).toBe('INVALID_ARGUMENT');
+  });
+
+  it('fails when the scripts root cannot be a directory', () => {
+    const d = deps();
+    const file = join(roots[roots.length - 1], 'a-file');
+    writeFileSync(file, 'x');
+    const result = buildScriptRuntime({ ...d, config: { ...d.config, root: join(file, 'sub') } });
+    expect(result.isErr()).toBe(true);
+  });
+});

@@ -65,6 +65,7 @@ import type { ImageStore } from '../images/image-store.js';
 import type { ImageIngestionCoordinator } from '../images/image-ingestion.js';
 import type { ImageAccess } from '../images/image-types.js';
 import type { ImageLifecycleManager } from '../images/image-lifecycle.js';
+import type { ScriptService } from '../scripts/service.js';
 
 // ---------------------------------------------------------------------------
 // Repository bundle
@@ -171,4 +172,9 @@ export interface DaemonContext {
    * at construction; ContextRoller receives it per rotation call.
    */
   readonly imageContextSource: ImageContextSource;
+  /**
+   * Talon scripts. Null when `scripts.enabled` is false. Optional so contexts
+   * built without it (tests) keep working.
+   */
+  readonly scriptService?: ScriptService | null;
 }

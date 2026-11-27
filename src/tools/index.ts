@@ -17,6 +17,9 @@ export type {
   ChannelSendArgs,
   ScheduleManageTool,
   ScheduleManageArgs,
+  ScriptManageTool,
+  ScriptManageArgs,
+  ScriptRunArgs,
   MemoryAccessTool,
   MemoryAccessArgs,
   HttpProxyTool,
@@ -29,6 +32,8 @@ export type {
 export {
   ChannelSendHandler,
   ScheduleManageHandler,
+  ScriptManageHandler,
+  ScriptRunHandler,
   MemoryAccessHandler,
   HttpProxyHandler,
   DbQueryHandler,

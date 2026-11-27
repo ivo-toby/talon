@@ -12,7 +12,14 @@ import type { ScheduleRow } from '../core/database/repositories/schedule-reposit
 import type { PersonaLoader } from '../personas/persona-loader.js';
 import type { QueueManager } from '../queue/queue-manager.js';
 import { getNextCronTime } from './cron-evaluator.js';
-import type { ScheduleConfig, SchedulePayload } from './schedule-types.js';
+import type {
+  ScheduleConfig,
+  SchedulePayload,
+  ScriptNotRunReason,
+  ScriptScheduleRunner,
+} from './schedule-types.js';
+
+const SCRIPT_NAME_RE = /^[a-z][a-z0-9-]{1,48}$/;
 
 // ---------------------------------------------------------------------------
 // Scheduler
@@ -29,6 +36,7 @@ export class Scheduler {
   private timer: NodeJS.Timeout | null = null;
   /** Generation counter to prevent stale ticks from re-arming after stop()+start(). */
   private generation = 0;
+  private scriptRunner: ScriptScheduleRunner | undefined;
 
   constructor(
     private readonly scheduleRepo: ScheduleRepository,
@@ -37,6 +45,11 @@ export class Scheduler {
     private readonly config: ScheduleConfig,
     private readonly logger: pino.Logger,
   ) {}
+
+  /** Sets the runner for schedules whose payload names a script. */
+  setScriptRunner(runner: ScriptScheduleRunner | undefined): void {
+    this.scriptRunner = runner;
+  }
 
   // ---------------------------------------------------------------------------
   // Lifecycle
@@ -147,6 +160,8 @@ export class Scheduler {
         'scheduler: skipping schedule with null thread_id',
       );
       // Still advance / disable so we do not loop on it forever.
+    } else if (this.scriptName(schedule) !== undefined && this.shouldDispatchScript(schedule)) {
+      this.dispatchScript(schedule, schedule.thread_id);
     } else {
       let rawPayload: Record<string, unknown> = {};
       try {
@@ -169,8 +184,7 @@ export class Scheduler {
       const schedulePayload = rawPayload as SchedulePayload & Record<string, unknown>;
       let promptFile =
         typeof schedulePayload.promptFile === 'string' ? schedulePayload.promptFile : undefined;
-      let content =
-        typeof schedulePayload.prompt === 'string' ? schedulePayload.prompt : '';
+      let content = typeof schedulePayload.prompt === 'string' ? schedulePayload.prompt : '';
 
       // Defensive: agents and humans sometimes invent `prompt: "file:NAME"`
       // as if it were a documented convention (it isn't). Without this
@@ -203,7 +217,10 @@ export class Scheduler {
       }
 
       if (promptFile) {
-        const promptResult = await this.personaLoader.resolveTaskPrompt(schedule.persona_id, promptFile);
+        const promptResult = await this.personaLoader.resolveTaskPrompt(
+          schedule.persona_id,
+          promptFile,
+        );
         if (promptResult.isErr()) {
           this.logger.error(
             {
@@ -260,6 +277,122 @@ export class Scheduler {
           'scheduler: failed to update next_run_at',
         );
       }
+    }
+  }
+
+  /** The script name if the payload is a JSON object with a non-empty string `script`. */
+  private scriptName(schedule: ScheduleRow): string | undefined {
+    try {
+      const parsed: unknown = JSON.parse(schedule.payload);
+      if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        const script = (parsed as Record<string, unknown>).script;
+        if (typeof script === 'string' && script !== '') {
+          return script;
+        }
+      }
+    } catch {
+      // not a script payload
+    }
+    return undefined;
+  }
+
+  /**
+   * With no runner (the feature is off) a payload that also has a prompt keeps
+   * its old behavior: the prompt is enqueued and `script` is ignored.
+   */
+  private shouldDispatchScript(schedule: ScheduleRow): boolean {
+    if (this.scriptRunner) {
+      return true;
+    }
+    const payload = JSON.parse(schedule.payload) as Record<string, unknown>;
+    const usablePrompt =
+      (typeof payload.prompt === 'string' && payload.prompt !== '') ||
+      (typeof payload.promptFile === 'string' && payload.promptFile !== '');
+    if (usablePrompt) {
+      this.logger.warn(
+        { scheduleId: schedule.id, personaId: schedule.persona_id },
+        'scheduler: scripts are off, so the "script" field of this schedule is ignored',
+      );
+      return false;
+    }
+    return true;
+  }
+
+  /**
+   * Starts a script run without waiting for it. Never enqueues. A failure is
+   * reported once, when the run fails and the previous scheduled run did not.
+   */
+  private dispatchScript(schedule: ScheduleRow, threadId: string): void {
+    const scriptName = this.scriptName(schedule);
+    const payload = JSON.parse(schedule.payload) as Record<string, unknown>;
+    const logCtx = { scheduleId: schedule.id, personaId: schedule.persona_id };
+    if (
+      scriptName === undefined ||
+      !SCRIPT_NAME_RE.test(scriptName) ||
+      payload.prompt !== undefined ||
+      payload.promptFile !== undefined
+    ) {
+      this.logger.error(
+        logCtx,
+        'scheduler: script schedule has an invalid payload (bad name, or prompt/promptFile present) — not running',
+      );
+      return;
+    }
+    const runner = this.scriptRunner;
+    if (!runner) {
+      this.logger.error(logCtx, 'scheduler: script schedule fired but no script runner is set');
+      return;
+    }
+
+    const notify = (errorCode: string, reason?: ScriptNotRunReason): void => {
+      try {
+        const input = { threadId, scriptName, errorCode, ...(reason ? { reason } : {}) };
+        runner.notifyFailure(input).catch((error: unknown) => {
+          this.logger.error({ ...logCtx, err: error }, 'scheduler: script failure notice failed');
+        });
+      } catch (error) {
+        this.logger.error({ ...logCtx, err: error }, 'scheduler: script failure notice failed');
+      }
+    };
+
+    try {
+      const failedBefore = runner.lastScheduledRunFailed(schedule.persona_id, scriptName);
+      runner
+        .runScheduled({
+          personaId: schedule.persona_id,
+          threadId,
+          scriptName,
+          scheduleId: schedule.id,
+          ...(Object.prototype.hasOwnProperty.call(payload, 'input')
+            ? { input: payload.input }
+            : {}),
+        })
+        .then((result) => {
+          let errorCode: string | undefined;
+          let reason: ScriptNotRunReason | undefined;
+          if (result.isErr()) {
+            errorCode = result.error.scriptCode;
+            const given = (result.error as { reason?: unknown }).reason;
+            if (
+              given === 'changed' ||
+              given === 'not-approved' ||
+              given === 'not-permitted' ||
+              given === 'bad-input'
+            ) {
+              reason = given;
+            }
+          } else if (result.value !== 'skipped' && !result.value.ok) {
+            errorCode = result.value.errorCode ?? 'SCRIPT_FAILED';
+          }
+          if (errorCode !== undefined && !failedBefore) {
+            notify(errorCode, reason);
+          }
+        })
+        .catch((error: unknown) => {
+          this.logger.error({ ...logCtx, err: error }, 'scheduler: script run rejected');
+        });
+    } catch (error) {
+      this.logger.error({ ...logCtx, err: error }, 'scheduler: could not start script run');
     }
   }
 

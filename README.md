@@ -94,6 +94,7 @@ integration, or automation is safe without your configuration and review.
 - **Skills** — Modular prompt and tool bundles with lazy loading (metadata-only in system prompt, full content on demand)
 - **MCP integration** — Connect external MCP tool servers via stdio, HTTP, or SSE; Talon applies persona policy to its own host-tools bridge
 - **Image understanding** — Upload photos on Telegram, WhatsApp, or email; a configurable vision sub-agent answers questions about them and saves textual Findings. The main agent stays text-only. See [Images](#images)
+- **Scripts**: a schedule can run an approved TypeScript script in a Docker container with no model in the loop. You approve the dry-run behavior with a one-time code in the chat. Off by default. See [Scripts](#scripts)
 
 ### Provider choice
 
@@ -490,6 +491,7 @@ dataDir: data
 | `subagentCli`          | Opt-in direct Claude Code adapter for bounded sub-agent generations             |
 | `langfuse`             | Langfuse observability: API keys, base URL, environment, flush settings       |
 | `sprites`              | Sprites.dev execution environments: token, resource limits, defaults          |
+| `scripts`              | Model-written scripts in a Docker container: image, limits, approval lifetime. See [Scripts](#scripts) |
 | `logLevel` / `dataDir` | Runtime logging level and data root                                           |
 
 For the context-management strategies and migration details, see [docs/context-management.md](docs/context-management.md).
@@ -1136,7 +1138,9 @@ Tools are gated by scoped capability labels. Anything not listed in a persona's
 capability configuration is denied by default. Today, tools listed in either
 `allow` or `requireApproval` are exposed to the provider runtime. The latter
 field is reserved for bridge-level approval enforcement; it does not currently
-prompt a user or block execution.
+prompt a user or block execution. The one exception is `script.run`: in
+`requireApproval`, it asks the user in the chat before each run that the agent
+starts. See [Scripts](#scripts).
 
 | Capability               | Description                                                                 |
 | ------------------------ | --------------------------------------------------------------------------- |
@@ -1151,6 +1155,8 @@ prompt a user or block execution.
 | `subagent.invoke`        | Invoke sub-agents for delegated tasks                                       |
 | `subagent.background`    | Launch and manage background workers                                        |
 | `execution.env`          | Manage sandboxed Sprite execution environments                              |
+| `script.manage:own`      | Write, test and send scripts for approval                                   |
+| `script.run:<name>`      | Run that approved script. `script.run:*` covers all scripts of the persona  |
 
 ### Capability Resolution
 
@@ -2554,9 +2560,11 @@ If your upstream does not emit `prompt_tokens_details`, `cache_read_input_tokens
 | `--label <label>`      | Human-readable label (required)                                                                                                                       | —             |
 | `--prompt <prompt>`    | Inline prompt text. Mutually exclusive with `--prompt-file`.                                                                                          | —             |
 | `--prompt-file <name>` | Prompt file basename (without `.md`) under `personas/<persona>/prompts/`. Resolved by the scheduler at fire time. Mutually exclusive with `--prompt`. | —             |
+| `--script <name>`      | Name of a script of the persona. The schedule runs the approved version and starts no agent. Mutually exclusive with `--prompt` and `--prompt-file`.  | none          |
+| `--input <json>`       | Input for the script, as JSON. Only with `--script`.                                                                                                  | none          |
 | `--config <path>`      | Path to talond.yaml                                                                                                                                   | `talond.yaml` |
 
-Exactly one of `--prompt` or `--prompt-file` must be provided. `--prompt-file` is preferred for reusable, long-form prompts (e.g. `--prompt-file braintoss` resolves to `personas/<persona>/prompts/braintoss.md` at fire time).
+Exactly one of `--prompt`, `--prompt-file` or `--script` must be provided. `--prompt-file` is preferred for reusable, long-form prompts (e.g. `--prompt-file braintoss` resolves to `personas/<persona>/prompts/braintoss.md` at fire time).
 
 **`list-schedules`** options:
 
@@ -2582,6 +2590,21 @@ npx talonctl add-schedule --persona assistant --channel my-telegram \
 
 npx talonctl list-schedules --persona assistant
 npx talonctl remove-schedule abc123
+```
+
+**`script`** shows the stored scripts. These commands read the database and need no running daemon.
+
+| Command | Description |
+| ------- | ----------- |
+| `script list [--persona <name>]` | Each script with its newest version, the approved version and the last run |
+| `script show <persona> <name> [--version <n>] [--code]` | The versions with state and hash. With `--code`, the files of one version |
+| `script runs <persona> <name> [--limit <n>]` | The last runs: trigger, mode, result, error code and start time. Default 20 |
+
+```bash
+npx talonctl script list --persona assistant
+npx talonctl script show assistant mail-intake --code
+npx talonctl add-schedule --persona assistant --channel my-telegram \
+  --cron "*/30 * * * *" --label "Mail intake" --script mail-intake --input '{"quiet":true}'
 ```
 
 ### Sub-Agent Testing
@@ -3177,6 +3200,158 @@ The tool call uses `promptFile` in place of `prompt` — they are mutually exclu
 ```
 
 Prompt files are read on demand when the schedule fires, so edits to the file take effect on the next execution without restarting the daemon. The `talonctl add-persona` command scaffolds an empty `prompts/` directory alongside the `personality/` folder.
+
+---
+
+## Scripts
+
+A script is a small TypeScript program that a model writes one time. Talon then runs it on a schedule with no model in the loop. A script calls tools directly, so a run costs no model tokens between the calls. The feature is off by default.
+
+An agent writes the script with the `script_manage` tool and starts an approved script with the `script_run` tool. You approve each version in the chat before it can run.
+
+### How a script becomes active
+
+1. Talon stores the script as a version with a SHA-256 hash of its files. A version has three files: `script.ts`, `manifest.json` and `tests.json`.
+2. Talon runs the unit cases of `tests.json`. No tool runs in this step. Each tool call gets a fixed answer from the test case, and Talon compares the result on the host.
+3. Talon runs the script one time as a dry run on real data. Read tools run. Write tools do not run: Talon records each write and skips it.
+4. Talon sends a message to the chat. The message lists the write tools of the manifest, the use of the model, the channels, the tools that the script read, each write that the script wanted to do, and a one-time code. If the scheduled input is not the same as the dry-run input, the message says so. The message shows the recipient of each channel send in full. In the other writes, the short values come first at each level. Talon changes each run of blank, control and format characters in a text value to one space, and then cuts the value at 120 characters. If Talon cannot show the message in full, Talon sends no message and the version stays `tested`. This happens in these cases: not every write fits, a recipient is longer than 80 characters, holds a space or a control character, or is not text, a write line is longer than 600 characters, a write tool or channel name is longer than 60 characters, or the manifest lists more than 50 write tools or channels.
+5. You answer `/approve <code>` or `/reject <code>` in the same chat. The message pipeline handles this answer before a thread or an agent sees it, so a model cannot approve a script.
+6. A schedule that names the script runs the approved version.
+
+Talon keeps a key in the file `script-approval.key` next to the database file. The database holds only a keyed hash of each code, so a reader of the database cannot find a code. If you move the database, move the key file too. If the key file is lost, open approval codes stop working and you ask for approval again.
+
+The code is valid for `approvalTtlMinutes` and works one time, only in the chat that got the message. In a group chat, each member can approve. After five wrong codes in ten minutes, Talon refuses each code from that chat for ten minutes and does not answer.
+
+The command is not case-sensitive, can carry a bot name (`/approve@my_bot <code>`) and can end with `.` or `!`. Talon claims these messages before an agent sees them:
+
+- In the chat that got the approval message: each message that holds the code but is not a valid command. This includes a message with an attachment. Talon scans the first 16,000 and the last 16,000 characters of a message. Talon also finds the code when it is part of a longer word, split by `-`, `_`, `.` or one space, written in full-width or other compatibility letters, or hidden with zero-width characters. Talon cancels the code and the version goes back to `tested`. If Talon cannot save the cancel, it answers that the code cannot be used here. The code then stays blocked for a leak scan and a command in another chat.
+- In another chat: a well-formed `/approve <code>` or `/reject <code>` with a valid code. Talon cancels the code. Free text in another chat is not checked.
+- In the chat that got the approval message: a message that starts with `/approve` or `/reject` but is not a valid command. Talon answers with the correct form.
+
+Each of these messages counts as a wrong attempt. In a chat that the attempt limit holds, Talon claims such a message and does not answer. If Talon cannot read the open approvals at start, Talon does not start.
+
+Before each scheduled run, Talon makes sure that the files on disk still match the approved hash. If a file changed, the run does not start.
+
+### Who can run a script
+
+Two capability labels control scripts. Add them to `capabilities` of the persona.
+
+| Label | Effect |
+| ----- | ------ |
+| `script.manage:own` | The agent can write, test and send a script for approval with `script_manage` |
+| `script.run:*` | The persona can run each of its approved scripts |
+| `script.run:<name>` | The persona can run the approved script with that name. Repeat the label for more scripts |
+
+A live run needs a `script.run` label that matches the script. The label can be in `allow` or in `requireApproval`. This applies to a run that the agent starts and to a run that a schedule starts. With no matching label, the script does not run.
+
+A `script.run` label in `requireApproval` adds a question for the agent. It wins over a matching label in `allow`.
+
+- If the agent starts the script with `script_run`, Talon sends a message with the input of the run and a code to the chat. The run starts after you answer `/approve <code>`.
+- If the agent attaches the script to a schedule, or changes such a schedule, Talon asks one time in the same way. The message shows the cron expression, the label and the input.
+- A scheduled run never asks. The schedule is your decision.
+
+The approval of a version is necessary in each case. No label removes it.
+
+To stop a script, remove its `script.run` label from the persona and reload, or remove its schedule.
+
+### How an agent uses scripts
+
+The `script_manage` tool has these actions.
+
+| Action | Result |
+| ------ | ------ |
+| `guide` | The authoring guide. The agent reads it before it writes a script |
+| `tools` | The tools that a script of this persona can call, each with its class. With `name`, the input schema of one tool |
+| `save` | A new version from the given files |
+| `test` | The unit cases and the dry run of a version |
+| `request_approval` | The approval message in the chat. A second call for the same version sends nothing while the code is valid |
+| `list` | The scripts of the persona with the state of the newest version and the last run |
+| `show` | The files of one version |
+
+The `script_run` tool starts the approved version of a script by name. The result contains the return value of the script as text, cut at 8,000 characters. If the script is under `requireApproval`, the result is `awaiting-approval` and you decide in the chat. Talon then sends `Script <name> finished.` or a failure message to that chat.
+
+The agent never gets an approval code. A tool result contains no code and no output of a read call of the dry run.
+
+### Run input
+
+A script can accept an input, for example a boolean that selects a mode. The manifest declares the form of the input in `inputSchema`, a JSON Schema with a limited set of keywords. The schema is part of the approved content, and the approval message of the version has a line `Accepts input:` with the property names.
+
+- The agent passes an input with `script_run`. A schedule keeps an input in its payload.
+- Talon compares each input with the schema before the container starts. If the input does not match, the run does not start.
+- A script with no `inputSchema` accepts no input from a caller.
+- With no input, a run gets `liveInput` of the manifest.
+- An input is at most 8,000 characters as JSON text.
+
+### What an approval covers
+
+An approval covers the exact files of the version (the hash) and the manifest (the tools and the channels). The dry run is evidence. It is not a guarantee. A script can act differently in a later run, because the time and the data change. In a dry run, a skipped write returns `{ dryRun: true }` to the script, so a script can see that its write did not run.
+
+Know these limits:
+
+- Each member of the chat that got the message can approve.
+- With `externalChatId`, a script can send to each chat of a channel that the manifest allows.
+- A persona whose agent has shell or file access to the host can change `data/scripts` or the database. Do not enable scripts for such a persona.
+- `readOnlyHint` comes from the MCP server. If the hint is wrong, a write tool runs in a dry run.
+- All personas share one read-only scripts mount. A script can read the script files of another persona.
+- The `inputSchema` limits the form of an input, not its meaning. If the schema has a free text field, the agent selects that text.
+- A voice session has no approval step. If a persona has a `script.run` label in `requireApproval`, the voice session does not get the `script_run` tool. If the label is only in `allow`, the voice session can start a script.
+
+### What a script can reach
+
+The manifest lists the tools of the script. A tool that is not in the approved manifest is refused.
+
+| Tool name | Class | Notes |
+| --------- | ----- | ----- |
+| `talon.memory_read`, `talon.memory_list` | read | Memory of the thread that saved the script |
+| `talon.memory_write`, `talon.memory_delete` | write | |
+| `talon.channel_list` | read | |
+| `talon.channel_send` | write | The channel must be in `channels` of the manifest |
+| `model.judge` | model | One model request with no tools. Only for a persona on an `openai-compatible` provider |
+| `<server>.<tool>` | read or write | A tool of an MCP server of the persona |
+
+The memory tools use the memory of the thread that saved the script, in the dry run and in each scheduled run.
+
+A persona capability check applies to each host tool call, the same as for an agent run. A tool that needs `requireApproval` is refused.
+
+If the server marks an MCP tool with `readOnlyHint`, the tool is a read tool. If `scripts.toolClasses` names a class for the tool, that class applies. Each other MCP tool is a write tool. A write tool runs only in a scheduled run of an approved version. Talon connects only the MCP servers that the manifest names. A server with a dot in its name is not reachable from a script.
+
+### Where a script runs
+
+Script code never runs inside the Talon process. Each run gets a new Docker container with no network, a non-root user, a read-only root file system and no capabilities. The scripts root is mounted read-only. The script talks to Talon over standard input and standard output, and Talon removes the container after the run. The tool calls of one run can carry at most 8 MiB of input. A run that sends more ends with `CALL_LIMIT`. A `model.judge` reply longer than 262,144 characters is refused.
+
+Each container has the label `talon.broker=1`. When Talon stops, it revokes the active runs and waits at most 10 seconds for them. When Talon starts, it removes the containers with this label that mount the scripts root, because an earlier process left them behind. If Docker does not answer in 5 seconds, Talon logs a warning and starts without this cleanup. Talon never removes a container without this label.
+
+### Configuration
+
+```yaml
+scripts:
+  enabled: true
+  root: data/scripts
+  image: node@sha256:<64 hex>   # a Node.js 22.18+ image that is present locally
+  dockerSocket: /var/run/docker.sock
+  runTimeoutMs: 120000
+  maxCallsPerRun: 200
+  judgeTimeoutMs: 60000
+  approvalTtlMinutes: 1440
+  toolClasses:
+    mailbox.list_metadata: read
+```
+
+Talon does not pull the image. Pull it with `docker pull` and copy the digest from `docker image inspect`. The `scripts` section is fixed for the life of the process: a reload keeps the running values and logs a warning. A persona that you add with a reload can run scripts only after a restart.
+
+### Schedules that run a script
+
+A schedule payload with a `script` field runs the approved version of that script and enqueues nothing for an agent:
+
+```json
+{ "label": "Mail intake", "script": "mail-intake", "input": { "quiet": true } }
+```
+
+The `input` field is optional. The agent makes such a schedule with `schedule_manage` (`action: "create"`, `cronExpr`, `label`, `script` and optional `input`). You make one with `talonctl add-schedule --script <name>`. The persona needs a `script.run` label for the script, or the run does not start.
+
+A payload cannot contain `script` together with `prompt` or `promptFile`. One run per script is active at a time: if a run is still active at the next tick, Talon skips that tick. If a run fails after a success, Talon sends one message to the chat of the schedule. Talon does not send a second message until the script succeeds again. After a restart of Talon, one more message can come for the same failure. A run that cannot start counts as a failure too, and the message gives the cause. The causes are: no approved version, files that changed after the approval, no `script.run` label for the script, and a schedule input that does not match the script.
+
+Each run, each executed write and each approval decision gets a row in `audit_log`. The audit rows do not contain tool input.
 
 ---
 
