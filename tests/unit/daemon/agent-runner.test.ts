@@ -2876,6 +2876,145 @@ describe('AgentRunner', () => {
   // Session restore from DB (BUG-008)
   // -------------------------------------------------------------------------
 
+  describe('recent-window observation for stateless providers', () => {
+    function useOpenAiCompatible(opts: { resumable: boolean; summarizer: string }) {
+      const sdkRun = vi.fn().mockImplementation(() =>
+        makeProviderStream({ usage: { inputTokens: 4_000, outputTokens: 20 } }),
+      );
+      vi.mocked(ctx.personaLoader.getByName).mockReturnValue(
+        ok({
+          config: {
+            model: 'glm-flash',
+            provider: 'openai-compatible',
+            skills: [],
+            capabilities: { allow: [] },
+          },
+          systemPromptContent: 'You are a stateless test bot.',
+          resolvedCapabilities: { allow: [], requireApproval: [] },
+        } as any),
+      );
+      ctx.config.agentRunner.defaultProvider = 'openai-compatible';
+      ctx.contextRoller = {
+        checkAndRotate: vi.fn().mockResolvedValue({ rotated: false, hasOpenThreads: false }),
+        checkAndRotateOM: vi.fn().mockResolvedValue({ rotated: false, hasOpenThreads: false }),
+        observeRecentWindowOverflow: vi.fn().mockResolvedValue({ observed: true }),
+      } as any;
+      const entry = {
+        type: 'openai-compatible',
+        provider: {
+          name: 'openai-compatible',
+          skillLoaderTransport: 'stdio',
+          createExecutionStrategy: () =>
+            opts.resumable
+              ? {
+                  type: 'sdk' as const,
+                  supportsSessionResumption: true as const,
+                  requiresContinuationAfterContextRotation: true as const,
+                  run: sdkRun,
+                }
+              : { type: 'sdk' as const, supportsSessionResumption: false as const, run: sdkRun },
+          prepareBackgroundInvocation: vi.fn(),
+          parseBackgroundResult: vi.fn(),
+          estimateContextUsage: (u: { inputTokens?: number }) => ({
+            inputTokens: u.inputTokens ?? 0,
+            metrics: { input_tokens: u.inputTokens ?? 0 },
+          }),
+        },
+        config: makeAgentRunnerProviderConfig({
+          command: 'node',
+          contextWindowTokens: 250_000,
+          contextManagement: makeContextManagement({
+            triggerMetric: 'input_tokens',
+            thresholdRatio: 0.7,
+            recentMessageCount: 10,
+            summarizer: opts.summarizer,
+          }),
+        }),
+      };
+      ctx.providerRegistry = {
+        get: vi.fn().mockImplementation((name: string) =>
+          name === 'openai-compatible' ? entry : undefined,
+        ),
+        getDefault: vi.fn().mockReturnValue(entry),
+      } as any;
+      runner = new AgentRunner(ctx);
+      return sdkRun;
+    }
+
+    it('observes the overflow and shows twice the recent window to a stateless provider', async () => {
+      useOpenAiCompatible({ resumable: false, summarizer: 'session-observer' });
+
+      const result = await runner.run(makeQueueItem());
+
+      expect(result.isOk()).toBe(true);
+      expect(ctx.contextAssembler.assemble).toHaveBeenCalledWith('thread-001', 20, expect.anything());
+      expect(ctx.contextRoller!.checkAndRotateOM).toHaveBeenCalled();
+      expect(ctx.contextRoller!.observeRecentWindowOverflow).toHaveBeenCalledWith(
+        'thread-001',
+        'persona-001',
+        expect.objectContaining({
+          recentMessageCount: 10,
+          observerName: 'session-observer',
+          diagnostics: expect.objectContaining({ privacy: 'nonvoice' }),
+        }),
+      );
+      // A window observation never enqueues a continuation.
+      expect(ctx.repos.message.insert).not.toHaveBeenCalledWith(
+        expect.objectContaining({ idempotency_key: expect.stringContaining('context-rotation-continue') }),
+      );
+    });
+
+    it('skips the window observation when the threshold already rotated this run', async () => {
+      useOpenAiCompatible({ resumable: false, summarizer: 'session-observer' });
+      vi.mocked(ctx.contextRoller!.checkAndRotateOM).mockResolvedValue({
+        rotated: true,
+        hasOpenThreads: false,
+      });
+
+      await runner.run(makeQueueItem());
+
+      expect(ctx.contextRoller!.observeRecentWindowOverflow).not.toHaveBeenCalled();
+    });
+
+    it('leaves resumable providers on the threshold path only', async () => {
+      useOpenAiCompatible({ resumable: true, summarizer: 'session-observer' });
+
+      await runner.run(makeQueueItem());
+
+      expect(ctx.contextRoller!.observeRecentWindowOverflow).not.toHaveBeenCalled();
+    });
+
+    it('leaves the legacy summarizer unchanged on stateless providers', async () => {
+      useOpenAiCompatible({ resumable: false, summarizer: 'session-summarizer' });
+
+      await runner.run(makeQueueItem());
+
+      expect(ctx.contextAssembler.assemble).toHaveBeenCalledWith('thread-001', 10, expect.anything());
+      expect(ctx.contextRoller!.observeRecentWindowOverflow).not.toHaveBeenCalled();
+    });
+
+    it('never runs for schedule runs', async () => {
+      useOpenAiCompatible({ resumable: false, summarizer: 'session-observer' });
+
+      await runner.run(makeQueueItem({ type: 'schedule' }));
+
+      expect(ctx.contextRoller!.observeRecentWindowOverflow).not.toHaveBeenCalled();
+    });
+
+    it('logs and completes the run when the window observation throws', async () => {
+      useOpenAiCompatible({ resumable: false, summarizer: 'session-observer' });
+      vi.mocked(ctx.contextRoller!.observeRecentWindowOverflow).mockRejectedValue(new Error('boom'));
+
+      const result = await runner.run(makeQueueItem());
+
+      expect(result.isOk()).toBe(true);
+      expect(ctx.logger.error).toHaveBeenCalledWith(
+        expect.objectContaining({ threadId: 'thread-001' }),
+        'agent-runner: recent-window observation failed',
+      );
+    });
+  });
+
   describe('session restore from DB on restart', () => {
     it('falls back to DB session when in-memory tracker has none', async () => {
       vi.mocked(ctx.sessionTracker.getSessionId).mockReturnValue(undefined);

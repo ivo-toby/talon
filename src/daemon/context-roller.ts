@@ -131,6 +131,28 @@ export interface ContextRotationResult {
   hasOpenThreads: boolean;
 }
 
+/** What made the roller write an observation. */
+export type ObservationTrigger = 'threshold' | 'recent_window';
+
+/** Outcome of {@link ContextRoller.observeRecentWindowOverflow}. */
+export interface RecentWindowObservationResult {
+  /** Whether an observation was appended. */
+  observed: boolean;
+}
+
+/** An observation that was appended, with its log statistics. */
+interface AppendedObservations {
+  taskComplete: boolean;
+  suggestedContinuation: string;
+  stats: {
+    observationCount: number;
+    transcriptChars: number;
+    observationChars: number;
+    compressionRatio: string;
+    memoryUpdatesApplied: number;
+  };
+}
+
 /**
  * Reflector function signature — receives the accumulated observation log.
  * Uses the same base signature as SummarizerRunFn since both are pre-bound
@@ -484,6 +506,224 @@ export class ContextRoller {
     // Snapshot boundary — see comment in checkAndRotate above.
     const rotatedThroughTs = messages[messages.length - 1].created_at;
 
+    const appended = await this.appendObservations({
+      threadId,
+      personaId,
+      messages,
+      rotatedThroughTs,
+      contextUsage,
+      observerName,
+      threadMetadata,
+      channelId,
+      imageContext,
+      diagnostics: resolvedDiagnostics,
+      logger,
+    });
+    if (appended === null) {
+      return noRotation;
+    }
+
+    // 6. Persist pre-roll tail — same as legacy path above.
+    this.savePreRollTail(threadId, messages, rotatedThroughTs, resolvedDiagnostics, logger);
+
+    // 7. Rotate session.
+    this.deps.sessionTracker.rotateSession(threadId);
+
+    logger.info(
+      { threadId, ...appended.stats },
+      'context-roller-om: observations appended, session rotated',
+    );
+
+    // 7. Check if accumulated observations need reflection (consolidation).
+    await this.maybeReflect(
+      threadId,
+      personaId,
+      reflectorName,
+      reflectionThresholdChars,
+      resolvedDiagnostics,
+      logger,
+    );
+
+    // hasOpenThreads gates the stateless-provider auto-"continue" in agent-runner.
+    // Fire it only when the observer explicitly flags unfinished work — i.e.
+    // taskComplete === false AND a non-empty suggestedContinuation. The
+    // `taskComplete` local declared earlier (persisted to metadata) carries
+    // the same semantics — reuse it here.
+    const hasOpenThreads = !appended.taskComplete && appended.suggestedContinuation.length > 0;
+    return { rotated: true, hasOpenThreads };
+  }
+
+  /**
+   * Observational memory for providers without a provider-side session.
+   *
+   * A stateless provider rebuilds its context from the database on every run,
+   * and its per-run prompt stays small, so the usage threshold that drives
+   * `checkAndRotateOM` is rarely reached. Without this, messages that fall out
+   * of the ContextAssembler's recent window are never observed: the agent sees
+   * neither them nor a summary of them.
+   *
+   * Once the thread holds at least `2 × recentMessageCount` messages after the
+   * last observation boundary, everything but the newest `recentMessageCount`
+   * is observed and the boundary moves to the last observed message. The
+   * caller shows up to `2 × recentMessageCount` messages after the boundary,
+   * so no message is ever outside both the observation log and the window,
+   * and the observer runs about once per `recentMessageCount` messages.
+   *
+   * No session is rotated and no continuation is implied: the recent window
+   * still carries the live conversation. The pre-roll tail of an earlier
+   * threshold rotation is removed, because it now predates the boundary.
+   */
+  async observeRecentWindowOverflow(
+    threadId: string,
+    personaId: string,
+    options: {
+      recentMessageCount: number;
+      observerName?: string;
+      reflectorName?: string;
+      reflectionThresholdChars?: number;
+      threadMetadata?: string | null;
+      channelId?: string;
+      imageContext?: RotationImageContext;
+      diagnostics?: ContextRollerDiagnostics;
+    },
+  ): Promise<RecentWindowObservationResult> {
+    const resolvedDiagnostics = normalizeContextRollerDiagnostics(options.diagnostics);
+    const logger = contextRollerLogger(this.deps.logger, resolvedDiagnostics);
+    const notObserved: RecentWindowObservationResult = { observed: false };
+    const keep = options.recentMessageCount;
+    if (!Number.isInteger(keep) || keep < 1) {
+      return notObserved;
+    }
+
+    const prevObservations = this.deps.memoryRepo.findByThread(threadId, 'observation');
+    if (prevObservations.isErr()) {
+      logger.error(
+        { threadId, error: prevObservations.error.message },
+        'context-roller-om: failed to read observations, skipping recent-window observation',
+      );
+      return notObserved;
+    }
+    const prevBoundary = extractPreviousRotationBoundary(prevObservations.value);
+    const messagesResult = prevBoundary !== null
+      ? this.deps.messageRepo.findLatestByThreadSince(threadId, prevBoundary, 10_000)
+      : this.deps.messageRepo.findLatestByThread(threadId, 10_000);
+    if (messagesResult.isErr()) {
+      logger.error(
+        { threadId, error: messagesResult.error.message },
+        'context-roller-om: failed to read messages, skipping recent-window observation',
+      );
+      return notObserved;
+    }
+
+    const messages = messagesResult.value;
+    if (messages.length < keep * 2) {
+      return notObserved;
+    }
+    const toObserve = messages.slice(0, messages.length - keep);
+    const rotatedThroughTs = toObserve[toObserve.length - 1].created_at;
+
+    logger.info(
+      {
+        threadId,
+        unobservedMessages: messages.length,
+        observedMessages: toObserve.length,
+        keptMessages: keep,
+      },
+      'context-roller-om: recent window overflow, creating observations',
+    );
+
+    const appended = await this.appendObservations({
+      threadId,
+      personaId,
+      messages: toObserve,
+      rotatedThroughTs,
+      contextUsage: null,
+      observerName: options.observerName ?? 'session-observer',
+      ...(options.threadMetadata !== undefined ? { threadMetadata: options.threadMetadata } : {}),
+      ...(options.channelId !== undefined ? { channelId: options.channelId } : {}),
+      ...(options.imageContext !== undefined ? { imageContext: options.imageContext } : {}),
+      diagnostics: resolvedDiagnostics,
+      logger,
+      trigger: 'recent_window',
+    });
+    if (appended === null) {
+      return notObserved;
+    }
+
+    this.removePreRollTail(threadId, logger);
+
+    logger.info(
+      { threadId, ...appended.stats },
+      'context-roller-om: observations appended for recent window, session kept',
+    );
+
+    await this.maybeReflect(
+      threadId,
+      personaId,
+      options.reflectorName ?? 'session-reflector',
+      options.reflectionThresholdChars ?? DEFAULT_MAX_OBSERVATION_CHARS,
+      resolvedDiagnostics,
+      logger,
+    );
+
+    return { observed: true };
+  }
+
+  /** Best-effort removal of the thread's pre-roll tail. */
+  private removePreRollTail(threadId: string, logger: pino.Logger): void {
+    const tails = this.deps.memoryRepo.findByThread(threadId, 'pre-roll-tail');
+    if (tails.isErr()) {
+      logger.warn(
+        { threadId, error: tails.error.message },
+        'context-roller-om: failed to read pre-roll tail for removal',
+      );
+      return;
+    }
+    for (const tail of tails.value) {
+      const removed = this.deps.memoryRepo.delete(threadId, tail.id);
+      if (removed.isErr()) {
+        logger.warn(
+          { threadId, error: removed.error.message },
+          'context-roller-om: failed to remove stale pre-roll tail',
+        );
+      }
+    }
+  }
+
+  /**
+   * Runs the observer over `messages` and appends the resulting observation
+   * (with `rotatedThroughTs` as its boundary) plus any memory updates in one
+   * transaction. Returns null after logging when any step fails or the
+   * observer produced nothing; nothing is persisted then.
+   */
+  private async appendObservations(args: {
+    threadId: string;
+    personaId: string;
+    messages: MessageRow[];
+    rotatedThroughTs: number;
+    contextUsage: ResolvedContextUsage | null;
+    observerName: string;
+    threadMetadata?: string | null;
+    channelId?: string;
+    imageContext?: RotationImageContext;
+    diagnostics: ContextRollerDiagnostics;
+    logger: pino.Logger;
+    trigger?: ObservationTrigger;
+  }): Promise<AppendedObservations | null> {
+    const {
+      threadId,
+      personaId,
+      messages,
+      rotatedThroughTs,
+      contextUsage,
+      observerName,
+      threadMetadata,
+      channelId,
+      imageContext,
+      logger,
+    } = args;
+    const resolvedDiagnostics = args.diagnostics;
+
     // Image section first — see the budget note in checkAndRotate above.
     const imageSection = await this.imageContextSection(threadId, imageContext);
     const transcript =
@@ -506,7 +746,7 @@ export class ContextRoller {
         { threadId, observer: observerName },
         'context-roller-om: observer not available, skipping rotation',
       );
-      return noRotation;
+      return null;
     }
 
     const observerResult = await observerRun(
@@ -520,7 +760,7 @@ export class ContextRoller {
         { threadId, error: observerResult.error.message },
         'context-roller-om: observation failed, skipping rotation',
       );
-      return noRotation;
+      return null;
     }
 
     const observerData = observerResult.value.data as {
@@ -534,7 +774,7 @@ export class ContextRoller {
     const observations = observerData?.observations ?? [];
     if (observations.length === 0) {
       logger.warn({ threadId }, 'context-roller-om: observer produced no observations');
-      return noRotation;
+      return null;
     }
 
     // Log compression metrics and priority breakdown.
@@ -594,10 +834,11 @@ export class ContextRoller {
     const taskComplete = observerData?.taskComplete !== false;
     const metadata: Record<string, unknown> = {
       source: 'context-roller-om',
+      trigger: args.trigger ?? 'threshold',
       messageCount: messages.length,
       rotatedThroughTs,
       taskComplete,
-      contextUsage,
+      ...(contextUsage !== null ? { contextUsage } : {}),
       createdAt: new Date().toISOString(),
     };
     if (!taskComplete && observerData?.currentTask) {
@@ -668,48 +909,23 @@ export class ContextRoller {
         { threadId, error: txResult.error.message },
         'context-roller-om: observation transaction failed',
       );
-      return noRotation;
+      return null;
     }
-
-    // 6. Persist pre-roll tail — same as legacy path above.
-    this.savePreRollTail(threadId, messages, rotatedThroughTs, resolvedDiagnostics, logger);
-
-    // 7. Rotate session.
-    this.deps.sessionTracker.rotateSession(threadId);
 
     const compressionRatio = transcript.length > 0
       ? (transcript.length / newObservationBlock.length).toFixed(1)
       : '0';
-    logger.info(
-      {
-        threadId,
+    return {
+      taskComplete,
+      suggestedContinuation: (observerData?.suggestedContinuation ?? '').trim(),
+      stats: {
         observationCount: observations.length,
         transcriptChars: transcript.length,
         observationChars: newObservationBlock.length,
         compressionRatio: `${compressionRatio}x`,
         memoryUpdatesApplied: pendingUpdates.length,
       },
-      'context-roller-om: observations appended, session rotated',
-    );
-
-    // 7. Check if accumulated observations need reflection (consolidation).
-    await this.maybeReflect(
-      threadId,
-      personaId,
-      reflectorName,
-      reflectionThresholdChars,
-      resolvedDiagnostics,
-      logger,
-    );
-
-    // hasOpenThreads gates the stateless-provider auto-"continue" in agent-runner.
-    // Fire it only when the observer explicitly flags unfinished work — i.e.
-    // taskComplete === false AND a non-empty suggestedContinuation. The
-    // `taskComplete` local declared earlier (persisted to metadata) carries
-    // the same semantics — reuse it here.
-    const suggestedContinuation = (observerData?.suggestedContinuation ?? '').trim();
-    const hasOpenThreads = !taskComplete && suggestedContinuation.length > 0;
-    return { rotated: true, hasOpenThreads };
+    };
   }
 
   /**
