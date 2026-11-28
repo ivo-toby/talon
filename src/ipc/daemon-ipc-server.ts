@@ -70,6 +70,7 @@ export interface DaemonIpcServerOptions {
 export class DaemonIpcServer {
   private intervalHandle: ReturnType<typeof setInterval> | null = null;
   private readonly pollIntervalMs: number;
+  private polling = false;
 
   constructor(private readonly opts: DaemonIpcServerOptions) {
     this.pollIntervalMs = opts.pollIntervalMs ?? 500;
@@ -126,9 +127,23 @@ export class DaemonIpcServer {
   // Private helpers
   // ---------------------------------------------------------------------------
 
-  /** Inner poll loop body — called on every tick. */
+  /**
+   * Inner poll loop body — called on every tick.
+   *
+   * Skips the tick while a previous poll is still running. A command file is
+   * only deleted after its handler finishes, so overlapping polls would
+   * dispatch a slow command (e.g. `reload`) several times concurrently.
+   */
   private async runPoll(): Promise<void> {
-    await this.pollOnce();
+    if (this.polling) {
+      return;
+    }
+    this.polling = true;
+    try {
+      await this.pollOnce();
+    } finally {
+      this.polling = false;
+    }
   }
 
   /**

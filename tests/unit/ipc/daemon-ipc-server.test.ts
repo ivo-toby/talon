@@ -416,6 +416,37 @@ describe('DaemonIpcServer', () => {
       expect(handled[0]!.id).toBe(command.id);
     });
 
+    it('does not dispatch a slow command again while it is still running', async () => {
+      let calls = 0;
+      let release!: () => void;
+      const handlerDone = new Promise<void>((r) => {
+        release = r;
+      });
+
+      const server = new DaemonIpcServer({
+        inputDir,
+        outputDir,
+        errorsDir,
+        logger: makeLogger(),
+        pollIntervalMs: 20,
+        commandHandler: async (cmd) => {
+          calls++;
+          await handlerDone;
+          return { ...DEFAULT_RESPONSE, commandId: cmd.id };
+        },
+      });
+
+      await writeCommandFile(inputDir, makeCommand({ command: 'reload' }));
+      server.start();
+
+      await new Promise((r) => setTimeout(r, 200));
+      release();
+      await new Promise((r) => setTimeout(r, 100));
+      server.stop();
+
+      expect(calls).toBe(1);
+    });
+
     it('stop() is idempotent', () => {
       const server = new DaemonIpcServer({
         inputDir,
