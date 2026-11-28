@@ -47,6 +47,7 @@ export class A2ATaskRepository extends BaseRepository {
   private readonly findOwedNotificationsStmt: Database.Statement;
   private readonly setNotifyWakeStmt: Database.Statement;
   private readonly markNotifiedStmt: Database.Statement;
+  private readonly runBoundStmt: Database.Statement;
 
   constructor(db: Database.Database) {
     super(db);
@@ -90,6 +91,8 @@ export class A2ATaskRepository extends BaseRepository {
       WHERE id = @id AND notify != 'wake'
         AND NOT (state IN ('completed', 'failed', 'canceled') AND notified_at IS NOT NULL)
     `);
+
+    this.runBoundStmt = db.prepare(`SELECT 1 AS found FROM a2a_tasks WHERE run_id = ? LIMIT 1`);
 
     this.markNotifiedStmt = db.prepare(`
       UPDATE a2a_tasks
@@ -321,6 +324,20 @@ export class A2ATaskRepository extends BaseRepository {
       `switch A2A task ${taskId} to wake`,
       () => this.setNotifyWakeStmt.run({ id: taskId }).changes > 0,
     );
+  }
+
+  /** True when an A2A task records this run (the run executes a delegated task). */
+  isRunBoundToTask(runId: string): Result<boolean, DbError> {
+    try {
+      return ok(this.runBoundStmt.get(runId) !== undefined);
+    } catch (cause) {
+      return err(
+        new DbError(
+          `Failed to check A2A task binding for run ${runId}: ${String(cause)}`,
+          cause instanceof Error ? cause : undefined,
+        ),
+      );
+    }
   }
 
   /**

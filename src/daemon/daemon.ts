@@ -273,6 +273,7 @@ export class TalondDaemon {
         queueManager: this.ctx.queueManager,
         logger: this.logger,
         batchWindowSeconds: this.ctx.config.a2a.notifyBatchWindowSeconds,
+        taskTtlMinutes: this.ctx.config.a2a.taskTtlMinutes,
       });
       this.a2aNotifier.start();
     }

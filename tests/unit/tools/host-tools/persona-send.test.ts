@@ -22,6 +22,8 @@ import type { PersonaRepository, PersonaRow } from '../../../../src/core/databas
 import type { ResolvedCapabilities } from '../../../../src/personas/persona-types.js';
 import { A2AError } from '../../../../src/core/errors/error-types.js';
 
+type PersonaSendDeps = ConstructorParameters<typeof PersonaSendHandler>[0];
+
 function makeLogger() {
   return {
     info: vi.fn(),
@@ -114,6 +116,7 @@ function makeTaskRepo(): A2ATaskRepository {
   return {
     findById: vi.fn().mockReturnValue(ok(makeTaskRow())),
     setNotifyWake: vi.fn().mockReturnValue(ok(true)),
+    isRunBoundToTask: vi.fn().mockReturnValue(ok(false)),
   } as unknown as A2ATaskRepository;
 }
 
@@ -121,6 +124,20 @@ function makePersonaRepo(): PersonaRepository {
   return {
     findById: vi.fn().mockReturnValue(ok(makePersonaRow())),
   } as unknown as PersonaRepository;
+}
+
+/** Host-owned state that identifies the default test caller as a foreground run with a chat. */
+function foregroundDeps() {
+  return {
+    runRepo: {
+      findById: vi.fn().mockReturnValue(ok({ id: 'run-001', thread_id: 'thread-001' })),
+    } as unknown as PersonaSendDeps['runRepo'],
+    threadRepo: {
+      findById: vi
+        .fn()
+        .mockReturnValue(ok({ id: 'thread-001', external_id: 'chat-1', metadata: '{}' })),
+    } as unknown as PersonaSendDeps['threadRepo'],
+  };
 }
 
 const allCaps = (): ResolvedCapabilities => ({ allow: ['persona.send:*'], requireApproval: [] });
@@ -140,14 +157,25 @@ describe('PersonaSendHandler — success', () => {
     const taskMapper = makeTaskMapper();
     const taskRepo = makeTaskRepo();
     const personaRepo = makePersonaRepo();
-    const handler = new PersonaSendHandler({ taskMapper, taskRepo, personaRepo, logger: makeLogger(), resolveCapabilities: allCaps });
+    const handler = new PersonaSendHandler({
+      ...foregroundDeps(),
+      taskMapper,
+      taskRepo,
+      personaRepo,
+      logger: makeLogger(),
+      resolveCapabilities: allCaps,
+    });
 
     const result = await handler.execute(makeArgs(), makeContext());
 
     expect(result.status).toBe('success');
     expect(result.tool).toBe('persona.send');
     expect(result.requestId).toBe('req-001');
-    expect(result.result).toEqual({ task_id: 'task-123', state: 'submitted' });
+    expect(result.result).toMatchObject({
+      task_id: 'task-123',
+      state: 'submitted',
+      notify: 'wake',
+    });
     expect(taskMapper.submitTask).toHaveBeenCalledWith({
       sourcePersona: 'coordinator',
       targetPersona: 'researcher',
@@ -179,6 +207,7 @@ describe('PersonaSendHandler — success', () => {
       );
 
     const handler = new PersonaSendHandler({
+      ...foregroundDeps(),
       resolveCapabilities: allCaps,
       taskMapper,
       taskRepo,
@@ -193,7 +222,7 @@ describe('PersonaSendHandler — success', () => {
     const result = await resultPromise;
 
     expect(result.status).toBe('success');
-    expect(result.result).toEqual({
+    expect(result.result).toMatchObject({
       task_id: 'task-123',
       state: 'completed',
       result: 'Task complete',
@@ -212,6 +241,7 @@ describe('PersonaSendHandler — success', () => {
     );
 
     const handler = new PersonaSendHandler({
+      ...foregroundDeps(),
       resolveCapabilities: allCaps,
       taskMapper,
       taskRepo,
@@ -232,7 +262,7 @@ describe('PersonaSendHandler — success', () => {
     const result = await resultPromise;
 
     expect(result.status).toBe('success');
-    expect(result.result).toEqual({
+    expect(result.result).toMatchObject({
       task_id: 'task-123',
       state: 'timeout',
       error: 'Timed out waiting for delegated persona reply. The delegated task may still complete asynchronously. Use persona_task_status with this task_id to fetch the final result later.',
@@ -245,7 +275,14 @@ describe('PersonaSendHandler — hop count propagation', () => {
     const taskMapper = makeTaskMapper();
     const taskRepo = makeTaskRepo();
     const personaRepo = makePersonaRepo();
-    const handler = new PersonaSendHandler({ taskMapper, taskRepo, personaRepo, logger: makeLogger(), resolveCapabilities: allCaps });
+    const handler = new PersonaSendHandler({
+      ...foregroundDeps(),
+      taskMapper,
+      taskRepo,
+      personaRepo,
+      logger: makeLogger(),
+      resolveCapabilities: allCaps,
+    });
 
     await handler.execute(makeArgs(), makeContext({ a2aHopCount: 0 }));
 
@@ -258,7 +295,14 @@ describe('PersonaSendHandler — hop count propagation', () => {
     const taskMapper = makeTaskMapper();
     const taskRepo = makeTaskRepo();
     const personaRepo = makePersonaRepo();
-    const handler = new PersonaSendHandler({ taskMapper, taskRepo, personaRepo, logger: makeLogger(), resolveCapabilities: allCaps });
+    const handler = new PersonaSendHandler({
+      ...foregroundDeps(),
+      taskMapper,
+      taskRepo,
+      personaRepo,
+      logger: makeLogger(),
+      resolveCapabilities: allCaps,
+    });
 
     await handler.execute(makeArgs(), makeContext({ a2aTaskId: 'parent-task-456' }));
 
@@ -280,6 +324,7 @@ describe('PersonaSendHandler — timeout and errors', () => {
     );
 
     const handler = new PersonaSendHandler({
+      ...foregroundDeps(),
       resolveCapabilities: allCaps,
       taskMapper,
       taskRepo,
@@ -294,7 +339,7 @@ describe('PersonaSendHandler — timeout and errors', () => {
     const result = await resultPromise;
 
     expect(result.status).toBe('success');
-    expect(result.result).toEqual({
+    expect(result.result).toMatchObject({
       task_id: 'task-123',
       state: 'timeout',
       error: 'Timed out waiting for delegated persona reply. The delegated task may still complete asynchronously. Use persona_task_status with this task_id to fetch the final result later.',
@@ -309,7 +354,14 @@ describe('PersonaSendHandler — timeout and errors', () => {
       err(new A2AError('Unknown target persona: ghost')),
     );
 
-    const handler = new PersonaSendHandler({ taskMapper, taskRepo, personaRepo, logger: makeLogger(), resolveCapabilities: allCaps });
+    const handler = new PersonaSendHandler({
+      ...foregroundDeps(),
+      taskMapper,
+      taskRepo,
+      personaRepo,
+      logger: makeLogger(),
+      resolveCapabilities: allCaps,
+    });
 
     const result = await handler.execute(makeArgs({ target_persona: 'ghost' }), makeContext());
 
@@ -321,7 +373,14 @@ describe('PersonaSendHandler — timeout and errors', () => {
     const taskMapper = makeTaskMapper();
     const taskRepo = makeTaskRepo();
     const personaRepo = makePersonaRepo();
-    const handler = new PersonaSendHandler({ taskMapper, taskRepo, personaRepo, logger: makeLogger(), resolveCapabilities: allCaps });
+    const handler = new PersonaSendHandler({
+      ...foregroundDeps(),
+      taskMapper,
+      taskRepo,
+      personaRepo,
+      logger: makeLogger(),
+      resolveCapabilities: allCaps,
+    });
 
     const result = await handler.execute(makeArgs({ message: '   ' }), makeContext());
 
@@ -334,7 +393,14 @@ describe('PersonaSendHandler — timeout and errors', () => {
     const taskMapper = makeTaskMapper();
     const taskRepo = makeTaskRepo();
     const personaRepo = makePersonaRepo();
-    const handler = new PersonaSendHandler({ taskMapper, taskRepo, personaRepo, logger: makeLogger(), resolveCapabilities: allCaps });
+    const handler = new PersonaSendHandler({
+      ...foregroundDeps(),
+      taskMapper,
+      taskRepo,
+      personaRepo,
+      logger: makeLogger(),
+      resolveCapabilities: allCaps,
+    });
 
     const result = await handler.execute(
       makeArgs({ await_reply: true, timeout_ms: 0 }),
@@ -361,6 +427,7 @@ describe('PersonaSendHandler — cancel_on_timeout', () => {
       for (const row of rowSequence) findById.mockReturnValueOnce(ok(row));
     }
     const handler = new PersonaSendHandler({
+      ...foregroundDeps(),
       resolveCapabilities: allCaps,
       taskMapper,
       taskRepo,
@@ -396,7 +463,11 @@ describe('PersonaSendHandler — cancel_on_timeout', () => {
     await vi.advanceTimersByTimeAsync(10);
     const result = await p;
 
-    expect(result.result).toEqual({ task_id: 'task-123', state: 'completed', result: 'late result' });
+    expect(result.result).toMatchObject({
+      task_id: 'task-123',
+      state: 'completed',
+      result: 'late result',
+    });
   });
 
   it('notes the cancel failure in the timeout output when cancelTask errors', async () => {
@@ -421,7 +492,11 @@ describe('PersonaSendHandler — cancel_on_timeout', () => {
     const result = await p;
 
     expect(taskMapper.cancelTask).not.toHaveBeenCalled();
-    expect(result.result).toEqual({ task_id: 'task-123', state: 'timeout', error: TIMEOUT_TEXT });
+    expect(result.result).toMatchObject({
+      task_id: 'task-123',
+      state: 'timeout',
+      error: TIMEOUT_TEXT,
+    });
   });
 
   it('does not cancel when the task completes before the timeout', async () => {
@@ -433,12 +508,13 @@ describe('PersonaSendHandler — cancel_on_timeout', () => {
       makeContext(),
     );
     expect(taskMapper.cancelTask).not.toHaveBeenCalled();
-    expect(result.result).toEqual({ task_id: 'task-123', state: 'completed', result: 'ok' });
+    expect(result.result).toMatchObject({ task_id: 'task-123', state: 'completed', result: 'ok' });
   });
 
   it('rejects a non-boolean cancel_on_timeout before submitting', async () => {
     const taskMapper = makeTaskMapper();
     const handler = new PersonaSendHandler({
+      ...foregroundDeps(),
       resolveCapabilities: allCaps,
       taskMapper,
       taskRepo: makeTaskRepo(),
@@ -457,7 +533,11 @@ describe('PersonaSendHandler — cancel_on_timeout', () => {
   it('includes the stored reason when the awaited task is already canceled', async () => {
     const { handler } = setup([makeTaskRow({ state: 'canceled', error_message: 'canceled by operator' })]);
     const result = await handler.execute(makeArgs({ await_reply: true }), makeContext());
-    expect(result.result).toEqual({ task_id: 'task-123', state: 'canceled', error: 'canceled by operator' });
+    expect(result.result).toMatchObject({
+      task_id: 'task-123',
+      state: 'canceled',
+      error: 'canceled by operator',
+    });
   });
 });
 
@@ -483,6 +563,7 @@ describe('PersonaSendHandler — waitScope', () => {
       }
     });
     const handler = new PersonaSendHandler({
+      ...foregroundDeps(),
       resolveCapabilities: allCaps,
       taskMapper,
       taskRepo,
@@ -496,12 +577,17 @@ describe('PersonaSendHandler — waitScope', () => {
 
     expect(order).toEqual(['submit', 'scope-start', 'poll', 'scope-end']);
     expect(waitScope).toHaveBeenCalledWith(expect.any(Function), ctx);
-    expect(result.result).toEqual({ task_id: 'task-123', state: 'completed', result: 'done' });
+    expect(result.result).toMatchObject({
+      task_id: 'task-123',
+      state: 'completed',
+      result: 'done',
+    });
   });
 
   it('is not used for fire-and-forget sends', async () => {
     const waitScope = vi.fn();
     const handler = new PersonaSendHandler({
+      ...foregroundDeps(),
       resolveCapabilities: allCaps,
       taskMapper: makeTaskMapper(),
       taskRepo: makeTaskRepo(),
@@ -519,6 +605,7 @@ describe('PersonaSendHandler — persona.send scopes', () => {
     const taskMapper = makeTaskMapper();
     const resolveCapabilities = vi.fn().mockReturnValue(caps);
     const handler = new PersonaSendHandler({
+      ...foregroundDeps(),
       taskMapper,
       taskRepo: makeTaskRepo(),
       personaRepo: makePersonaRepo(),
@@ -604,6 +691,7 @@ describe('PersonaSendHandler — notify policy (ADR 0003)', () => {
     const taskMapper = makeTaskMapper();
     const taskRepo = makeTaskRepo();
     const handler = new PersonaSendHandler({
+      ...foregroundDeps(),
       resolveCapabilities: allCaps,
       taskMapper,
       taskRepo,
@@ -702,7 +790,7 @@ describe('PersonaSendHandler — notify policy (ADR 0003)', () => {
       const { taskMapper, handler } = build();
       const result = await handler.execute(makeArgs({ notify: 'wake' }), delegatedCtx());
       expect(result.status).toBe('error');
-      expect(result.error).toMatch(/delegated persona that delegates onward/);
+      expect(result.error).toMatch(/this run cannot be woken/);
       expect(taskMapper.submitTask).not.toHaveBeenCalled();
     });
 
@@ -777,5 +865,187 @@ describe('PersonaSendHandler — notify policy (ADR 0003)', () => {
     const result = await p;
     expect(result.status).toBe('success');
     expect((result.result as { state: string }).state).toBe('timeout');
+  });
+});
+
+describe('PersonaSendHandler — foreground fence, fail closed (ADR 0003)', () => {
+  const HINT_NOT_WAKEABLE = /notify forced to none: this run cannot be woken/;
+
+  function build(deps: Partial<PersonaSendDeps> = {}) {
+    const taskMapper = makeTaskMapper();
+    const taskRepo = makeTaskRepo();
+    const handler = new PersonaSendHandler({
+      ...foregroundDeps(),
+      resolveCapabilities: allCaps,
+      taskMapper,
+      taskRepo,
+      personaRepo: makePersonaRepo(),
+      logger: makeLogger(),
+      ...deps,
+    });
+    const submitted = (): { notify: string } =>
+      (taskMapper.submitTask as unknown as ReturnType<typeof vi.fn>).mock.calls[0][0] as {
+        notify: string;
+      };
+    return { taskMapper, taskRepo, handler, submitted };
+  }
+
+  it('foreground run: default wake, effective notify returned, no hint', async () => {
+    const { handler, submitted } = build();
+    const result = await handler.execute(makeArgs(), makeContext());
+    expect(submitted().notify).toBe('wake');
+    expect(result.result).toEqual({ task_id: 'task-123', state: 'submitted', notify: 'wake' });
+  });
+
+  it('scheduled run with an origin chat still gets the default wake', async () => {
+    const threadRepo = {
+      findById: vi.fn().mockReturnValue(
+        ok({
+          id: 'thread-001',
+          external_id: 'schedule:nightly',
+          metadata: JSON.stringify({ kind: 'schedule', originExternalId: 'chat-9' }),
+        }),
+      ),
+    } as unknown as PersonaSendDeps['threadRepo'];
+    const { handler, submitted } = build({ threadRepo });
+    await handler.execute(makeArgs(), makeContext());
+    expect(submitted().notify).toBe('wake');
+  });
+
+  it('direct A2A run (task bound to the run, context lacking the task id) cannot wake', async () => {
+    const { handler, taskRepo, submitted } = build();
+    (taskRepo.isRunBoundToTask as unknown as ReturnType<typeof vi.fn>).mockReturnValue(ok(true));
+    const result = await handler.execute(makeArgs(), makeContext());
+    expect(submitted().notify).toBe('none');
+    expect(result.result).toMatchObject({
+      notify: 'none',
+      notify_hint: expect.stringMatching(HINT_NOT_WAKEABLE),
+    });
+  });
+
+  it('background agent run (backgroundTaskId, or a task ID with no runs row) cannot wake', async () => {
+    const a = build();
+    const ra = await a.handler.execute(makeArgs(), makeContext({ backgroundTaskId: 'bg-1' }));
+    expect(a.submitted().notify).toBe('none');
+    expect(ra.result).toMatchObject({
+      notify: 'none',
+      notify_hint: expect.stringMatching(HINT_NOT_WAKEABLE),
+    });
+
+    // A background agent that omits backgroundTaskId: its task ID is the runId and has no runs row.
+    const runRepo = {
+      findById: vi.fn().mockReturnValue(ok(null)),
+    } as unknown as PersonaSendDeps['runRepo'];
+    const b = build({ runRepo });
+    await b.handler.execute(makeArgs(), makeContext({ runId: 'bg-task-id' }));
+    expect(b.submitted().notify).toBe('none');
+  });
+
+  it('a run recorded for a different thread cannot wake', async () => {
+    const runRepo = {
+      findById: vi.fn().mockReturnValue(ok({ id: 'run-001', thread_id: 'other-thread' })),
+    } as unknown as PersonaSendDeps['runRepo'];
+    const { handler, submitted } = build({ runRepo });
+    await handler.execute(makeArgs(), makeContext());
+    expect(submitted().notify).toBe('none');
+  });
+
+  it('unknown run (no run repo, lookup error, or binding lookup error) fails closed', async () => {
+    const none = build({ runRepo: undefined });
+    await none.handler.execute(makeArgs(), makeContext());
+    expect(none.submitted().notify).toBe('none');
+
+    const runErr = build({
+      runRepo: {
+        findById: vi.fn().mockReturnValue(err(new Error('db'))),
+      } as unknown as PersonaSendDeps['runRepo'],
+    });
+    await runErr.handler.execute(makeArgs(), makeContext());
+    expect(runErr.submitted().notify).toBe('none');
+
+    const bindErr = build();
+    (bindErr.taskRepo.isRunBoundToTask as unknown as ReturnType<typeof vi.fn>).mockReturnValue(
+      err(new Error('db')),
+    );
+    await bindErr.handler.execute(makeArgs(), makeContext());
+    expect(bindErr.submitted().notify).toBe('none');
+  });
+
+  it('rejects an explicit wake from any run that cannot be woken, submitting nothing', async () => {
+    for (const ctx of [
+      makeContext({ backgroundTaskId: 'bg-1' }),
+      makeContext({ a2aTaskId: 'parent' }),
+    ]) {
+      const { handler, taskMapper } = build();
+      const result = await handler.execute(makeArgs({ notify: 'wake' }), ctx);
+      expect(result.status).toBe('error');
+      expect(result.error).toMatch(/only available to foreground runs/);
+      expect(taskMapper.submitTask).not.toHaveBeenCalled();
+    }
+  });
+
+  it('skips the timeout switch to wake for a run that cannot be woken', async () => {
+    vi.useFakeTimers();
+    const { handler, taskRepo } = build({ maxWaitMs: 100, pollIntervalMs: 10 });
+    (taskRepo.findById as unknown as ReturnType<typeof vi.fn>).mockReturnValue(
+      ok(makeTaskRow({ state: 'working' })),
+    );
+    const p = handler.execute(
+      makeArgs({ await_reply: true }),
+      makeContext({ backgroundTaskId: 'bg-1' }),
+    );
+    await vi.advanceTimersByTimeAsync(100);
+    const result = await p;
+    expect(taskRepo.setNotifyWake).not.toHaveBeenCalled();
+    expect(result.result).toMatchObject({ state: 'timeout', notify: 'none' });
+    // await_reply defaults to none, so no hint is needed.
+    expect((result.result as { notify_hint?: string }).notify_hint).toBeUndefined();
+  });
+
+  it('a recipient-less thread (CLI-created schedule) is forced to none with a hint', async () => {
+    const threadRepo = {
+      findById: vi
+        .fn()
+        .mockReturnValue(ok({ id: 'thread-001', external_id: 'schedule:cli', metadata: '{}' })),
+    } as unknown as PersonaSendDeps['threadRepo'];
+    const { handler, submitted } = build({ threadRepo });
+    const result = await handler.execute(makeArgs(), makeContext());
+    expect(submitted().notify).toBe('none');
+    expect(result.status).toBe('success');
+    expect(result.result).toMatchObject({
+      notify: 'none',
+      notify_hint: expect.stringMatching(/no chat to deliver to/),
+    });
+  });
+
+  it('a recipient-less thread downgrades an explicit wake instead of rejecting it', async () => {
+    const threadRepo = {
+      findById: vi
+        .fn()
+        .mockReturnValue(ok({ id: 'thread-001', external_id: 'schedule:cli', metadata: '{}' })),
+    } as unknown as PersonaSendDeps['threadRepo'];
+    const { handler, submitted } = build({ threadRepo });
+    const result = await handler.execute(makeArgs({ notify: 'wake' }), makeContext());
+    expect(result.status).toBe('success');
+    expect(submitted().notify).toBe('none');
+  });
+
+  it('a thread lookup failure or missing thread repo fails closed', async () => {
+    const lookupErr = build({
+      threadRepo: {
+        findById: vi.fn().mockReturnValue(err(new Error('db'))),
+      } as unknown as PersonaSendDeps['threadRepo'],
+    });
+    await lookupErr.handler.execute(makeArgs(), makeContext());
+    expect(lookupErr.submitted().notify).toBe('none');
+    const missing = build({ threadRepo: undefined });
+    await missing.handler.execute(makeArgs(), makeContext());
+    expect(missing.submitted().notify).toBe('none');
+  });
+
+  it('an explicit none carries no hint', async () => {
+    const { handler } = build();
+    const result = await handler.execute(makeArgs({ notify: 'none' }), makeContext());
+    expect(result.result).toEqual({ task_id: 'task-123', state: 'submitted', notify: 'none' });
   });
 });

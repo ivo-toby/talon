@@ -10,6 +10,9 @@ import type { A2ATaskMapper } from '../../a2a/a2a-task-mapper.js';
 import type { A2ANotifyPolicy, A2ATaskRow, A2ATaskState } from '../../a2a/a2a-types.js';
 import type { A2ATaskRepository } from '../../core/database/repositories/a2a-task-repository.js';
 import type { PersonaRepository } from '../../core/database/repositories/persona-repository.js';
+import type { RunRepository } from '../../core/database/repositories/run-repository.js';
+import type { ThreadRepository } from '../../core/database/repositories/thread-repository.js';
+import { resolveThreadRecipient } from '../../daemon/schedule-thread-utils.js';
 import { ToolError } from '../../core/errors/error-types.js';
 import {
   allowedDelegationTargets,
@@ -45,7 +48,16 @@ interface PersonaSendOutput {
   state: PersonaSendState;
   result?: string;
   error?: string;
+  /** Effective completion notification policy at submit time. */
+  notify?: A2ANotifyPolicy;
+  /** Why notify differs from what was asked or defaulted. */
+  notify_hint?: string;
 }
+
+const NOTIFY_HINT_NOT_WAKEABLE =
+  'notify forced to none: this run cannot be woken (only foreground runs can); use await_reply or persona_task_status';
+const NOTIFY_HINT_NO_CHAT =
+  'notify forced to none: this conversation has no chat to deliver to; use await_reply or persona_task_status';
 
 const DEFAULT_POLL_INTERVAL_MS = 2_000;
 const TERMINAL_STATES = new Set<A2ATaskState>(['completed', 'failed', 'canceled', 'input-required']);
@@ -72,6 +84,10 @@ export class PersonaSendHandler {
       taskMapper: A2ATaskMapper;
       taskRepo: A2ATaskRepository;
       personaRepo: PersonaRepository;
+      /** Identifies the calling run; without it no run counts as foreground (fail closed). */
+      runRepo?: Pick<RunRepository, 'findById'>;
+      /** Resolves the source thread's chat; without it no thread counts as having one. */
+      threadRepo?: Pick<ThreadRepository, 'findById'>;
       logger: pino.Logger;
       /**
        * Resolves the CALLING persona's capabilities on the host from the trusted
@@ -131,23 +147,34 @@ export class PersonaSendHandler {
       return this.errorResult(requestId, message);
     }
 
-    // A delegated persona's run executes on the SOURCE thread but is not a
-    // foreground run there: a wake would run it as one in the human's thread.
-    // So onward delegation can never notify (ADR 0003).
-    const delegated = context.a2aTaskId !== undefined && context.a2aTaskId !== '';
-    if (delegated && validatedArgs.value.notify === 'wake') {
+    // A wake runs the source persona as a FOREGROUND run in the source thread.
+    // That is only correct when the caller IS a foreground run of that thread:
+    // a delegated persona's run and a background agent share the thread but are
+    // not foreground runs, so a wake would answer in the human's chat. Fail
+    // closed: anything that is not positively a foreground run cannot wake.
+    const requested = validatedArgs.value.notify;
+    const foreground = this.isForegroundRun(context);
+    if (!foreground && requested === 'wake') {
       const message =
-        "persona.send: notify 'wake' is not available to a delegated persona that delegates onward. " +
+        "persona.send: this run cannot be woken: notify 'wake' is only available to foreground runs, " +
+        'not to delegated personas or background agents. ' +
         'Use await_reply: true, or send with notify: "none" and follow the task with persona_task_status.';
-      this.deps.logger.warn({ requestId, a2aTaskId: context.a2aTaskId }, message);
+      this.deps.logger.warn({ requestId, runId: context.runId }, message);
       return this.errorResult(requestId, message);
     }
-    const notify: A2ANotifyPolicy = delegated
-      ? 'none'
-      : (validatedArgs.value.notify ?? (validatedArgs.value.await_reply ? 'none' : 'wake'));
-    // A timed-out or failed wait may switch the task to wake, unless this is a
-    // delegated run or the caller explicitly opted out.
-    const wakeOnLostWait = !delegated && validatedArgs.value.notify !== 'none';
+    const wanted: A2ANotifyPolicy =
+      requested ?? (validatedArgs.value.await_reply ? 'none' : 'wake');
+    // A conversation with no chat (CLI-created schedule thread) cannot receive the wake.
+    const hasChat = foreground && this.threadHasChat(context.threadId);
+    let notify: A2ANotifyPolicy = wanted;
+    let notifyHint: string | undefined;
+    if (wanted === 'wake' && !hasChat) {
+      notify = 'none';
+      notifyHint = foreground ? NOTIFY_HINT_NO_CHAT : NOTIFY_HINT_NOT_WAKEABLE;
+    }
+    // A timed-out or failed wait may switch the task to wake, only for a run that
+    // can be woken and has not explicitly opted out.
+    const wakeOnLostWait = hasChat && requested !== 'none';
 
     const submitResult = this.deps.taskMapper.submitTask({
       sourcePersona: sourcePersona.value,
@@ -157,6 +184,11 @@ export class PersonaSendHandler {
       notify,
       hopCount: (context.a2aHopCount ?? 0) + 1,
       ...(context.a2aTaskId ? { parentTaskId: context.a2aTaskId } : {}),
+    });
+    const withNotify = (out: PersonaSendOutput): PersonaSendOutput => ({
+      ...out,
+      notify,
+      ...(notifyHint ? { notify_hint: notifyHint } : {}),
     });
 
     if (submitResult.isErr()) {
@@ -169,10 +201,10 @@ export class PersonaSendHandler {
     }
 
     if (!validatedArgs.value.await_reply) {
-      return this.successResult(requestId, {
-        task_id: submitResult.value.taskId,
-        state: 'submitted',
-      });
+      return this.successResult(
+        requestId,
+        withNotify({ task_id: submitResult.value.taskId, state: 'submitted' }),
+      );
     }
 
     const taskId = submitResult.value.taskId;
@@ -186,7 +218,30 @@ export class PersonaSendHandler {
       return this.errorResult(requestId, awaitedResult.error.message);
     }
 
-    return this.successResult(requestId, awaitedResult.value);
+    return this.successResult(requestId, withNotify(awaitedResult.value));
+  }
+
+  /**
+   * True only when the caller is positively a foreground, non-A2A run of its
+   * thread, using host-owned state rather than client-supplied context alone:
+   * no a2a/background task ID in the context, a `runs` row for this run in this
+   * thread (a background agent's task ID has none), and no A2A task bound to
+   * the run (an A2A run is recorded on its task by markWorking before it can
+   * call any tool). Any lookup failure means "not foreground".
+   */
+  private isForegroundRun(context: ToolExecutionContext): boolean {
+    if (context.a2aTaskId || context.backgroundTaskId) return false;
+    if (!this.deps.runRepo) return false;
+    const run = this.deps.runRepo.findById(context.runId);
+    if (run.isErr() || run.value === null || run.value.thread_id !== context.threadId) return false;
+    const bound = this.deps.taskRepo.isRunBoundToTask(context.runId);
+    return bound.isOk() && !bound.value;
+  }
+
+  private threadHasChat(threadId: string): boolean {
+    if (!this.deps.threadRepo) return false;
+    const thread = this.deps.threadRepo.findById(threadId);
+    return thread.isOk() && thread.value !== null && resolveThreadRecipient(thread.value) !== null;
   }
 
   private validateArgs(args: PersonaSendArgs): Result<PersonaSendArgs, ToolError> {

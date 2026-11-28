@@ -298,9 +298,11 @@ export class A2ATaskMapper {
    * queue item (if not yet claimed) is canceled best-effort and the abort hook
    * is invoked so an in-flight run stops.
    *
-   * An explicit cancel (the caller, the operator CLI, an awaited call giving
-   * up) never wakes the delegating persona: whoever cancelled already knows.
-   * Only the reaper's TTL cancel passes `wakeCaller: true` (ADR 0003).
+   * By default a cancel does not wake the delegating persona: the callers that
+   * use the default are the delegating persona itself (`persona_task_cancel`,
+   * `cancel_on_timeout`) and already know. The reaper's TTL cancel and the
+   * operator cancel (`talonctl a2a cancel`, IPC and DB fallback) pass
+   * `wakeCaller: true`, so the delegator learns of them (ADR 0003).
    */
   cancelTask(
     taskId: string,

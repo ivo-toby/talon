@@ -28,7 +28,7 @@ import type { ThreadRepository } from '../core/database/repositories/thread-repo
 import { createVoiceSafeLogger } from '../observability/langfuse/voice-observation.js';
 import { resolveThreadRecipient } from '../daemon/schedule-thread-utils.js';
 import { createQueueDiagnosticResolver, type QueueManager } from '../queue/queue-manager.js';
-import type { A2ATaskRow } from './a2a-types.js';
+import { DEFAULT_A2A_TASK_TTL_MINUTES, type A2ATaskRow } from './a2a-types.js';
 
 /** How often the notifier looks for owed notifications. */
 export const A2A_NOTIFIER_INTERVAL_MS = 5_000;
@@ -56,6 +56,11 @@ export interface A2ACompletionNotifierDeps {
   logger: pino.Logger;
   /** a2a.notifyBatchWindowSeconds (fixed until restart). */
   batchWindowSeconds: number;
+  /**
+   * a2a.taskTtlMinutes: how long tasks stay owed while their source persona is
+   * missing before they are retired. Defaults to the built-in TTL.
+   */
+  taskTtlMinutes?: number;
   /** Injectable clock (epoch ms) for tests. */
   now?: () => number;
 }
@@ -66,7 +71,11 @@ export function truncateExcerpt(text: string, max: number): string {
   if (text.length <= max) return text;
   const marker = A2A_NOTIFY_TRUNCATION_MARKER;
   if (max <= marker.length) return marker.slice(0, max);
-  return `${text.slice(0, max - marker.length)}${marker}`;
+  let end = max - marker.length;
+  // Never cut a surrogate pair in half (e.g. an emoji at the boundary).
+  const last = text.charCodeAt(end - 1);
+  if (end > 0 && last >= 0xd800 && last <= 0xdbff) end--;
+  return `${text.slice(0, end)}${marker}`;
 }
 
 /**
@@ -232,15 +241,22 @@ export class A2ACompletionNotifier {
       );
       return false;
     }
-    if (thread.value === null || persona.value === null) {
-      this.retire(
-        owedTasks,
-        thread.value === null
-          ? 'source thread no longer exists'
-          : 'source persona no longer exists',
-        log,
-        { threadId, sourcePersona },
-      );
+    if (thread.value === null) {
+      this.retire(owedTasks, 'source thread no longer exists', log, { threadId, sourcePersona });
+      return false;
+    }
+    if (persona.value === null) {
+      // The persona may be re-added by a config reload: keep the tasks owed and
+      // retire only those finished longer ago than the task TTL.
+      const ttlMs = (this.deps.taskTtlMinutes ?? DEFAULT_A2A_TASK_TTL_MINUTES) * 60_000;
+      const nowMs = this.now();
+      const expired = owedTasks.filter((t) => nowMs - (t.completed_at ?? t.updated_at) >= ttlMs);
+      if (expired.length > 0) {
+        this.retire(expired, 'source persona missing past the task TTL', log, {
+          threadId,
+          sourcePersona,
+        });
+      }
       return false;
     }
     if (resolveThreadRecipient(thread.value) === null) {

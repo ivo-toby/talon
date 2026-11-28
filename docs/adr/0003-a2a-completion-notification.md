@@ -24,9 +24,15 @@ channel delivery, so no chat IDs are tracked by agents.
   times out without cancelling, or its wait is lost to a poll error, the task is switched to
   `wake` so the late result still arrives (an explicit `notify: "none"` opts out of the
   switch). A restart of the daemon during an awaited wait cannot be recovered: the caller
-  must use `persona_task_status`. A delegated persona that delegates onward cannot use
+  must use `persona_task_status`. A delegated persona or a background agent that delegates onward cannot use
   notify wake; it must await_reply or poll, because its run is not a foreground run in the
-  source thread. Such calls are always `none`; an explicit `wake` is a tool error.
+  source thread. `wake` is available only to a caller positively identified, from host-owned
+  state, as a foreground run: no A2A or background task ID in its context, a `runs` row for it
+  in the source thread (a background agent's task ID has none) and no `a2a_tasks` row recorded
+  for the run. Anything else, including a failed lookup, fails closed: the call is `none` and
+  the tool result says so (`notify_hint`); an explicit `wake` is a tool error. The same
+  downgrade, with a hint, applies to a source thread that has no chat to deliver to (a
+  CLI-created schedule thread). The tool result always carries the effective `notify`.
   CLI-submitted tasks (`talonctl a2a send`) are `none`. Existing rows migrate to `none`.
 - **Terminal states** that notify: `completed`, `failed`, `canceled`, including tasks the
   reaper fails as orphaned or cancels at `a2a.taskTtlMinutes`, and tasks an operator cancels
@@ -45,7 +51,9 @@ channel delivery, so no chat IDs are tracked by agents.
   Tasks finishing together produce one message and one run. One message covers at most 20
   tasks (oldest first); the rest stay owed and go out on the next tick. A thread that has no
   chat to deliver to (a CLI-created schedule thread) is not woken: its tasks are marked
-  notified and logged.
+  notified and logged. If the source persona is missing (for example removed by a config
+  reload) the tasks stay owed and are retired, with a log, only once they finished longer ago
+  than `a2a.taskTtlMinutes`; lookup errors always retry.
 - **Content.** Per task: ID, target persona, state, and a result or error excerpt of at
   most 800 characters, 4,000 in total; the message says to use `persona_task_status` for
   the full result. Excerpts are untrusted model output: each is rendered on a single line
@@ -65,6 +73,10 @@ Out of scope, recorded for later: carrying a root origin (channel, thread, trigg
 down delegation chains with a platform-resolved `channel.send` target; moving background
 agent notifications onto the same mechanism; a "stalled but not yet expired" signal (today
 the TTL cancels, and the cancellation notifies).
+
+Migration 021 was edited in place during review (the owed-rows index predicate changed). A
+database already migrated with the first commit of this branch keeps the old index predicate:
+results stay correct and the index is simply unused. Merging to main makes this moot.
 
 Known limitation: a fresh session or context rotation shows the persona's reply but not the
 notification text; the task results stay available through `persona_task_status`.

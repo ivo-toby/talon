@@ -355,6 +355,25 @@ describe('A2ACompletionNotifier', () => {
       expect(line.endsWith(A2A_NOTIFY_TRUNCATION_MARKER)).toBe(true);
     });
 
+    it('never cuts a surrogate pair in half at the truncation boundary', () => {
+      const marker = A2A_NOTIFY_TRUNCATION_MARKER;
+      const max = 20;
+      const cut = max - marker.length;
+      // Place the emoji so its high surrogate is the last unit before the cut.
+      const text = `${'a'.repeat(cut - 1)}\u{1F600}${'b'.repeat(40)}`;
+      const out = truncateExcerpt(text, max);
+      expect(out).toBe(`${'a'.repeat(cut - 1)}${marker}`);
+      expect(out.length).toBeLessThanOrEqual(max);
+      for (let i = 0; i < out.length; i++) {
+        const c = out.charCodeAt(i);
+        if (c >= 0xd800 && c <= 0xdbff)
+          expect(out.charCodeAt(i + 1)).toBeGreaterThanOrEqual(0xdc00);
+      }
+      // A pair that fits entirely before the cut is kept.
+      const kept = truncateExcerpt(`${'a'.repeat(cut - 2)}\u{1F600}${'b'.repeat(40)}`, max);
+      expect(kept).toContain('\u{1F600}');
+    });
+
     it('does not mark short excerpts', () => {
       expect(truncateExcerpt('short', 800)).toBe('short');
       expect(truncateExcerpt('abc', 0)).toBe('');
@@ -447,15 +466,63 @@ describe('A2ACompletionNotifier', () => {
   });
 
   describe('missing thread or persona', () => {
-    it('marks tasks notified and enqueues nothing when the source persona is missing', () => {
+    it('keeps tasks owed while the source persona is missing, within the task TTL', () => {
       const thread = h.addThread();
       const id = h.addTask(thread, { source: 'ghost' });
       h.finish(id, T0);
+      h.clock.now = T0 + 59 * 60_000;
+      for (let i = 0; i < 3; i++) expect(h.notifier.tick()._unsafeUnwrap()).toBe(0);
+      expect(h.items()).toHaveLength(0);
+      expect(h.notifiedAt(id)).toBeNull();
+      expect(
+        h.taskRepo
+          .findOwedNotifications()
+          ._unsafeUnwrap()
+          .map((r) => r.id),
+      ).toEqual([id]);
+    });
+
+    it('delivers once the missing persona is back (for example after a config reload)', () => {
+      const thread = h.addThread();
+      const id = h.addTask(thread, { source: 'late-persona' });
+      h.finish(id, T0);
       h.clock.now = T0 + 30_000;
       expect(h.notifier.tick()._unsafeUnwrap()).toBe(0);
-      expect(h.items()).toHaveLength(0);
+      h.personaRepo.insert({
+        id: uuidv4(),
+        name: 'late-persona',
+        model: 'm',
+        system_prompt_file: null,
+        skills: '[]',
+        capabilities: '{"allow":[],"requireApproval":[]}',
+        mounts: '[]',
+        max_concurrent: null,
+      });
+      expect(h.notifier.tick()._unsafeUnwrap()).toBe(1);
       expect(h.notifiedAt(id)).not.toBeNull();
-      expect(h.taskRepo.findOwedNotifications()._unsafeUnwrap()).toEqual([]);
+    });
+
+    it('retires tasks whose source persona stays missing past a2a.taskTtlMinutes', () => {
+      const thread = h.addThread();
+      const old = h.addTask(thread, { source: 'ghost' });
+      const fresh = h.addTask(thread, { source: 'ghost' });
+      h.finish(old, T0);
+      h.finish(fresh, T0 + 50 * 60_000);
+      const n = new A2ACompletionNotifier({
+        taskRepo: h.taskRepo,
+        threadRepo: h.threadRepo,
+        channelRepo: h.channelRepo,
+        personaRepo: h.personaRepo,
+        queueManager: h.queueManager,
+        logger: h.logger,
+        batchWindowSeconds: 0,
+        taskTtlMinutes: 60,
+        now: () => T0 + 61 * 60_000,
+      });
+      expect(n.tick()._unsafeUnwrap()).toBe(0);
+      expect(h.items()).toHaveLength(0);
+      expect(h.notifiedAt(old)).not.toBeNull(); // past the TTL: retired
+      expect(h.notifiedAt(fresh)).toBeNull(); // still within the TTL: owed
     });
 
     it('marks tasks notified when the source thread no longer exists', () => {
@@ -692,7 +759,7 @@ describe('A2ACompletionNotifier', () => {
       const { logger, lines } = recordingLogger();
       const thread = h.addThread('voice');
       const id = h.addTask(thread, { source: 'ghost' });
-      h.finish(id, T0);
+      h.finish(id, T0 - 61 * 60_000); // past the task TTL, so it is retired and logged
       build(logger).tick();
       expect(lines.length).toBeGreaterThan(0);
       const all = lines.join('');

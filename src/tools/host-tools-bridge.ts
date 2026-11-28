@@ -178,6 +178,8 @@ export class HostToolsBridge {
         taskMapper: ctx.a2aTaskMapper,
         taskRepo: ctx.repos.a2aTask,
         personaRepo: ctx.repos.persona,
+        runRepo: ctx.repos.run,
+        threadRepo: ctx.repos.thread,
         logger: handlerLogger,
         resolveCapabilities: (personaId) => this.resolvePersonaCapabilities(personaId),
         waitScope,

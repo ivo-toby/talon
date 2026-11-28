@@ -3,6 +3,8 @@ import Database from 'better-sqlite3';
 import { A2ATaskRepository } from '../../../../../src/core/database/repositories/a2a-task-repository.js';
 import { ThreadRepository } from '../../../../../src/core/database/repositories/thread-repository.js';
 import { ChannelRepository } from '../../../../../src/core/database/repositories/channel-repository.js';
+import { PersonaRepository } from '../../../../../src/core/database/repositories/persona-repository.js';
+import { RunRepository } from '../../../../../src/core/database/repositories/run-repository.js';
 import { createTestDb, uuid } from './helpers.js';
 
 describe('A2ATaskRepository state guards and admission', () => {
@@ -341,6 +343,46 @@ describe('A2ATaskRepository state guards and admission', () => {
       expect(repo.tryAdmit(id, 1)._unsafeUnwrap()).toBe('admitted');
     });
 
+    it('isRunBoundToTask is true only for a run recorded on a task', () => {
+      const id = insert();
+      const runId = uuid();
+      expect(repo.isRunBoundToTask(runId)._unsafeUnwrap()).toBe(false);
+      const personaId = uuid();
+      new PersonaRepository(db).insert({
+        id: personaId,
+        name: `p-${personaId}`,
+        model: 'm',
+        system_prompt_file: null,
+        skills: '[]',
+        capabilities: '{}',
+        mounts: '[]',
+        max_concurrent: null,
+      });
+      new RunRepository(db)
+        .insert({
+          id: runId,
+          thread_id: threadId,
+          persona_id: personaId,
+          provider_name: 'claude-code',
+          sandbox_id: null,
+          session_id: null,
+          status: 'running',
+          parent_run_id: null,
+          queue_item_id: null,
+          input_tokens: 0,
+          output_tokens: 0,
+          cache_read_tokens: 0,
+          cache_write_tokens: 0,
+          cost_usd: 0,
+          error: null,
+          started_at: 1,
+          ended_at: null,
+        })
+        ._unsafeUnwrap();
+      repo.markWorking(id, runId);
+      expect(repo.isRunBoundToTask(runId)._unsafeUnwrap()).toBe(true);
+    });
+
     it('findById returns null for an unknown id', () => {
       expect(repo.findById('nope')._unsafeUnwrap()).toBeNull();
     });
@@ -367,6 +409,7 @@ describe('A2ATaskRepository state guards and admission', () => {
         repo.findOwedNotifications(),
         repo.setNotifyWake(id),
         repo.markNotified(id),
+        repo.isRunBoundToTask('r'),
         repo.tryAdmit(id, 1),
         repo.findNonTerminalWithQueueStatus(),
         repo.countQueuedByTarget('worker'),

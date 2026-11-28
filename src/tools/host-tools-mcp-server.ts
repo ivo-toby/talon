@@ -425,6 +425,8 @@ const TOOLS = [
       'Without await_reply you do not need to poll: when the task finishes (completed, failed or canceled by the system) ' +
       'you are woken once with a message in this thread, batched with other tasks that finished around the same time, ' +
       'and can fetch the full result with persona_task_status. Set notify to "none" to opt out. ' +
+      'Waking is only available to foreground runs: a delegated persona or background agent always gets notify "none" ' +
+      '(see notify_hint in the result) and must use await_reply or persona_task_status. ' +
       'A "failed" state is final (no automatic retry); you decide whether to resend.',
     inputSchema: {
       type: 'object' as const,
@@ -455,7 +457,7 @@ const TOOLS = [
           type: 'string' as const,
           enum: ['wake', 'none'],
           description:
-            'Whether to wake you with a message in this thread when the task finishes. Default: "wake" without await_reply, "none" with await_reply (a timed-out wait switches to "wake").',
+            'Whether to wake you with a message in this thread when the task finishes. Default: "wake" without await_reply, "none" with await_reply (a timed-out wait switches to "wake"). Only foreground runs can use "wake"; for other callers it is rejected and the default is "none".',
         },
       },
       required: ['target_persona', 'message'],
