@@ -54,6 +54,7 @@ The `(id …)` value is the channel's own message ID. The agent passes it to `ch
 | A user replies to a message | The target is resolved from Talon's message ledger and shown in the header |
 | Talon answers as a reply | Controlled per connector by `replyToTrigger`; only the first message of an answer quotes |
 | Talon reacts | The `channel_react` tool, gated by the `channel.react:*` capability |
+| Talon sends a file | `channel_send` with `attachments`, gated by `channel.attach` (Telegram today). Attachment messages enter the ledger, so replies and reactions to them work |
 | Talon stays silent | A response that is only `NO_REPLY` is not delivered |
 | A user reacts to a Talon message | Starts an agent run with the reaction as the message. Disable with `inboundReactions: false` |
 

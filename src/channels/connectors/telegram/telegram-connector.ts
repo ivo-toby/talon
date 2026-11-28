@@ -51,6 +51,11 @@ import {
   planTelegramMedia,
   type OpenedTelegramFile,
 } from './telegram-media.js';
+import {
+  TELEGRAM_OUTBOUND_ATTACHMENTS,
+  sendTelegramAttachment,
+} from './telegram-outbound-media.js';
+import type { AttachmentDeliveryReceipt, OutboundAttachmentSupport } from '../../channel-types.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -102,6 +107,8 @@ export interface TelegramConnectorOptions {
 export class TelegramConnector implements ChannelConnector {
   readonly type = 'telegram';
   readonly name: string;
+  /** Photos via sendPhoto, other files via sendDocument (Bot API limits). */
+  readonly outboundAttachments: OutboundAttachmentSupport = TELEGRAM_OUTBOUND_ATTACHMENTS;
 
   private _botUserId: string | undefined;
   private _botUsername: string | undefined;
@@ -260,9 +267,62 @@ export class TelegramConnector implements ChannelConnector {
     externalThreadId: string,
     output: AgentOutput,
   ): Promise<Result<SendReceipt | void, ChannelError>> {
-    const text = this.format(output.body);
     const { chatId, topicId } = parseTelegramThreadId(externalThreadId);
+    const replyMessageId = this.replyMessageId(output, chatId, externalThreadId);
+    const attachments = output.attachments ?? [];
+    if (attachments.length === 0) {
+      return this.sendText(output.body, chatId, topicId, replyMessageId);
+    }
 
+    // Text first (carrying the native reply), then one message per
+    // attachment. A failed text fails the whole send before any upload; a
+    // failed attachment is reported in the receipt and the rest still go.
+    let receiptId: string | undefined;
+    let pendingReply = replyMessageId;
+    if (output.body.trim() !== '') {
+      const text = await this.sendText(output.body, chatId, topicId, pendingReply);
+      if (text.isErr()) return text;
+      receiptId = text.value?.externalMessageId;
+      pendingReply = undefined;
+    }
+
+    const delivered: AttachmentDeliveryReceipt[] = [];
+    for (const [index, attachment] of attachments.entries()) {
+      const sent = await sendTelegramAttachment((m) => this.apiUrl(m), attachment, {
+        chatId,
+        ...(topicId !== undefined ? { topicId } : {}),
+        ...(pendingReply !== undefined ? { replyToMessageId: pendingReply } : {}),
+      });
+      if (sent.isErr()) {
+        this.logger.warn(
+          { channelName: this.name, index, mimeType: attachment.mimeType, size: attachment.size, err: sent.error.message },
+          'telegram: attachment send failed',
+        );
+        delivered.push({ index, status: 'failed', error: sent.error.message });
+        continue;
+      }
+      pendingReply = undefined;
+      receiptId ??= sent.value;
+      delivered.push({
+        index,
+        status: 'sent',
+        ...(sent.value !== undefined ? { externalMessageId: sent.value } : {}),
+      });
+    }
+    return ok({
+      ...(receiptId !== undefined ? { externalMessageId: receiptId } : {}),
+      attachments: delivered,
+    });
+  }
+
+  /** Sends one text message (MarkdownV2) and returns its receipt. */
+  private async sendText(
+    body: string,
+    chatId: string,
+    topicId: number | undefined,
+    replyMessageId: number | undefined,
+  ): Promise<Result<SendReceipt | undefined, ChannelError>> {
+    const text = this.format(body);
     const payload: Record<string, unknown> = {
       chat_id: chatId,
       text,
@@ -271,7 +331,6 @@ export class TelegramConnector implements ChannelConnector {
     if (topicId !== undefined) {
       payload.message_thread_id = topicId;
     }
-    const replyMessageId = this.replyMessageId(output, chatId, externalThreadId);
     if (replyMessageId !== undefined) {
       // allow_sending_without_reply: the answer must still arrive when the
       // message it replies to was deleted in the meantime.
@@ -282,14 +341,14 @@ export class TelegramConnector implements ChannelConnector {
     }
 
     const url = this.apiUrl('sendMessage');
-    const body = JSON.stringify(payload);
+    const requestBody = JSON.stringify(payload);
 
     let response: Response;
     try {
       response = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body,
+        body: requestBody,
       });
     } catch (fetchErr) {
       const cause = fetchErr instanceof Error ? fetchErr : undefined;

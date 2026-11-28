@@ -601,6 +601,66 @@ export const ImagesConfigSchema = z.object({
 });
 
 // ---------------------------------------------------------------------------
+// Outbound attachments
+// ---------------------------------------------------------------------------
+
+/** Sniffed MIME types an agent may send by default. */
+export const DEFAULT_OUTBOUND_ATTACHMENT_MIME_TYPES = [
+  'image/png',
+  'image/jpeg',
+  'image/gif',
+  'image/webp',
+  'application/pdf',
+  'text/plain',
+  'text/csv',
+  'text/markdown',
+  'application/json',
+] as const;
+
+/**
+ * Files an agent may attach to outbound messages (`channel_send`
+ * `attachments`, gated by the `channel.attach` capability). See
+ * `docs/adr/0003-outbound-attachments.md`.
+ *
+ * By default only the run's own thread artifacts directory is an allowed
+ * root; `allowedRoots` adds more. With `threadArtifacts: false` and no
+ * `allowedRoots` the feature is off. Every persona still needs the
+ * `channel.attach` capability.
+ */
+export const OutboundAttachmentsConfigSchema = z.object({
+  /**
+   * Let a run attach files from its own thread's artifacts directory
+   * (`<dataDir>/threads/<threadId>/artifacts/`). Scoped to the run's thread:
+   * a run can never send another thread's artifacts.
+   */
+  threadArtifacts: z.boolean().default(true),
+  /** Extra absolute directories files may be sent from. */
+  allowedRoots: z
+    .array(z.string().min(1).refine((p) => p.startsWith('/'), 'must be an absolute path'))
+    .default([]),
+  /**
+   * Extra absolute path prefixes that are never sent, on top of the built-in
+   * denylist (system directories, key and credential files, `.ssh`, `.git`,
+   * …) and Talon's own data directory and config file.
+   */
+  deniedPaths: z
+    .array(z.string().min(1).refine((p) => p.startsWith('/'), 'must be an absolute path'))
+    .default([]),
+  /** Per-file size cap in bytes; each connector may cap lower. */
+  maxBytes: z.number().int().min(1).default(20_971_520),
+  /** Maximum attachments per message; each connector may cap lower. */
+  maxPerMessage: z.number().int().min(1).max(20).default(5),
+  /** Sniffed MIME types that may be sent; the file extension is never trusted. */
+  allowedMimeTypes: z
+    .array(z.string().min(1).transform((m) => m.toLowerCase()))
+    .default(() => [...DEFAULT_OUTBOUND_ATTACHMENT_MIME_TYPES]),
+});
+
+export const AttachmentsConfigSchema = z.object({
+  outbound: OutboundAttachmentsConfigSchema.default(() => OutboundAttachmentsConfigSchema.parse({})),
+});
+
+// ---------------------------------------------------------------------------
 // Root config
 // ---------------------------------------------------------------------------
 
@@ -627,6 +687,7 @@ export const TalondConfigSchema = z
     subagents: SubAgentsConfigSchema.default({}),
     a2a: A2AConfigSchema.default(() => A2AConfigSchema.parse({})),
     images: ImagesConfigSchema.default(() => ImagesConfigSchema.parse({})),
+    attachments: AttachmentsConfigSchema.default(() => AttachmentsConfigSchema.parse({})),
     logLevel: z.enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal']).default('info'),
     dataDir: z.string().default('data'),
   })

@@ -70,10 +70,18 @@ export const MCP_TO_INTERNAL = new Map(
 /** All known host tool names (internal format). */
 export const ALL_HOST_TOOLS = HOST_TOOL_REGISTRY.map((e) => e.internalName);
 
+/**
+ * Capability prefixes that grant a permission inside another tool instead of
+ * exposing a tool of their own. `channel.attach` lets `channel_send` (and a
+ * run's own reply) carry file attachments; on its own it exposes nothing.
+ */
+export const MODIFIER_CAPABILITY_PREFIXES: ReadonlySet<string> = new Set(['channel.attach']);
+
 /** Set of all known capability prefixes (domain.action). Used for validation. */
-export const KNOWN_CAPABILITY_PREFIXES = new Set(
-  HOST_TOOL_REGISTRY.map((e) => e.capabilityPrefix),
-);
+export const KNOWN_CAPABILITY_PREFIXES = new Set([
+  ...HOST_TOOL_REGISTRY.map((e) => e.capabilityPrefix),
+  ...MODIFIER_CAPABILITY_PREFIXES,
+]);
 
 // ---------------------------------------------------------------------------
 // Capability descriptions (used by CLI tooling)
@@ -112,6 +120,13 @@ export const CAPABILITY_DESCRIPTIONS: ReadonlyArray<{
     mcpName: 'channel_send',
     labels: [
       { label: 'channel.send:*', description: 'Send messages to any channel; also grants channel.list (discover targets) and channel.broadcast (fan out to all bound chats)' },
+    ],
+  },
+  {
+    toolPrefix: 'channel.attach',
+    mcpName: 'channel_send',
+    labels: [
+      { label: 'channel.attach', description: 'Attach files (images, PDFs, logs) from the configured attachments.outbound.allowedRoots to channel_send messages; needs channel.send as well' },
     ],
   },
   {
@@ -326,4 +341,15 @@ export function isToolAllowed(toolName: string, capabilities: ResolvedCapabiliti
   }
 
   return false;
+}
+
+/**
+ * True when any `allow` or `requireApproval` label has the given
+ * `domain.action` prefix (scoped or not). Used by handlers that re-check a
+ * modifier capability such as `channel.attach`.
+ */
+export function hasCapabilityPrefix(capabilities: ResolvedCapabilities, prefix: string): boolean {
+  return [...capabilities.allow, ...capabilities.requireApproval].some(
+    (label) => extractCapabilityPrefix(label) === prefix,
+  );
 }

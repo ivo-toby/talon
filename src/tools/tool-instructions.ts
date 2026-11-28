@@ -10,7 +10,8 @@
 
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { HOST_TOOL_REGISTRY } from './tool-filter.js';
+import { HOST_TOOL_REGISTRY, hasCapabilityPrefix } from './tool-filter.js';
+import type { ResolvedCapabilities } from '../personas/persona-types.js';
 
 // Reverse lookup: MCP tool name → capability prefix.
 const MCP_TO_PREFIX = new Map<string, string>(
@@ -59,11 +60,14 @@ export function loadToolInstructions(dir: string): Map<string, string> {
  * its own `##` heading). Duplicate capability prefixes are deduplicated
  * (e.g. `persona_send` and `persona_list` both map to `persona.send`).
  * `appendices` (keyed by capability prefix) are appended to the matching block.
+ * When `capabilities` grant a modifier capability (`channel.attach`), its own
+ * instruction file is appended to the block of the tool it modifies.
  */
 export function resolveToolInstructions(
   cache: Map<string, string>,
   allowedMcpTools: string[],
   appendices?: Record<string, string>,
+  capabilities?: ResolvedCapabilities,
 ): string {
   if (cache.size === 0) return '';
 
@@ -77,10 +81,28 @@ export function resolveToolInstructions(
 
     const content = cache.get(prefix);
     if (content) {
-      const appendix = appendices?.[prefix];
-      blocks.push(appendix ? `${content}\n\n${appendix}` : content);
+      const extra = [appendices?.[prefix], ...modifierBlocks(cache, prefix, capabilities)].filter(
+        (block): block is string => typeof block === 'string' && block !== '',
+      );
+      blocks.push([content, ...extra].join('\n\n'));
     }
   }
 
   return blocks.join('\n\n');
+}
+
+/** Modifier capability → the tool capability prefix whose block it extends. */
+const MODIFIER_TARGETS: Readonly<Record<string, string>> = {
+  'channel.attach': 'channel.send',
+};
+
+function modifierBlocks(
+  cache: Map<string, string>,
+  toolPrefix: string,
+  capabilities: ResolvedCapabilities | undefined,
+): string[] {
+  if (capabilities === undefined) return [];
+  return Object.entries(MODIFIER_TARGETS)
+    .filter(([modifier, target]) => target === toolPrefix && hasCapabilityPrefix(capabilities, modifier))
+    .map(([modifier]) => cache.get(modifier) ?? '');
 }

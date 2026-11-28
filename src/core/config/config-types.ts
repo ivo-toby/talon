@@ -33,6 +33,7 @@ import type {
   SubAgentModelOverrideSchema,
   A2AConfigSchema,
   ImagesConfigSchema,
+  OutboundAttachmentsConfigSchema,
   ReasoningEffortSchema,
 } from './config-schema.js';
 
@@ -122,3 +123,6 @@ export type A2AConfig = z.infer<typeof A2AConfigSchema>;
 
 /** Image ingestion limits and Normalized-file retention. */
 export type ImagesConfig = z.infer<typeof ImagesConfigSchema>;
+
+/** Outbound attachment policy (allowed roots, limits, MIME types). */
+export type OutboundAttachmentsConfig = z.infer<typeof OutboundAttachmentsConfigSchema>;

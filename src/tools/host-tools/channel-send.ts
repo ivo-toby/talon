@@ -19,8 +19,30 @@ import type {
 } from '../../core/database/repositories/thread-repository.js';
 import type { BindingRepository } from '../../core/database/repositories/binding-repository.js';
 import type { MessageRefRepository } from '../../core/database/repositories/message-ref-repository.js';
-import type { AgentOutput, OutboundReplyTarget } from '../../channels/channel-types.js';
+import type {
+  AgentOutput,
+  ChannelConnector,
+  OutboundReplyTarget,
+  SendReceipt,
+} from '../../channels/channel-types.js';
 import { ToolError } from '../../core/errors/error-types.js';
+import type { ResolvedCapabilities } from '../../personas/persona-types.js';
+import { hasCapabilityPrefix } from '../tool-filter.js';
+import {
+  resolveOutboundAttachments,
+  type OutboundAttachmentPolicy,
+} from '../../attachments/outbound-attachment-resolver.js';
+import {
+  toAttachmentMetadata,
+  type OutboundAttachment,
+  type OutboundAttachmentMetadata,
+  type OutboundAttachmentRefusal,
+} from '../../attachments/outbound-attachment-types.js';
+import {
+  attachmentFailureNotice,
+  attachmentLedgerText,
+  attachmentSummaryLine,
+} from '../../attachments/outbound-attachment-text.js';
 import {
   isVoiceObservationContext,
   type VoiceObservationContext,
@@ -83,7 +105,16 @@ export interface ChannelSendArgs {
    * and `channel.broadcast`.
    */
   externalChatId?: string;
+  /**
+   * Files to attach, each an absolute host path inside
+   * `attachments.outbound.allowedRoots`. Requires the `channel.attach`
+   * capability. When present, `content` may be empty.
+   */
+  attachments?: unknown;
 }
+
+/** Capability label prefix that allows attachments on channel.send. */
+export const CHANNEL_ATTACH_CAPABILITY = 'channel.attach';
 
 /** Execution context passed to every tool handler. */
 export interface ToolExecutionContext {
@@ -159,6 +190,22 @@ export class ChannelSendHandler {
        * later replies and reactions on it resolve.
        */
       messageRefRepository?: Pick<MessageRefRepository, 'find' | 'record'>;
+      /**
+       * Resolves the calling persona's capabilities, fail-closed. Required
+       * for attachments: without it every attachment request is refused.
+       */
+      resolveCapabilities?: (personaId: string) => ResolvedCapabilities;
+      /**
+       * Outbound attachment policy from `attachments.outbound`. Without it
+       * (or with no allowed roots) attachments are disabled.
+       */
+      attachmentPolicy?: OutboundAttachmentPolicy;
+      /**
+       * Returns the thread artifacts directory. When set, the run's own
+       * thread artifacts directory is an extra allowed root, exempt from
+       * the policy's `deniedPaths` (which include the data directory).
+       */
+      threadArtifactsDir?: (threadId: string) => string;
       logger: pino.Logger;
     },
   ) {}
@@ -203,7 +250,13 @@ export class ChannelSendHandler {
       return { requestId, tool: 'channel.send', status: 'error', error: error.message };
     }
 
-    if (!content || typeof content !== 'string' || content.trim() === '') {
+    const hasAttachments = Array.isArray(args.attachments)
+      ? args.attachments.length > 0
+      : args.attachments !== undefined && args.attachments !== null;
+    if (
+      typeof content !== 'string' ||
+      (content.trim() === '' && !hasAttachments)
+    ) {
       const error = new ToolError('channel.send: content is required and must be a non-empty string');
       this.deps.logger.warn(
         voiceObservation
@@ -243,6 +296,17 @@ export class ChannelSendHandler {
       return { requestId, tool: 'channel.send', status: 'error', error: error.message };
     }
 
+    // Attachments are validated and read before anything is sent: a refused
+    // request sends nothing, not even the text.
+    let attachments: OutboundAttachment[] = [];
+    if (hasAttachments) {
+      const prepared = await this.prepareAttachments(args.attachments, connector, context);
+      if (!Array.isArray(prepared)) {
+        return { requestId, tool: 'channel.send', status: 'error', error: prepared.error };
+      }
+      attachments = prepared;
+    }
+
     // Allocate the delivery identity before sending so connectors and the
     // persisted outbound row refer to the same message.
     const messageId = randomUUID();
@@ -253,6 +317,7 @@ export class ChannelSendHandler {
       body: content,
       messageId,
       sourceRunId: context.runId,
+      ...(attachments.length > 0 ? { attachments } : {}),
     };
 
     // Resolve the thread's external_id (e.g. Telegram chat_id) from the DB.
@@ -339,6 +404,23 @@ export class ChannelSendHandler {
       return { requestId, tool: 'channel.send', status: 'error', error: msg };
     }
 
+    const receipt: SendReceipt | undefined = result.value ?? undefined;
+    const outcomes = this.attachmentOutcomes(attachments, receipt);
+    const failed = outcomes.filter((o) => o.status === 'failed');
+    const textSent = content.trim() !== '';
+    if (!textSent && attachments.length > 0 && failed.length === attachments.length) {
+      const msg =
+        'channel.send: no attachment could be delivered, and there was no text — nothing was sent. ' +
+        failed.map((o) => `[${o.index}] ${o.filename}: ${o.error ?? 'failed'}`).join('; ');
+      this.deps.logger.error(
+        voiceObservation
+          ? voiceDiagnosticFields(voiceObservation, { errorCategory: 'unknown' })
+          : { requestId, channelId, attachmentsFailed: failed.length },
+        'channel.send: all attachments failed',
+      );
+      return { requestId, tool: 'channel.send', status: 'error', error: msg };
+    }
+
     this.deps.logger.info(
       voiceObservation
         ? voiceDiagnosticFields(voiceObservation, { event: 'message_sent' })
@@ -355,21 +437,58 @@ export class ChannelSendHandler {
               : scheduleOriginId
                 ? 'schedule origin'
                 : 'current thread',
+            ...(attachments.length > 0
+              ? {
+                  attachments: attachments.map((a, index) => ({
+                    index,
+                    mimeType: a.mimeType,
+                    size: a.size,
+                    sha256: a.sha256.slice(0, 16),
+                    status: outcomes[index]?.status,
+                  })),
+                }
+              : {}),
           },
       'channel.send: message sent successfully',
     );
+
+    // Tell the human, in plain words, when an attachment did not make it.
+    if (failed.length > 0) {
+      const notice = await connector.send(externalThreadId, {
+        body: attachmentFailureNotice(failed.map((o) => o.filename)),
+        sourceRunId: context.runId,
+      });
+      if (notice.isErr()) {
+        this.deps.logger.warn(
+          { requestId, channelId, err: notice.error },
+          'channel.send: failed to deliver attachment-failure notice',
+        );
+      }
+    }
+
+    const sentMetadata = attachments
+      .filter((_, index) => outcomes[index]?.status === 'sent')
+      .map(toAttachmentMetadata);
     this.persistOutboundMessage({
       requestId,
       runId: context.runId,
       channelName: channelId,
       externalThreadId,
-      content,
+      content: attachmentSummaryLine(content, sentMetadata),
       personaId: context.personaId,
       runThreadId: context.threadId,
       messageId,
-      ...(result.value?.externalMessageId
-        ? { externalMessageId: result.value.externalMessageId }
+      ...(receipt?.externalMessageId
+        ? { externalMessageId: receipt.externalMessageId }
         : {}),
+      ...(sentMetadata.length > 0 ? { attachments: sentMetadata } : {}),
+      attachmentRefs: outcomes
+        .filter((o) => o.status === 'sent' && o.externalMessageId !== undefined &&
+          o.externalMessageId !== receipt?.externalMessageId)
+        .map((o) => ({
+          externalMessageId: o.externalMessageId!,
+          text: attachmentLedgerText(attachments[o.index]),
+        })),
       ...(voiceObservation ? { voiceObservation } : {}),
     });
 
@@ -377,8 +496,129 @@ export class ChannelSendHandler {
       requestId,
       tool: 'channel.send',
       status: 'success',
-      result: { channelId, sent: true },
+      result: {
+        channelId,
+        sent: true,
+        ...(attachments.length > 0
+          ? {
+              attachments: outcomes.map((o) => ({
+                index: o.index,
+                filename: o.filename,
+                status: o.status,
+                ...(o.error !== undefined ? { error: o.error } : {}),
+              })),
+              ...(failed.length > 0
+                ? {
+                    note:
+                      `${failed.length} of ${attachments.length} attachments failed; the recipient was told which. ` +
+                      'Retry them, or describe the file instead.',
+                  }
+                : {}),
+            }
+          : {}),
+      },
     };
+  }
+
+  /**
+   * Checks capability, voice and connector support, then validates and reads
+   * the requested files. Returns the attachments, or an error message that
+   * lists every refusal by index and code. Nothing has been sent either way.
+   */
+  private async prepareAttachments(
+    requested: unknown,
+    connector: ChannelConnector,
+    context: ToolExecutionContext,
+  ): Promise<OutboundAttachment[] | { error: string }> {
+    const refuse = (refusals: OutboundAttachmentRefusal[]): { error: string } => {
+      this.deps.logger.warn(
+        {
+          requestId: context.requestId ?? 'unknown',
+          personaId: context.personaId,
+          channelId: connector.name,
+          refusals: refusals.map((r) => ({ index: r.index, code: r.code })),
+        },
+        'channel.send: attachments refused before sending',
+      );
+      return {
+        error:
+          'channel.send: attachments refused — nothing was sent.\n' +
+          refusals.map((r) => `- [${r.code}] ${r.message}`).join('\n'),
+      };
+    };
+
+    if (context.voiceObservation !== undefined) {
+      return refuse([
+        { index: -1, code: 'channel_unsupported', message: 'Attachments cannot be sent from a voice session.' },
+      ]);
+    }
+    const capabilities = this.deps.resolveCapabilities?.(context.personaId) ?? {
+      allow: [],
+      requireApproval: [],
+    };
+    if (!hasCapabilityPrefix(capabilities, CHANNEL_ATTACH_CAPABILITY)) {
+      return refuse([
+        {
+          index: -1,
+          code: 'capability_denied',
+          message: `This persona is not granted ${CHANNEL_ATTACH_CAPABILITY}; send the text alone and describe the file instead.`,
+        },
+      ]);
+    }
+    const support = connector.outboundAttachments;
+    if (support === undefined) {
+      return refuse([
+        {
+          index: -1,
+          code: 'channel_unsupported',
+          message: `Channel "${connector.name}" (${connector.type}) does not support attachments; describe the file or give its location instead.`,
+        },
+      ]);
+    }
+    const basePolicy = this.deps.attachmentPolicy;
+    if (basePolicy === undefined) {
+      return refuse([
+        { index: -1, code: 'attachments_disabled', message: 'Outbound attachments are not enabled on this Talon.' },
+      ]);
+    }
+    const artifactsDir = this.deps.threadArtifactsDir?.(context.threadId);
+    const policy: OutboundAttachmentPolicy =
+      artifactsDir === undefined
+        ? basePolicy
+        : {
+            ...basePolicy,
+            allowedRoots: [...basePolicy.allowedRoots, artifactsDir],
+            exemptRoots: [...(basePolicy.exemptRoots ?? []), artifactsDir],
+          };
+    const resolved = await resolveOutboundAttachments(requested, policy, support);
+    return resolved.isErr() ? refuse(resolved.error) : resolved.value;
+  }
+
+  /** Per-attachment outcome, from the connector's receipt. */
+  private attachmentOutcomes(
+    attachments: readonly OutboundAttachment[],
+    receipt: SendReceipt | undefined,
+  ): Array<{
+    index: number;
+    filename: string;
+    status: 'sent' | 'failed';
+    externalMessageId?: string;
+    error?: string;
+  }> {
+    return attachments.map((attachment, index) => {
+      const delivered = receipt?.attachments?.find((r) => r.index === index);
+      return {
+        index,
+        filename: attachment.filename,
+        // A connector that declares support must report each item; a missing
+        // entry is treated as sent without a ledger ID.
+        status: delivered?.status ?? 'sent',
+        ...(delivered?.externalMessageId !== undefined
+          ? { externalMessageId: delivered.externalMessageId }
+          : {}),
+        ...(delivered?.error !== undefined ? { error: delivered.error } : {}),
+      };
+    });
   }
 
   /**
@@ -428,6 +668,10 @@ export class ChannelSendHandler {
     messageId: string;
     /** Provider ID of the sent message, when the connector reported one. */
     externalMessageId?: string;
+    /** Metadata of the attachments that were delivered (never bytes or paths). */
+    attachments?: OutboundAttachmentMetadata[];
+    /** Ledger entries for attachment messages beyond `externalMessageId`. */
+    attachmentRefs?: Array<{ externalMessageId: string; text: string }>;
     /**
      * The thread the current run is executing on. When the resolved
      * recipient thread differs from this (cross-thread delivery — the
@@ -475,7 +719,10 @@ export class ChannelSendHandler {
       id: input.messageId,
       thread_id: targetThread.id,
       direction: 'outbound',
-      content: JSON.stringify({ body: input.content }),
+      content: JSON.stringify({
+        body: input.content,
+        ...(input.attachments ? { attachments: input.attachments } : {}),
+      }),
       idempotency_key: `channel-send:${input.runId}:${idempotencyRequestId}`,
       provider_id: null,
       run_id: input.runId,
@@ -499,13 +746,19 @@ export class ChannelSendHandler {
 
     // Record the sent message in the ledger of the thread it was persisted
     // to, so a reply or reaction on it reaches that thread's conversation.
-    if (this.deps.messageRefRepository && input.externalMessageId) {
-      const recorded = this.deps.messageRefRepository.record({
+    const refs = [
+      ...(input.externalMessageId
+        ? [{ externalMessageId: input.externalMessageId, text: input.content }]
+        : []),
+      ...(input.attachmentRefs ?? []),
+    ];
+    for (const ref of this.deps.messageRefRepository ? refs : []) {
+      const recorded = this.deps.messageRefRepository!.record({
         thread_id: targetThread.id,
-        external_id: input.externalMessageId,
+        external_id: ref.externalMessageId,
         direction: 'outbound',
         message_id: input.messageId,
-        text: input.content,
+        text: ref.text,
       });
       if (recorded.isErr()) {
         this.deps.logger.warn(

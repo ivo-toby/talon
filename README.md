@@ -487,6 +487,7 @@ dataDir: data
 | `scheduler`            | Scheduler tick interval                                                       |
 | `auth`                 | `subscription` or `api_key` authentication mode                               |
 | `voice`                | Optional browser voice listener, authentication, live model, and lifecycle limits |
+| `attachments`          | Outbound attachments: allowed roots, denylist, size/count limits, allowed MIME types |
 | `subagentCli`          | Opt-in direct Claude Code adapter for bounded sub-agent generations             |
 | `langfuse`             | Langfuse observability: API keys, base URL, environment, flush settings       |
 | `sprites`              | Sprites.dev execution environments: token, resource limits, defaults          |
@@ -692,6 +693,28 @@ To acknowledge without sending text, the agent reacts and then makes its whole r
 - Only reactions on messages Talon sent are forwarded. Reactions on other people's messages, and on messages sent before the ledger existed, are ignored.
 - Removing a reaction is ignored.
 - Each forwarded reaction is one agent run, with the usual model cost.
+
+**Sending files.** With the `channel.attach` capability (in addition to `channel.send`), `channel_send` takes `attachments: [{ path, filename?, mimeType?, caption? }]`, so an agent can send a screenshot, chart, log or report as a native attachment. Today only **Telegram** supports it (photos via `sendPhoto`, other files via `sendDocument`, topics and replies included). Other channels refuse with `channel_unsupported`, and the agent falls back to describing the file.
+
+```yaml
+personas:
+  - name: tester
+    capabilities:
+      allow:
+        - channel.send:*
+        - channel.attach
+
+attachments:
+  outbound:
+    threadArtifacts: true          # default: the run's own <dataDir>/threads/<id>/artifacts/
+    allowedRoots: []               # extra absolute directories files may be sent from
+    deniedPaths: []                # extra absolute prefixes that are never sent
+    maxBytes: 20971520             # per file; each connector may cap lower (Telegram 50 MB)
+    maxPerMessage: 5
+    allowedMimeTypes: [image/png, image/jpeg, image/gif, image/webp, application/pdf, text/plain, text/csv, text/markdown, application/json]
+```
+
+The host, not the agent, decides what may leave the machine. Paths must be absolute and must lie inside an allowed root both before and after symlink resolution. System directories, key and credential files (`.ssh`, `.env`, `*.pem`, …) and Talon's own data directory and config are always refused; the exception is the run's own artifacts directory. The type is sniffed from the bytes, not taken from the extension. Any refused item (each with its own code, such as `outside_allowed_roots`, `symlink_escape`, `too_large` or `mime_not_allowed`) fails the whole call before anything is sent. If the text arrives but an upload fails at the channel, the human gets a short notice and the agent gets the per-file result. Delivered attachment messages enter the message ledger, so replies and reactions to them work. The stored message keeps only filename, type, size and hash. Design: [docs/adr/0003-outbound-attachments.md](docs/adr/0003-outbound-attachments.md).
 
 **Telegram topics.** A message inside a topic (a forum supergroup topic, or a topic in a private chat with the bot) belongs to its own Talon thread, `<chat_id>:<topic_id>`. Each topic has its own conversation, session and memory, and answers go back into the topic. Messages outside a topic keep using the plain `chat_id` thread.
 
@@ -1142,6 +1165,7 @@ prompt a user or block execution.
 | ------------------------ | --------------------------------------------------------------------------- |
 | `channel.send:<channel>` | Send messages to a specific channel                                         |
 | `channel.react:*`        | React with an emoji to messages in the current conversation (Telegram, WhatsApp) |
+| `channel.attach`         | Attach files from `attachments.outbound` roots to `channel_send` (Telegram today); needs `channel.send` too |
 | `persona.send:*`         | Delegate to any persona, list personas, and fetch or cancel delegated tasks |
 | `persona.send:<persona>` | Delegate only to that persona (repeat the label for several); same list/status/cancel tools |
 | `schedule.manage`        | Create/modify/delete scheduled tasks                                        |

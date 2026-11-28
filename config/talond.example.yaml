@@ -623,5 +623,33 @@ images:
 # normalization deadline per message, at most 3 attempts per Image, and sweeps
 # at most every 60 seconds. Neither redelivery nor a restart resets them.
 
+# ---------------------------------------------------------------------------
+# Outbound attachments (channel_send `attachments`)
+# ---------------------------------------------------------------------------
+# Personas also need the `channel.attach` capability. Agents name a file by
+# absolute host path; the host checks it against these roots (before and after
+# symlink resolution), the built-in denylist (system dirs, .ssh/.aws/.git,
+# .env, *.pem, id_* …, plus Talon's data dir and this config file), the size
+# caps and the MIME type sniffed from the bytes. Any refusal sends nothing.
+# Supported today on Telegram; other channels refuse with channel_unsupported.
+#
+attachments:
+  outbound:
+    threadArtifacts: true   # the run's own <dataDir>/threads/<id>/artifacts/ is a root
+    allowedRoots: []        # extra absolute directories, e.g. [/srv/talon/reports]
+    deniedPaths: []         # extra absolute prefixes that are never sent
+    maxBytes: 20971520      # 20 MiB per file; connectors may cap lower (Telegram 50 MB)
+    maxPerMessage: 5        # connectors may cap lower (Telegram 10)
+    allowedMimeTypes:       # sniffed types; the extension is never trusted
+      - image/png
+      - image/jpeg
+      - image/gif
+      - image/webp
+      - application/pdf
+      - text/plain
+      - text/csv
+      - text/markdown
+      - application/json
+
 logLevel: info
 dataDir: data

@@ -37,6 +37,9 @@ import {
 } from './host-tools/image-lookup.js';
 import { ExecutionEnvHandler, type ExecutionEnvArgs } from './host-tools/execution-env.js';
 import { filterVoiceMcpTools, isToolAllowed, MCP_TO_INTERNAL } from './tool-filter.js';
+import type { OutboundAttachmentPolicy } from '../attachments/outbound-attachment-resolver.js';
+import { OutboundAttachmentsConfigSchema } from '../core/config/config-schema.js';
+import type { TalondConfig } from '../core/config/config-types.js';
 import { createDatabase } from '../core/database/connection.js';
 import type { ResolvedCapabilities } from '../personas/persona-types.js';
 import { formatMissingTalonSkillError } from '../skills/skill-runtime-text.js';
@@ -91,6 +94,30 @@ export interface ImageLookupServices {
   findings: ImageLookupFindings;
 }
 
+/**
+ * The outbound attachment policy for channel.send: the configured roots and
+ * limits, with Talon's own data directory and config file always denied.
+ * Fixed for the process lifetime, like the `images` config.
+ */
+function buildOutboundAttachmentPolicy(ctx: DaemonContext): OutboundAttachmentPolicy {
+  // Defaults when the section is absent (hand-built configs in tests and tools).
+  const outbound =
+    (ctx.config.attachments as TalondConfig['attachments'] | undefined)?.outbound ??
+    OutboundAttachmentsConfigSchema.parse({});
+  return {
+    allowedRoots: outbound.allowedRoots,
+    deniedPaths: [
+      ...outbound.deniedPaths,
+      resolve(ctx.dataDir),
+      resolve(ctx.config.storage.path),
+      ...(ctx.configPath ? [resolve(ctx.configPath)] : []),
+    ],
+    maxBytes: outbound.maxBytes,
+    maxPerMessage: outbound.maxPerMessage,
+    allowedMimeTypes: outbound.allowedMimeTypes,
+  };
+}
+
 export class HostToolsBridge {
   private server: net.Server | null = null;
   private readonly socketPath: string;
@@ -138,6 +165,16 @@ export class HostToolsBridge {
       bindingRepository: ctx.repos.binding,
       sessionTracker: ctx.sessionTracker,
       ...(ctx.repos.messageRef ? { messageRefRepository: ctx.repos.messageRef } : {}),
+      resolveCapabilities: (personaId): ResolvedCapabilities =>
+        this.resolvePersonaCapabilities(personaId),
+      attachmentPolicy: buildOutboundAttachmentPolicy(ctx),
+      ...((ctx.config.attachments as TalondConfig['attachments'] | undefined)?.outbound
+        .threadArtifacts ?? true
+        ? {
+            threadArtifactsDir: (threadId: string): string =>
+              ctx.threadWorkspace.getArtifactsDir(threadId),
+          }
+        : {}),
       logger: handlerLogger,
     });
 

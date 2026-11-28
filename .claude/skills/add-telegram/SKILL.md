@@ -365,6 +365,7 @@ Telegram-specific behaviour worth warning the user about:
 | A reminder made in a topic arrives elsewhere | Check `recipientSource` on the `channel.send: message sent successfully` log line; `externalChatId argument` means the agent named a chat itself |
 | Reactions in a group are not noticed | Make the bot a group administrator — Telegram only sends reaction updates to admins |
 | Bot cannot react | Add `channel.react:*` to the persona's capabilities and restart |
+| Agent cannot send a file (`capability_denied` / `outside_allowed_roots`) | Add `channel.attach` to the persona, and have it write the file under its thread's `artifacts/` directory or a configured `attachments.outbound.allowedRoots` entry |
 
 ## Config Reference
 
@@ -393,6 +394,7 @@ channels:
 - **Groups**: off by default. With `allowGroupChats: true` the bot answers an @mention, a trigger word, or a native reply to one of its own messages. To have it answer every message (handy for a forum group where each topic is a conversation), also set `requireMention: false`, make the bot a group administrator, and list the group's chat ID in `allowedChatIds`. The chat ID is in the log line `telegram group chat is ignored because allowGroupChats is not enabled`, which appears the first time a group sends a message.
 - **Topics**: a message inside a forum topic gets its own Talon thread (`<chat_id>:<topic_id>`), so each topic is a separate conversation and answers stay in the topic.
 - **Reactions from the bot**: add the `channel.react:*` capability to the persona (`npx talonctl set-capabilities --persona <name> --add "channel.react:*"`). The agent can then react with 👍 instead of writing "understood". Telegram only accepts its standard reaction emoji.
+- **Sending files**: add `channel.attach` next to `channel.send:*` (`npx talonctl set-capabilities --persona <name> --add "channel.attach"`). The agent can then attach files from its thread's `artifacts/` directory (or any `attachments.outbound.allowedRoots`) to `channel_send`: images arrive as photos, other files as documents (Telegram limits: photos 10 MB, files 50 MB, captions 1024 characters). Topics and replies work as for text.
 - **Reactions from users**: a reaction on one of the bot's messages starts an agent run. Telegram delivers reactions in private chats, and in groups only when the bot is an administrator. Set `inboundReactions: false` to turn this off.
 
 ## How It Works

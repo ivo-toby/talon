@@ -972,6 +972,7 @@ export class AgentRunner {
                   loadedPersona.config.name ?? personaName,
                   loadedPersona.resolvedCapabilities,
                 ),
+                loadedPersona.resolvedCapabilities,
               );
               const systemPromptParts = [
                 personaRuntimeContext.personaPrompt,

@@ -315,6 +315,7 @@ export class BackgroundAgentHandler {
         loadedPersona.config.name ?? targetPersonaName,
         loadedPersona.resolvedCapabilities,
       ),
+      loadedPersona.resolvedCapabilities,
     );
 
     const spawnResult = await this.deps.backgroundAgentManager.spawn({

@@ -8,6 +8,12 @@
 import type { Result } from '../core/types/result.js';
 import type { ChannelError } from '../core/errors/error-types.js';
 import type { ImageRejectionReason } from '../images/image-types.js';
+import type {
+  OutboundAttachment,
+  OutboundAttachmentSupport,
+} from '../attachments/outbound-attachment-types.js';
+
+export type { OutboundAttachment, OutboundAttachmentSupport };
 
 // ---------------------------------------------------------------------------
 // Attachment
@@ -149,13 +155,33 @@ export function shouldSendAsReply(
   return mode === 'always' || (mode === 'groups' && isGroupChat);
 }
 
+/** Outcome of one outbound attachment within a send. */
+export interface AttachmentDeliveryReceipt {
+  /** Index of the attachment in {@link AgentOutput.attachments}. */
+  index: number;
+  /** Whether the provider accepted it. */
+  status: 'sent' | 'failed';
+  /** Provider identifier of the message that carries it, when sent. */
+  externalMessageId?: string;
+  /** Short provider error when failed. Never contains file contents or host paths. */
+  error?: string;
+}
+
 /** What a connector reports back after a successful send. */
 export interface SendReceipt {
   /**
    * Provider identifier of the message that was just sent. Recorded in the
    * message ledger so later replies and reactions can be resolved back to it.
+   * With attachments this is the text message, or the first attachment
+   * message when the text travelled as its caption.
    */
   externalMessageId?: string;
+  /**
+   * One entry per {@link AgentOutput.attachments} item, in order, when the
+   * output carried attachments. A send whose text was delivered returns Ok
+   * even when some attachments failed; the failures are reported here.
+   */
+  attachments?: AttachmentDeliveryReceipt[];
 }
 
 // ---------------------------------------------------------------------------
@@ -173,8 +199,12 @@ export interface AgentOutput {
   messageId?: string;
   /** Trusted originating agent run identity assigned by the host tool boundary. */
   sourceRunId?: string;
-  /** Optional file attachments. */
-  attachments?: Attachment[];
+  /**
+   * Outbound file attachments, already validated and read by the host
+   * (`src/attachments/`). Only sent to connectors that declare
+   * {@link ChannelConnector.outboundAttachments}; carries no host paths.
+   */
+  attachments?: OutboundAttachment[];
   /** Optional interactive actions (buttons, approval prompts). */
   actions?: Action[];
   /**
@@ -333,6 +363,13 @@ export interface ChannelConnector {
     externalThreadId: string,
     output: AgentOutput,
   ): Promise<Result<SendReceipt | void, ChannelError>>;
+
+  /**
+   * Outbound attachment support and limits. Undefined means the connector
+   * cannot send attachments: callers refuse before calling {@link send}, and
+   * a connector receiving attachments anyway must fail rather than drop them.
+   */
+  readonly outboundAttachments?: OutboundAttachmentSupport;
 
   /**
    * Place an emoji reaction on an existing message, or remove Talon's

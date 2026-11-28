@@ -345,6 +345,30 @@ const TOOLS = [
           description:
 'Optional explicit recipient on the target channel (e.g. Telegram chat_id or `<chat_id>:<topic_id>`, Slack channel id). Leave out to answer where the run or schedule belongs. Required only for CLI-created scheduled tasks that have no origin chat.',
         },
+        attachments: {
+          type: 'array' as const,
+          description:
+            'Optional files to attach (needs the channel.attach capability). Each item names an absolute host path; '
+            + 'by default only files in this thread\'s `artifacts/` directory (under your working directory) can be sent, plus any directories the operator allowed. '
+            + 'Write the file there first. Never pass file contents or base64. Images (PNG, JPEG, GIF, WebP) arrive as photos, everything else as a document; '
+            + 'the type is detected from the bytes. `content` may be empty when attachments are given. '
+            + 'If any item is refused (outside the allowed directories, too large, disallowed type, …) nothing is sent and the error lists each refusal with a code. '
+            + 'If the text is delivered but an attachment fails at the channel, the result lists which ones failed and the recipient is told.',
+          maxItems: 20,
+          items: {
+            type: 'object' as const,
+            properties: {
+              path: { type: 'string' as const, description: 'Absolute host path of the file.' },
+              filename: { type: 'string' as const, description: 'Optional filename the recipient sees; defaults to the file\'s own name.' },
+              mimeType: {
+                type: 'string' as const,
+                description: 'Optional; only used to pick a text subtype (e.g. text/csv). Binary types come from the file contents.',
+              },
+              caption: { type: 'string' as const, description: 'Optional caption shown with this attachment.' },
+            },
+            required: ['path'],
+          },
+        },
       },
       required: ['channelId', 'content'],
     },
