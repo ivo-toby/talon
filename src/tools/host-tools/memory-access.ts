@@ -17,6 +17,7 @@ import type { ToolManifest, ToolCallResult } from '../tool-types.js';
 import type { MemoryRepository } from '../../core/database/repositories/memory-repository.js';
 import { ToolError } from '../../core/errors/error-types.js';
 import type { ToolExecutionContext } from './channel-send.js';
+import { resolveMemoryScope, type MemoryScope } from './memory-scope.js';
 
 /** Manifest for the memory.access host tool. */
 export interface MemoryAccessTool {
@@ -33,6 +34,11 @@ export interface MemoryAccessArgs {
   value?: unknown;
   /** Optional namespace/layer to scope the operation. */
   namespace?: string;
+  /**
+   * `thread` (default): this run's own thread. `conversation`: for a schedule
+   * run, the chat it was created in (see `memory-scope.ts`).
+   */
+  scope?: MemoryScope;
 }
 
 /** Valid operations for the memory.access tool. */
@@ -82,8 +88,28 @@ export class MemoryAccessHandler {
     const requestId = context.requestId ?? 'unknown';
     const { operation, key, namespace } = args;
 
+    // Own thread by default; a schedule run reaches the chat it serves only
+    // with scope "conversation". All handlers below read `threadId`.
+    const scoped = resolveMemoryScope(context, args.scope);
+    if (!scoped.ok) {
+      const error = new ToolError(`memory.access: ${scoped.error}`);
+      this.deps.logger.warn({ requestId, runId: context.runId, scope: args.scope }, error.message);
+      return { requestId, tool: 'memory.access', status: 'error', error: error.message };
+    }
+    const memoryContext: ToolExecutionContext =
+      scoped.threadId === context.threadId ? context : { ...context, threadId: scoped.threadId };
+
     this.deps.logger.info(
-      { requestId, runId: context.runId, threadId: context.threadId, operation, key, namespace },
+      {
+        requestId,
+        runId: context.runId,
+        threadId: memoryContext.threadId,
+        scope: scoped.scope,
+        ...(memoryContext.threadId !== context.threadId ? { runThreadId: context.threadId } : {}),
+        operation,
+        key,
+        namespace,
+      },
       'memory.access: executing',
     );
 
@@ -98,13 +124,13 @@ export class MemoryAccessHandler {
 
     switch (operation) {
       case 'read':
-        return this.handleRead(args, context, requestId);
+        return this.handleRead(args, memoryContext, requestId);
       case 'write':
-        return this.handleWrite(args, context, requestId);
+        return this.handleWrite(args, memoryContext, requestId);
       case 'delete':
-        return this.handleDelete(args, context, requestId);
+        return this.handleDelete(args, memoryContext, requestId);
       case 'list':
-        return this.handleList(args, context, requestId);
+        return this.handleList(args, memoryContext, requestId);
       default: {
         // TypeScript exhaustiveness — should never reach here
         const error = new ToolError(`memory.access: unknown operation "${operation as string}"`);

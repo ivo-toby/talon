@@ -2543,6 +2543,7 @@ If your upstream does not emit `prompt_tokens_details`, `cache_read_input_tokens
 | `add-schedule`    | Create a scheduled task for a persona |
 | `list-schedules`  | List all scheduled tasks              |
 | `remove-schedule` | Permanently delete a scheduled task   |
+| `set-schedule-origin` | Make an existing schedule serve a chat |
 
 **`add-schedule`** options:
 
@@ -2554,6 +2555,7 @@ If your upstream does not emit `prompt_tokens_details`, `cache_read_input_tokens
 | `--label <label>`      | Human-readable label (required)                                                                                                                       | —             |
 | `--prompt <prompt>`    | Inline prompt text. Mutually exclusive with `--prompt-file`.                                                                                          | —             |
 | `--prompt-file <name>` | Prompt file basename (without `.md`) under `personas/<persona>/prompts/`. Resolved by the scheduler at fire time. Mutually exclusive with `--prompt`. | —             |
+| `--origin <chatId>`    | Chat the schedule serves (Telegram `chat_id`, or `<chat_id>:<topic_id>` for a topic). The schedule then runs on the same dedicated thread as one created from that chat with `schedule_manage`: `channel_send` defaults to the chat, and memory tools reach it with `scope: "conversation"`. Without it, CLI schedules share one `schedule:<persona>:<channel>` thread and have no chat. | —             |
 | `--config <path>`      | Path to talond.yaml                                                                                                                                   | `talond.yaml` |
 
 Exactly one of `--prompt` or `--prompt-file` must be provided. `--prompt-file` is preferred for reusable, long-form prompts (e.g. `--prompt-file braintoss` resolves to `personas/<persona>/prompts/braintoss.md` at fire time).
@@ -2564,6 +2566,8 @@ Exactly one of `--prompt` or `--prompt-file` must be provided. `--prompt-file` i
 | ------------------ | ---------------------- | ------------- |
 | `--persona <name>` | Filter by persona name | all           |
 | `--config <path>`  | Path to talond.yaml    | `talond.yaml` |
+
+**`set-schedule-origin`** takes a positional `<schedule-id>` and a required `--origin <chatId>` (plus `--config`). It moves that one schedule onto the dedicated thread for its persona, channel and that chat, the thread `--origin` would have given it. Only the schedule moves: its memory items stay on the previous thread (it may be shared with other CLI schedules), and the command reports how many stay behind and warns when no conversation with that chat ID exists yet. Running it again is a no-op.
 
 **`remove-schedule`** takes a positional `<schedule-id>` argument:
 
@@ -3019,7 +3023,7 @@ Agents can query the database via the `db.query` tool, but are constrained by fi
 | ------------------------- | --------------------------------------------------------------------------- | ------------------------------------------------------------- |
 | 1. Regex pre-check        | Rejects non-SELECT statements and forbidden keywords (INSERT, DROP, etc.)   | Write operations via SQL                                      |
 | 2. Table whitelist        | Only 4 approved tables (`memory_items`, `schedules`, `messages`, `threads`) | Access to sensitive tables (personas, audit_log, queue_items) |
-| 3. Thread/persona scoping | Auto-injects `WHERE thread_id = ? AND persona_id = ?` clauses               | Cross-tenant data leakage between personas or threads         |
+| 3. Thread/persona scoping | Auto-injects `WHERE thread_id = ? AND persona_id = ?` clauses (a schedule run: its own thread and its same-persona origin chat) | Cross-tenant data leakage between personas or threads         |
 | 4. Row limit              | Hard cap at 1,000 rows per query                                            | Resource exhaustion via large result sets                     |
 | 5. Read-only connection   | Separate SQLite connection opened with `{ readonly: true }`                 | Any write operation, even if all other layers are bypassed    |
 
@@ -3140,7 +3144,11 @@ Scheduled executions are intentionally short-context, one-shot runs. They do not
 
 The dedicated thread records the origin chat's `external_id` in metadata (`kind: "schedule"`, `originExternalId: "<chat id>"`). Outbound delivery (`channel_send`, typing indicators) reads that field and routes messages back to the originating chat, so users still receive scheduled notifications on the channel they set the schedule up from.
 
+**Memory of the origin chat.** A scheduled run keeps its own state on its schedule thread: `memory_access` and the memory sub-agents work there by default, so heartbeat bookkeeping, dedup lists and last-run markers stay with the schedule. To work on the chat the schedule was created in — grooming its notes, a weekly review — a call passes `scope: "conversation"` to `memory_access`, or to `subagent_invoke` for `memory-groomer` and `memory-retriever`. That reaches the chat only when it is routed to the same persona (a thread-scoped binding decides; otherwise the channel default); otherwise the call fails with an explanation. `db_query` always reads both the schedule thread and that chat. The chat is resolved by the daemon for each run and is never taken from the agent. A schedule created from the CLI has no chat unless it was created with `--origin` or given one with `talonctl set-schedule-origin`. Run provenance (vision Findings, runs) and the prompt's isolation described above are unchanged.
+
 Scheduled tasks created from the CLI (`talonctl add-schedule`) have no `originExternalId` in their schedule-thread metadata, so `channel_send` cannot infer a recipient chat — the tool errors and points at the discovery/broadcast tools. Use `channel_list` to discover available chats, then `channel_send` with an explicit `externalChatId`, or use `channel_broadcast` to fan out to every chat the persona is bound to. Broadcasts skip channel-default bindings (those with `thread_id IS NULL`) with a warning in the `{ delivered, skipped, failed }` result summary.
+
+**Startup schedule migration.** On every boot the daemon heals schedules that predate dedicated schedule threads: a schedule still stored on a live chat thread is moved onto the dedicated thread for that chat, and an old dedicated thread missing its metadata gets it back. A thread whose external ID starts with `schedule:` is never treated as a chat, so a CLI schedule without an origin stays on its shared `schedule:<persona>:<channel>` thread untouched. An earlier version did treat those as chats and left threads whose `originExternalId` is itself a `schedule:…` ID (external ID `schedule:<persona>:<channel>:schedule:<persona>:<channel>`); such a schedule delivers nowhere and has no origin chat. The daemon does not guess the chat: it leaves the schedule, its thread and their memory items as they are and logs one `schedule-migration` warning per boot listing the affected `scheduleIds`. Fix each with `talonctl set-schedule-origin <id> --origin <chatId>` (`/chatid` in the chat shows the ID); the warning stops once no schedule points at such a thread.
 
 List / update / cancel / delete remain persona-scoped rather than thread-scoped, so schedules created from the live chat are still fully visible and editable from the live chat thread.
 

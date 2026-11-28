@@ -101,6 +101,18 @@ export interface ToolExecutionContext {
   backgroundTaskId?: string;
   primaryExecutionEnvId?: string;
   allowedHostRoots?: string[];
+  /**
+   * Server-owned. For a schedule run on a dedicated schedule thread: the
+   * conversation thread the schedule was created in, when that chat is routed
+   * to the same persona (`src/daemon/schedule-origin.ts`). `db.query` reads it
+   * alongside `threadId`; `memory.access` and `subagent.invoke` use it only
+   * for calls with `scope: 'conversation'` (`memory-scope.ts`). Set by the
+   * host-tools bridge from the run's registration; a client-supplied value is
+   * rejected.
+   */
+  originThreadId?: string;
+  /** Server-owned. True for a schedule run (queue item type `schedule`). */
+  scheduleRun?: boolean;
 }
 
 /**

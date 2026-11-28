@@ -95,9 +95,12 @@ export async function run(
     : DEFAULT_LLM_THRESHOLD;
 
   const { memory, logger } = ctx.services;
+  // The conversation whose memory this run works on: the run's own thread,
+  // or the origin chat of a schedule run (SubAgentContext.memoryThreadId).
+  const memoryThreadId = ctx.memoryThreadId ?? ctx.threadId;
 
   // 1. Read all memory items for this thread.
-  const findResult = memory.findByThread(ctx.threadId);
+  const findResult = memory.findByThread(memoryThreadId);
   if (findResult.isErr()) {
     return err(new SubAgentError(`Failed to read memory items: ${findResult.error.message}`));
   }

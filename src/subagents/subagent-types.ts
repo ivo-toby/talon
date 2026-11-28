@@ -160,6 +160,13 @@ export interface SubAgentServices {
 export interface SubAgentContext {
   /** The thread this sub-agent run is associated with. */
   threadId: string;
+  /**
+   * Thread whose memory items memory sub-agents (groomer, retriever) work on.
+   * Equals `threadId` except for a schedule run serving its origin
+   * conversation (`ToolExecutionContext.originThreadId`). Run provenance
+   * (vision Findings) always stays on `threadId`. Absent means `threadId`.
+   */
+  memoryThreadId?: string;
   /** The persona that triggered (or owns) this sub-agent run. */
   personaId: string;
   /**

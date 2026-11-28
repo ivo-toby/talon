@@ -18,6 +18,20 @@
  *  3. Schedule.thread_id references a thread row that no longer exists.
  *     Cannot be healed automatically — logged and skipped.
  *
+ * Two shapes look legacy but are left alone:
+ *
+ *  - A CLI schedule thread `schedule:<persona>:<channel>` with no origin
+ *    metadata (what `talonctl add-schedule` creates without `--origin`).
+ *    It is valid: the schedule simply has no origin chat. A thread whose
+ *    external_id starts with `schedule:` is never a live chat, so it is
+ *    never rebound.
+ *  - A thread whose origin is itself a synthetic `schedule:…` id, written
+ *    by an earlier version of this migration that did rebind CLI threads
+ *    (issue #205). The real chat cannot be recovered from it, so every
+ *    boot logs one warning naming the affected schedule IDs and the
+ *    `talonctl set-schedule-origin <id> --origin <chatId>` fix. The thread
+ *    and its memory items are never touched.
+ *
  * This module rehydrates metadata on old-style dedicated threads and
  * rebinds legacy-live-thread schedules onto the canonical dedicated
  * thread for their (persona, channel, origin) triple, using the same
@@ -38,6 +52,9 @@ import type { PersonaRepository } from '../core/database/repositories/persona-re
 /** Metadata marker shared with schedule-manage.ts. */
 const SCHEDULE_THREAD_KIND = 'schedule';
 
+/** Prefix of every synthetic schedule-thread external_id. */
+const SCHEDULE_THREAD_PREFIX = 'schedule:';
+
 export interface LegacyScheduleMigrationDeps {
   scheduleRepo: ScheduleRepository;
   threadRepo: ThreadRepository;
@@ -53,8 +70,24 @@ export interface LegacyScheduleMigrationResult {
   metadataRehydrated: number;
   /** Legacy-live-thread schedules that were rebound onto a dedicated thread. */
   rebound: number;
+  /** Schedules on a CLI schedule thread without an origin — valid, left alone. */
+  noOrigin: number;
+  /**
+   * Schedules whose thread's origin is itself a synthetic `schedule:…` id.
+   * Left as they are and reported; the operator fixes each with
+   * `talonctl set-schedule-origin`.
+   */
+  brokenOrigin: BrokenOriginSchedule[];
   /** Schedules that could not be healed (missing thread row, missing persona, etc.). */
   skipped: number;
+}
+
+/** A schedule whose thread carries a synthetic origin instead of a chat id. */
+export interface BrokenOriginSchedule {
+  scheduleId: string;
+  threadId: string;
+  externalId: string;
+  originExternalId: string;
 }
 
 /**
@@ -65,7 +98,11 @@ function readMarker(metadataJson: string | null | undefined): string | null {
   if (!metadataJson) return null;
   try {
     const parsed = JSON.parse(metadataJson) as Record<string, unknown>;
-    if (parsed && parsed.kind === SCHEDULE_THREAD_KIND && typeof parsed.originExternalId === 'string') {
+    if (
+      parsed &&
+      parsed.kind === SCHEDULE_THREAD_KIND &&
+      typeof parsed.originExternalId === 'string'
+    ) {
       return parsed.originExternalId;
     }
   } catch {
@@ -84,7 +121,7 @@ function readMarker(metadataJson: string | null | undefined): string | null {
  * third colon.
  */
 function parseSyntheticOrigin(externalId: string): string | null {
-  if (!externalId.startsWith('schedule:')) return null;
+  if (!externalId.startsWith(SCHEDULE_THREAD_PREFIX)) return null;
   const parts = externalId.split(':');
   if (parts.length < 4) return null;
   return parts.slice(3).join(':');
@@ -104,12 +141,17 @@ export function migrateLegacySchedules(
     alreadyMigrated: 0,
     metadataRehydrated: 0,
     rebound: 0,
+    noOrigin: 0,
+    brokenOrigin: [],
     skipped: 0,
   };
 
   const schedulesResult = scheduleRepo.findAll();
   if (schedulesResult.isErr()) {
-    logger.error({ err: schedulesResult.error }, 'schedule-migration: failed to list schedules, skipping');
+    logger.error(
+      { err: schedulesResult.error },
+      'schedule-migration: failed to list schedules, skipping',
+    );
     return result;
   }
 
@@ -143,29 +185,17 @@ export function migrateLegacySchedules(
     // Case A — already migrated.
     const existingMarker = readMarker(thread.metadata);
     if (existingMarker !== null) {
-      // A previous version of this migration would, for threads whose
-      // external_id was an old 3-part synthetic `schedule:<persona>:<channel>`
-      // shape, fall through to Case C and concatenate that synthetic id
-      // as if it were a real recipient — producing doubly-nested
-      // external_ids and, in metadata, an `originExternalId` that is
-      // itself synthetic. channel.send and agent-runner then handed
-      // that synthetic id to the connector and got `chat not found`.
-      // Refuse such corrupted markers loudly so production schedules
-      // stop being treated as healthy. We can't auto-recover the real
-      // chat id from a synthetic origin alone (issue #205).
-      if (existingMarker.startsWith('schedule:')) {
-        logger.error(
-          {
-            scheduleId: schedule.id,
-            threadId: thread.id,
-            externalId: thread.external_id,
-            corruptedOriginExternalId: existingMarker,
-            personaId: schedule.persona_id,
-            channelId: thread.channel_id,
-          },
-          'schedule-migration: thread metadata is corrupted — originExternalId is itself synthetic; delete and recreate the schedule from a live chat to fix',
-        );
-        result.skipped += 1;
+      // An earlier version of this migration rebound CLI schedule threads
+      // as if they were live chats and stored their synthetic external_id
+      // as the origin (issue #205). Such a schedule has no recipient and no
+      // origin chat; report it instead of counting it as healthy.
+      if (existingMarker.startsWith(SCHEDULE_THREAD_PREFIX)) {
+        result.brokenOrigin.push({
+          scheduleId: schedule.id,
+          threadId: thread.id,
+          externalId: thread.external_id,
+          originExternalId: existingMarker,
+        });
         continue;
       }
       result.alreadyMigrated += 1;
@@ -177,6 +207,17 @@ export function migrateLegacySchedules(
     // metadata in place. No rebind needed: the schedule is already on the
     // right thread, only the marker is missing.
     const syntheticOrigin = parseSyntheticOrigin(thread.external_id);
+    if (syntheticOrigin !== null && syntheticOrigin.startsWith(SCHEDULE_THREAD_PREFIX)) {
+      // Doubly-nested thread whose marker was never written: the parsed
+      // origin is a schedule thread, not a chat. Same remedy as above.
+      result.brokenOrigin.push({
+        scheduleId: schedule.id,
+        threadId: thread.id,
+        externalId: thread.external_id,
+        originExternalId: syntheticOrigin,
+      });
+      continue;
+    }
     if (syntheticOrigin !== null) {
       const personaResult = personaRepo.findById(schedule.persona_id);
       const channelResult = channelRepo.findById(thread.channel_id);
@@ -210,34 +251,23 @@ export function migrateLegacySchedules(
       continue;
     }
 
+    // A thread whose external_id starts with `schedule:` is never a live
+    // chat. What reaches this point is a CLI schedule thread
+    // (`schedule:<persona>:<channel>`, no origin metadata): a valid shape
+    // for a schedule without an origin chat. Leave it where it is.
+    if (thread.external_id.startsWith(SCHEDULE_THREAD_PREFIX)) {
+      logger.debug(
+        { scheduleId: schedule.id, threadId: thread.id, externalId: thread.external_id },
+        'schedule-migration: schedule thread has no origin chat, leaving it as is',
+      );
+      result.noOrigin += 1;
+      continue;
+    }
+
     // Case C — schedule stored on a live chat thread (pre-issue-#200).
     // Provision or reuse the canonical dedicated schedule thread and
     // rebind the schedule onto it. The live thread's external_id is a
     // real provider recipient, so we capture it as the originExternalId.
-    //
-    // Refuse if the existing thread's external_id is itself synthetic
-    // (starts with `schedule:`). Earlier versions of this migration
-    // mistakenly treated such ids as a real recipient and produced
-    // doubly-nested external_ids whose `originExternalId` was still
-    // synthetic — which channel.send and agent-runner then handed to
-    // the connector, getting "chat not found" rejections. We can't
-    // recover the real chat id from a synthetic external_id alone, so
-    // log a structured error per affected schedule and leave it on the
-    // legacy thread for manual remediation (issue #205).
-    if (thread.external_id.startsWith('schedule:')) {
-      logger.error(
-        {
-          scheduleId: schedule.id,
-          threadId: thread.id,
-          syntheticExternalId: thread.external_id,
-          personaId: schedule.persona_id,
-          channelId: thread.channel_id,
-        },
-        'schedule-migration: refusing to migrate — thread external_id is itself synthetic, cannot recover origin chat id; delete and recreate the schedule from a live chat to fix',
-      );
-      result.skipped += 1;
-      continue;
-    }
     const personaResult = personaRepo.findById(schedule.persona_id);
     if (personaResult.isErr() || !personaResult.value) {
       logger.warn(
@@ -330,6 +360,26 @@ export function migrateLegacySchedules(
     result.rebound += 1;
   }
 
-  logger.info(result, 'schedule-migration: complete');
+  if (result.brokenOrigin.length > 0) {
+    logger.warn(
+      {
+        scheduleIds: result.brokenOrigin.map((b) => b.scheduleId),
+        schedules: result.brokenOrigin,
+      },
+      `schedule-migration: ${result.brokenOrigin.length} schedule(s) have a schedule thread as origin instead of a chat (left unchanged, memory untouched). For each, run: talonctl set-schedule-origin <id> --origin <chatId>`,
+    );
+  }
+
+  logger.info(
+    {
+      alreadyMigrated: result.alreadyMigrated,
+      metadataRehydrated: result.metadataRehydrated,
+      rebound: result.rebound,
+      noOrigin: result.noOrigin,
+      brokenOrigin: result.brokenOrigin.length,
+      skipped: result.skipped,
+    },
+    'schedule-migration: complete',
+  );
   return result;
 }

@@ -9,6 +9,7 @@
 import type pino from 'pino';
 import type { ToolManifest, ToolCallResult } from '../tool-types.js';
 import type { ToolExecutionContext } from './channel-send.js';
+import { resolveMemoryScope, type MemoryScope } from './memory-scope.js';
 import type { SubAgentRunner } from '../../subagents/subagent-runner.js';
 import type { PersonaLoader } from '../../personas/persona-loader.js';
 import type { PersonaRepository } from '../../core/database/repositories/persona-repository.js';
@@ -20,6 +21,12 @@ export interface SubAgentInvokeArgs {
   name: string;
   /** Arbitrary input payload forwarded to the sub-agent's run function. */
   input?: Record<string, unknown>;
+  /**
+   * Memory the memory sub-agents (memory-groomer, memory-retriever) work on:
+   * `thread` (default) is this run's thread; `conversation` is, for a
+   * schedule run, the chat it was created in (`memory-scope.ts`).
+   */
+  scope?: MemoryScope;
 }
 
 /**
@@ -95,10 +102,22 @@ export class SubAgentInvokeHandler {
 
     const loadedPersona = loadedResult.value;
 
+    const scoped = resolveMemoryScope(context, args.scope);
+    if (!scoped.ok) {
+      return {
+        requestId,
+        tool: 'subagent.invoke',
+        status: 'error',
+        error: `subagent.invoke: ${scoped.error}`,
+      };
+    }
+    const memoryThreadId = scoped.threadId;
+
     // Delegate to the sub-agent runner. `runId` comes from the trusted host
     // execution context only — never from model-authored tool arguments.
     const result = await this.deps.runner.execute(args.name, args.input ?? {}, {
       threadId: context.threadId,
+      ...(memoryThreadId !== context.threadId ? { memoryThreadId } : {}),
       personaId: context.personaId,
       runId: context.runId,
       personaSubagents: loadedPersona.config.subagents ?? [],

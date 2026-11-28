@@ -76,6 +76,10 @@ interface RegisteredBridgeAuth {
   bridgeSecret: string;
   threadId: string;
   personaId: string;
+  /** Server-resolved origin conversation of a schedule run. */
+  originThreadId?: string;
+  /** Whether the run executes a schedule. */
+  scheduleRun?: boolean;
   deniedToolNames: ReadonlySet<string>;
   voiceObservation?: VoiceObservationContext;
   trustedTraceparent?: string;
@@ -291,11 +295,21 @@ export class HostToolsBridge {
     voiceObservation?: VoiceObservationContext;
     /** Trusted parent span created by the server for this run. */
     traceparent?: string;
+    /**
+     * Origin conversation thread of a schedule run, resolved server-side
+     * (`resolveScheduleOriginThread`). Exposed to tools as
+     * `ToolExecutionContext.originThreadId`.
+     */
+    originThreadId?: string;
+    /** True for a schedule run; exposed as `ToolExecutionContext.scheduleRun`. */
+    scheduleRun?: boolean;
   }): void {
     this.bridgeAuthByRunId.set(input.runId, {
       bridgeSecret: input.bridgeSecret,
       threadId: input.threadId,
       personaId: input.personaId,
+      ...(input.originThreadId ? { originThreadId: input.originThreadId } : {}),
+      ...(input.scheduleRun ? { scheduleRun: true } : {}),
       deniedToolNames: new Set(
         (input.deniedToolNames ?? []).map((toolName) => TOOL_NAME_MAP[toolName] ?? toolName),
       ),
@@ -619,6 +633,12 @@ export class HostToolsBridge {
     }
 
     const suppliedContext = context as unknown as Record<string, unknown>;
+    if (
+      Object.prototype.hasOwnProperty.call(suppliedContext, 'originThreadId') ||
+      Object.prototype.hasOwnProperty.call(suppliedContext, 'scheduleRun')
+    ) {
+      return 'Origin thread context is server-owned';
+    }
     const forgedKeys = [
       'voiceObservation',
       'voiceRedaction',
@@ -639,10 +659,20 @@ export class HostToolsBridge {
 
   private getAuthenticatedContext(context: ToolExecutionContext): ToolExecutionContext {
     const registered = this.bridgeAuthByRunId.get(context.runId);
-    if (!registered?.voiceObservation) return context;
+    if (!registered) return context;
+    // Background tasks share the runId namespace with their own tasks, never
+    // with a registered run, so the origin applies to registered runs only.
+    const withOrigin: ToolExecutionContext = context.backgroundTaskId
+      ? context
+      : {
+          ...context,
+          ...(registered.originThreadId ? { originThreadId: registered.originThreadId } : {}),
+          ...(registered.scheduleRun ? { scheduleRun: true } : {}),
+        };
+    if (!registered.voiceObservation) return withOrigin;
 
     return {
-      ...context,
+      ...withOrigin,
       voiceObservation: registered.voiceObservation,
       traceparent: registered.trustedTraceparent,
     };

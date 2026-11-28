@@ -39,6 +39,14 @@ export interface AddScheduleOptions {
    * `personaLoader.resolveTaskPrompt`. Mutually exclusive with `prompt`.
    */
   promptFile?: string;
+  /**
+   * External ID of the chat the schedule serves (e.g. a Telegram chat_id or
+   * `<chat_id>:<topic_id>`). With it, the schedule runs on the dedicated
+   * thread for (persona, channel, origin), exactly like one created from that
+   * chat with `schedule_manage`: outbound messages default to the chat, and
+   * memory tools reach it with `scope: "conversation"`.
+   */
+  origin?: string;
   db: Database.Database;
 }
 
@@ -64,7 +72,7 @@ export interface AddScheduleResult {
  * @throws Error with a descriptive message on any failure.
  */
 export function addSchedule(options: AddScheduleOptions): AddScheduleResult {
-  const { db, persona, channel, cron, label, prompt, promptFile } = options;
+  const { db, persona, channel, cron, label, prompt, promptFile, origin } = options;
 
   // --- Validate prompt vs promptFile (exactly one required) ---------------
   // Match the host-tool contract (schedule-manage.ts buildSchedulePayload):
@@ -110,26 +118,38 @@ export function addSchedule(options: AddScheduleOptions): AddScheduleResult {
   }
 
   // --- Find or create schedule thread ------------------------------------
-  const threadRepo = new ThreadRepository(db);
-  const scheduleExternalId = `schedule:${persona}:${channel}`;
-  let threadId: string;
-
-  const existing = threadRepo.findByExternalId(channelRow.id, scheduleExternalId);
-  if (existing.isErr()) {
-    throw new Error(`Failed to look up schedule thread: ${existing.error.message}`);
+  const trimmedOrigin = origin?.trim();
+  if (origin !== undefined && !trimmedOrigin) {
+    throw new Error('addSchedule: origin must not be empty');
   }
-  if (existing.value !== null) {
-    threadId = existing.value.id;
-  } else {
-    threadId = uuidv4();
-    const insertResult = threadRepo.insert({
-      id: threadId,
-      channel_id: channelRow.id,
-      external_id: scheduleExternalId,
-      metadata: '{}',
+  let threadId: string;
+  if (trimmedOrigin) {
+    threadId = findOrCreateDedicatedScheduleThread(db, {
+      channelId: channelRow.id,
+      channelName: channelRow.name,
+      personaName: personaRow.name,
+      originExternalId: trimmedOrigin,
     });
-    if (insertResult.isErr()) {
-      throw new Error(`Failed to create schedule thread: ${insertResult.error.message}`);
+  } else {
+    const threadRepo = new ThreadRepository(db);
+    const scheduleExternalId = `schedule:${persona}:${channel}`;
+    const existing = threadRepo.findByExternalId(channelRow.id, scheduleExternalId);
+    if (existing.isErr()) {
+      throw new Error(`Failed to look up schedule thread: ${existing.error.message}`);
+    }
+    if (existing.value !== null) {
+      threadId = existing.value.id;
+    } else {
+      threadId = uuidv4();
+      const insertResult = threadRepo.insert({
+        id: threadId,
+        channel_id: channelRow.id,
+        external_id: scheduleExternalId,
+        metadata: '{}',
+      });
+      if (insertResult.isErr()) {
+        throw new Error(`Failed to create schedule thread: ${insertResult.error.message}`);
+      }
     }
   }
 
@@ -174,6 +194,49 @@ export function addSchedule(options: AddScheduleOptions): AddScheduleResult {
     label,
     nextRunAt,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Dedicated schedule thread
+// ---------------------------------------------------------------------------
+
+/**
+ * Finds or creates the dedicated schedule thread for (persona, channel,
+ * origin chat) — the same `schedule:<persona>:<channel>:<origin>` thread and
+ * `{ kind: 'schedule', originExternalId }` metadata that `schedule_manage`
+ * creates when a schedule is set up from a chat.
+ *
+ * @throws Error on a database failure.
+ */
+export function findOrCreateDedicatedScheduleThread(
+  db: Database.Database,
+  input: { channelId: string; channelName: string; personaName: string; originExternalId: string },
+): string {
+  const threadRepo = new ThreadRepository(db);
+  const externalId = `schedule:${input.personaName}:${input.channelName}:${input.originExternalId}`;
+  const existing = threadRepo.findByExternalId(input.channelId, externalId);
+  if (existing.isErr()) {
+    throw new Error(`Failed to look up schedule thread: ${existing.error.message}`);
+  }
+  if (existing.value !== null) {
+    return existing.value.id;
+  }
+  const threadId = uuidv4();
+  const insertResult = threadRepo.insert({
+    id: threadId,
+    channel_id: input.channelId,
+    external_id: externalId,
+    metadata: JSON.stringify({
+      kind: 'schedule',
+      originExternalId: input.originExternalId,
+      personaName: input.personaName,
+      channelName: input.channelName,
+    }),
+  });
+  if (insertResult.isErr()) {
+    throw new Error(`Failed to create schedule thread: ${insertResult.error.message}`);
+  }
+  return threadId;
 }
 
 // ---------------------------------------------------------------------------
@@ -274,6 +337,7 @@ export async function addScheduleCommand(options: {
   label: string;
   prompt?: string;
   promptFile?: string;
+  origin?: string;
   configPath?: string;
 }): Promise<void> {
   const { loadConfig } = await import('../../core/config/config-loader.js');
@@ -308,6 +372,7 @@ export async function addScheduleCommand(options: {
       label: options.label,
       ...(options.prompt !== undefined ? { prompt: options.prompt } : {}),
       ...(options.promptFile !== undefined ? { promptFile: options.promptFile } : {}),
+      ...(options.origin !== undefined ? { origin: options.origin } : {}),
       db,
     });
 

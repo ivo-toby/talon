@@ -166,6 +166,7 @@ function makeMockContext(): DaemonContext {
             external_id: 'ext-001',
           }),
         ),
+        findByExternalId: vi.fn().mockReturnValue(ok(null)),
       } as any,
       channel: {
         findById: vi.fn().mockReturnValue(
@@ -197,7 +198,10 @@ function makeMockContext(): DaemonContext {
         getLatestSessionId: vi.fn().mockReturnValue(ok(null)),
         getLatestProviderName: vi.fn().mockReturnValue(ok(null)),
       } as any,
-      binding: {} as any,
+      binding: {
+        findByChannelAndThread: vi.fn().mockReturnValue(ok(null)),
+        findDefaultForChannel: vi.fn().mockReturnValue(ok(null)),
+      } as any,
       memory: {} as any,
     },
     channelRegistry: {
@@ -2875,6 +2879,78 @@ describe('AgentRunner', () => {
   // -------------------------------------------------------------------------
   // Session restore from DB (BUG-008)
   // -------------------------------------------------------------------------
+
+  describe('schedule origin for memory tools', () => {
+    function useScheduleThread(opts: { routedPersonaId: string | null; originExists?: boolean }) {
+      vi.mocked(ctx.repos.thread.findById).mockReturnValue(
+        ok({
+          id: 'thread-001',
+          channel_id: 'chan-001',
+          external_id: 'schedule:persona-001:test-channel:chat-42',
+          metadata: JSON.stringify({ kind: 'schedule', originExternalId: 'chat-42' }),
+        } as any),
+      );
+      (ctx.repos.thread as any).findByExternalId = vi.fn().mockReturnValue(
+        ok(
+          opts.originExists === false
+            ? null
+            : { id: 'chat-thread-001', channel_id: 'chan-001', external_id: 'chat-42', metadata: '{}' },
+        ),
+      );
+      (ctx.repos as any).binding = {
+        findByChannelAndThread: vi.fn().mockReturnValue(ok(null)),
+        findDefaultForChannel: vi.fn().mockReturnValue(
+          ok(opts.routedPersonaId ? { persona_id: opts.routedPersonaId } : null),
+        ),
+      };
+      runner = new AgentRunner(ctx);
+    }
+
+    it('registers the origin chat for a schedule run routed to the same persona', async () => {
+      useScheduleThread({ routedPersonaId: 'persona-001' });
+
+      await runner.run(makeQueueItem({ type: 'schedule' }));
+
+      expect(ctx.hostToolsBridge.registerRunAuthentication).toHaveBeenCalledWith(
+        expect.objectContaining({
+          threadId: 'thread-001',
+          originThreadId: 'chat-thread-001',
+          scheduleRun: true,
+        }),
+      );
+      expect(ctx.logger.info).toHaveBeenCalledWith(
+        expect.objectContaining({ originThreadId: 'chat-thread-001' }),
+        'agent-runner: schedule run can reach its origin conversation (memory scope "conversation")',
+      );
+    });
+
+    it('registers no origin when the chat belongs to another persona or is gone', async () => {
+      useScheduleThread({ routedPersonaId: 'persona-other' });
+      await runner.run(makeQueueItem({ type: 'schedule' }));
+      expect(ctx.hostToolsBridge.registerRunAuthentication).toHaveBeenLastCalledWith(
+        expect.not.objectContaining({ originThreadId: expect.anything() }),
+      );
+
+      useScheduleThread({ routedPersonaId: 'persona-001', originExists: false });
+      await runner.run(makeQueueItem({ type: 'schedule' }));
+      expect(ctx.hostToolsBridge.registerRunAuthentication).toHaveBeenLastCalledWith(
+        expect.not.objectContaining({ originThreadId: expect.anything() }),
+      );
+    });
+
+    it('registers no origin for a message run, even on a schedule thread', async () => {
+      useScheduleThread({ routedPersonaId: 'persona-001' });
+
+      await runner.run(makeQueueItem());
+
+      expect(ctx.hostToolsBridge.registerRunAuthentication).toHaveBeenCalledWith(
+        expect.not.objectContaining({ originThreadId: expect.anything() }),
+      );
+      expect(ctx.hostToolsBridge.registerRunAuthentication).toHaveBeenCalledWith(
+        expect.not.objectContaining({ scheduleRun: expect.anything() }),
+      );
+    });
+  });
 
   describe('session restore from DB on restart', () => {
     it('falls back to DB session when in-memory tracker has none', async () => {
