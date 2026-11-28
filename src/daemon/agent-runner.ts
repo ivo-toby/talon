@@ -893,8 +893,21 @@ export class AgentRunner {
             // need recent messages for multi-turn continuity even when automatic
             // context management (rotation) is disabled.
             const DEFAULT_FRESH_SESSION_RECENT_MESSAGES = 10;
+            // Providers without a provider-side session rebuild their whole
+            // context from the database every run. With observational memory,
+            // the roller observes everything but the newest
+            // `recentMessageCount` messages once `2 × recentMessageCount` are
+            // unobserved (ContextRoller.observeRecentWindowOverflow), so the
+            // assembler must show up to twice the configured count for no
+            // message to fall between the observation log and the window.
+            const usesRecentWindowObservation =
+              !strategy.supportsSessionResumption &&
+              enabledContextManagement?.summarizer === 'session-observer' &&
+              enabledContextManagement.recentMessageCount >= 1;
             const freshSessionRecentMessageCount = enabledContextManagement
-              ? enabledContextManagement.recentMessageCount
+              ? usesRecentWindowObservation
+                ? enabledContextManagement.recentMessageCount * 2
+                : enabledContextManagement.recentMessageCount
               : (contextManagement?.recentMessageCount ?? DEFAULT_FRESH_SESSION_RECENT_MESSAGES);
             const getPreviousContext = async (imageReplay: {
               live: LiveImageDescriptorBlock;
@@ -1815,6 +1828,7 @@ export class AgentRunner {
               // the 524K threshold. Use cumulative `usage` for codex-cli
               // resumed runs so the roller fires when the session log
               // itself crosses the threshold.
+              let rotatedByThreshold = false;
               const usageForRotation = ranOnResumedCodexSession ? usage : (lastStepUsage ?? usage);
               const contextUsage: ContextUsage =
                 providerEntry.provider.estimateContextUsage(usageForRotation);
@@ -1871,6 +1885,8 @@ export class AgentRunner {
                           rotationImage,
                           rotationDiagnostics,
                         );
+
+                    rotatedByThreshold = rotation.rotated;
 
                     // Some providers need a fresh turn after context rotation
                     // to continue open work. Stateless providers need it
@@ -1929,6 +1945,38 @@ export class AgentRunner {
                       ? { threadId: item.threadId, voice: true, errorCategory: 'unknown' }
                       : { threadId: item.threadId, err: e },
                     'agent-runner: context rotation failed',
+                  );
+                }
+              }
+
+              // Stateless providers rarely reach the usage threshold, so
+              // observe the messages that are about to leave the recent
+              // window instead. Never for A2A runs: they execute another
+              // persona on this thread. Never implies a continuation.
+              if (usesRecentWindowObservation && !rotatedByThreshold && !isA2ATask) {
+                try {
+                  const windowImageContext = this.imageRotationContext(imageLookupExposed);
+                  await this.ctx.contextRoller.observeRecentWindowOverflow(
+                    item.threadId,
+                    personaId,
+                    {
+                      recentMessageCount: enabledContextManagement.recentMessageCount,
+                      observerName: enabledContextManagement.summarizer,
+                      reflectorName: 'session-reflector',
+                      reflectionThresholdChars: enabledContextManagement.reflectionThresholdChars,
+                      threadMetadata:
+                        threadResult.isOk() && threadResult.value ? threadResult.value.metadata : null,
+                      ...(threadResult.isOk() && threadResult.value
+                        ? { channelId: threadResult.value.channel_id }
+                        : {}),
+                      ...(windowImageContext !== undefined ? { imageContext: windowImageContext } : {}),
+                      diagnostics: rotationDiagnostics,
+                    },
+                  );
+                } catch (e: unknown) {
+                  this.ctx.logger.error(
+                    { threadId: item.threadId, err: e },
+                    'agent-runner: recent-window observation failed',
                   );
                 }
               }

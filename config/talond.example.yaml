@@ -239,6 +239,10 @@ agentRunner:
         # overrides the provider-level fallback above.
     # Add more OpenAI-compatible endpoints by giving each provider a unique
     # name and pointing type at the shared implementation.
+    # Without sessionMode: previous_response_id these providers are stateless:
+    # every run rebuilds its context. Prefer summarizer: session-observer for
+    # them; it also observes the messages that leave the recent window, which
+    # the token threshold alone rarely triggers on a stateless prompt.
     ollama-mac:
       enabled: false
       type: openai-compatible
