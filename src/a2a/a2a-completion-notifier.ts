@@ -26,6 +26,7 @@ import type { ChannelRepository } from '../core/database/repositories/channel-re
 import type { PersonaRepository } from '../core/database/repositories/persona-repository.js';
 import type { ThreadRepository } from '../core/database/repositories/thread-repository.js';
 import { createVoiceSafeLogger } from '../observability/langfuse/voice-observation.js';
+import { resolveThreadRecipient } from '../daemon/schedule-thread-utils.js';
 import { createQueueDiagnosticResolver, type QueueManager } from '../queue/queue-manager.js';
 import type { A2ATaskRow } from './a2a-types.js';
 
@@ -40,6 +41,9 @@ export const A2A_NOTIFY_TOTAL_EXCERPT_MAX_CHARS = 4_000;
 
 /** Appended to a truncated excerpt. */
 export const A2A_NOTIFY_TRUNCATION_MARKER = '... [truncated]';
+
+/** Most tasks one notification covers; the rest stay owed for the next tick. */
+export const A2A_NOTIFY_MAX_TASKS_PER_MESSAGE = 20;
 
 export const A2A_NOTIFICATION_KIND = 'a2a_task_notification';
 
@@ -65,24 +69,40 @@ export function truncateExcerpt(text: string, max: number): string {
   return `${text.slice(0, max - marker.length)}${marker}`;
 }
 
+/**
+ * Result and error text comes from another model run, so it is untrusted. It is
+ * rendered on ONE line of the form `Result: <text>`: every line break (CR, LF,
+ * VT, FF, NEL, U+2028/U+2029) becomes the visible marker ' ⏎ '. Text can then
+ * never start a new line, so it cannot forge a `Task ...` line or the closing
+ * `Use persona_task_status ...` line. Collapsing happens BEFORE truncation, so
+ * the 800/4000 caps apply to what is actually rendered.
+ */
+export function neutralizeExcerpt(text: string): string {
+  return text.replace(/\r\n|[\n\r\v\f\u0085\u2028\u2029]/g, ' ⏎ ');
+}
+
 function extractExcerptSource(task: A2ATaskRow): string {
   if (task.state === 'completed') {
     if (!task.result_payload) return '';
     try {
       const parsed = JSON.parse(task.result_payload) as { text?: unknown };
-      return typeof parsed.text === 'string' ? parsed.text.trim() : '';
+      return typeof parsed.text === 'string' ? neutralizeExcerpt(parsed.text.trim()) : '';
     } catch {
       return '';
     }
   }
-  return (task.error_message ?? task.error_code ?? '').trim();
+  return neutralizeExcerpt((task.error_message ?? task.error_code ?? '').trim());
 }
 
 /**
  * Renders the notification text. With `excerpts: false` (voice or unclassifiable
  * thread) only task ID and state are included: no target persona, no excerpt.
  */
-export function renderNotification(tasks: readonly A2ATaskRow[], excerpts: boolean): string {
+export function renderNotification(
+  tasks: readonly A2ATaskRow[],
+  excerpts: boolean,
+  moreOwed = 0,
+): string {
   const lines: string[] = [
     tasks.length === 1
       ? '[Delegated task finished] 1 task you delegated has finished.'
@@ -106,6 +126,11 @@ export function renderNotification(tasks: readonly A2ATaskRow[], excerpts: boole
     const excerpt = truncateExcerpt(source, allowed);
     budget -= excerpt.length;
     lines.push(`${label}: ${excerpt}`);
+  }
+  if (moreOwed > 0) {
+    lines.push(
+      `... and ${moreOwed} more finished task(s); they follow in the next message (or use persona_task_status).`,
+    );
   }
   lines.push('Use persona_task_status with a task ID to fetch the full result.');
   return lines.join('\n');
@@ -177,15 +202,23 @@ export class A2ACompletionNotifier {
   }
 
   /** @returns true when a message was enqueued. */
-  private deliver(tasks: A2ATaskRow[]): boolean {
-    const { logger, taskRepo } = this.deps;
-    const threadId = tasks[0].thread_id;
-    const sourcePersona = tasks[0].source_persona;
+  private deliver(owedTasks: A2ATaskRow[]): boolean {
+    const { taskRepo } = this.deps;
+    const threadId = owedTasks[0].thread_id;
+    const sourcePersona = owedTasks[0].source_persona;
+    // Oldest first; anything beyond the cap stays owed for the next tick.
+    const tasks = owedTasks.slice(0, A2A_NOTIFY_MAX_TASKS_PER_MESSAGE);
+    const moreOwed = owedTasks.length - tasks.length;
     const taskIds = tasks.map((t) => t.id);
+
+    // Classify first: every log below is voice-safe unless the thread is
+    // positively known to be a text channel.
+    const nonVoice = this.resolver.resolveThread(threadId) === 'nonvoice';
+    const log = nonVoice ? this.deps.logger : createVoiceSafeLogger(this.deps.logger);
 
     const thread = this.deps.threadRepo.findById(threadId);
     if (thread.isErr()) {
-      logger.warn(
+      log.warn(
         { threadId, err: thread.error.message },
         'a2a-notifier: thread lookup failed; will retry',
       );
@@ -193,32 +226,30 @@ export class A2ACompletionNotifier {
     }
     const persona = this.deps.personaRepo.findByName(sourcePersona);
     if (persona.isErr()) {
-      logger.warn(
+      log.warn(
         { threadId, sourcePersona, err: persona.error.message },
         'a2a-notifier: persona lookup failed; will retry',
       );
       return false;
     }
     if (thread.value === null || persona.value === null) {
-      // Nothing to wake: retire the rows so they are not retried forever.
       this.retire(
-        taskIds,
+        owedTasks,
         thread.value === null
           ? 'source thread no longer exists'
           : 'source persona no longer exists',
-        {
-          threadId,
-          sourcePersona,
-        },
+        log,
+        { threadId, sourcePersona },
       );
       return false;
     }
+    if (resolveThreadRecipient(thread.value) === null) {
+      // A CLI-created schedule thread has no chat: a wake would run pointlessly.
+      this.retire(owedTasks, 'source thread has no chat to deliver to', log, { threadId });
+      return false;
+    }
 
-    const classification = this.resolver.resolveThread(threadId);
-    const nonVoice = classification === 'nonvoice';
-    const log = nonVoice ? logger : createVoiceSafeLogger(logger);
-    const content = renderNotification(tasks, nonVoice);
-
+    const content = renderNotification(tasks, nonVoice, moreOwed);
     const enqueued = this.deps.queueManager.enqueueWithCommit(
       threadId,
       'message',
@@ -232,6 +263,8 @@ export class A2ACompletionNotifier {
         }
         return ok(undefined);
       },
+      // QueueManager would log threadId unclassified; this class logs below.
+      { logSuccess: false },
     );
     if (enqueued.isErr()) {
       log.warn(
@@ -247,9 +280,18 @@ export class A2ACompletionNotifier {
     return true;
   }
 
-  /** Marks tasks notified without enqueueing, in one transaction. */
-  private retire(taskIds: string[], reason: string, context: Record<string, unknown>): void {
-    const { logger, taskRepo } = this.deps;
+  /**
+   * Marks tasks notified without enqueueing, in one transaction. Identifying
+   * fields are logged only through `log` (voice-safe for non-text threads).
+   */
+  private retire(
+    tasks: readonly A2ATaskRow[],
+    reason: string,
+    log: pino.Logger,
+    context: Record<string, unknown>,
+  ): void {
+    const { taskRepo } = this.deps;
+    const taskIds = tasks.map((t) => t.id);
     try {
       taskRepo.transaction(() => {
         for (const id of taskIds) {
@@ -257,12 +299,9 @@ export class A2ACompletionNotifier {
           if (marked.isErr()) throw marked.error;
         }
       });
-      logger.warn(
-        { ...context, taskIds },
-        `a2a-notifier: ${reason}; completion notification dropped`,
-      );
+      log.warn({ ...context, taskIds }, `a2a-notifier: ${reason}; completion notification dropped`);
     } catch (cause) {
-      logger.warn(
+      log.warn(
         { ...context, taskIds, cause: String(cause) },
         'a2a-notifier: failed to retire notification',
       );

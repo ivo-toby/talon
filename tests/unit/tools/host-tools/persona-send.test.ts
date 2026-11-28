@@ -638,11 +638,93 @@ describe('PersonaSendHandler — notify policy (ADR 0003)', () => {
     expect(notifyOf(a.taskMapper)).toBe('none');
 
     const b = build();
-    (b.taskRepo.findById as unknown as ReturnType<typeof vi.fn>).mockReturnValue(
-      ok(makeTaskRow({ state: 'completed' })),
-    );
-    await b.handler.execute(makeArgs({ await_reply: true, notify: 'wake' }), makeContext());
+    await b.handler.execute(makeArgs({ notify: 'wake' }), makeContext());
     expect(notifyOf(b.taskMapper)).toBe('wake');
+  });
+
+  it('rejects await_reply with an explicit wake (the result would arrive twice)', async () => {
+    const { taskMapper, handler } = build();
+    const result = await handler.execute(
+      makeArgs({ await_reply: true, notify: 'wake' }),
+      makeContext(),
+    );
+    expect(result.status).toBe('error');
+    expect(result.error).toMatch(/twice/);
+    expect(taskMapper.submitTask).not.toHaveBeenCalled();
+  });
+
+  it('does not switch to wake when an awaited call explicitly opted out with none', async () => {
+    vi.useFakeTimers();
+    const { taskRepo, handler } = build();
+    (taskRepo.findById as unknown as ReturnType<typeof vi.fn>).mockReturnValue(
+      ok(makeTaskRow({ state: 'working' })),
+    );
+    const p = handler.execute(makeArgs({ await_reply: true, notify: 'none' }), makeContext());
+    await vi.advanceTimersByTimeAsync(100);
+    await p;
+    expect(taskRepo.setNotifyWake).not.toHaveBeenCalled();
+  });
+
+  it('switches to wake when the wait is lost to a poll error', async () => {
+    const { taskRepo, handler } = build();
+    (taskRepo.findById as unknown as ReturnType<typeof vi.fn>).mockReturnValue(
+      err(new Error('db gone')),
+    );
+    const result = await handler.execute(makeArgs({ await_reply: true }), makeContext());
+    expect(result.status).toBe('error');
+    expect(taskRepo.setNotifyWake).toHaveBeenCalledWith('task-123');
+  });
+
+  describe('delegated persona (context.a2aTaskId set)', () => {
+    const delegatedCtx = (): ToolExecutionContext => makeContext({ a2aTaskId: 'parent-task' });
+
+    it('forces notify none whether or not it awaits', async () => {
+      const a = build();
+      await a.handler.execute(makeArgs(), delegatedCtx());
+      expect(notifyOf(a.taskMapper)).toBe('none');
+
+      const b = build();
+      (b.taskRepo.findById as unknown as ReturnType<typeof vi.fn>).mockReturnValue(
+        ok(makeTaskRow({ state: 'completed' })),
+      );
+      await b.handler.execute(makeArgs({ await_reply: true }), delegatedCtx());
+      expect(notifyOf(b.taskMapper)).toBe('none');
+    });
+
+    it('accepts an explicit none', async () => {
+      const { taskMapper, handler } = build();
+      const result = await handler.execute(makeArgs({ notify: 'none' }), delegatedCtx());
+      expect(result.status).toBe('success');
+      expect(notifyOf(taskMapper)).toBe('none');
+    });
+
+    it('rejects an explicit wake with a clear error and submits nothing', async () => {
+      const { taskMapper, handler } = build();
+      const result = await handler.execute(makeArgs({ notify: 'wake' }), delegatedCtx());
+      expect(result.status).toBe('error');
+      expect(result.error).toMatch(/delegated persona that delegates onward/);
+      expect(taskMapper.submitTask).not.toHaveBeenCalled();
+    });
+
+    it('never switches to wake on timeout or poll error', async () => {
+      vi.useFakeTimers();
+      const a = build();
+      (a.taskRepo.findById as unknown as ReturnType<typeof vi.fn>).mockReturnValue(
+        ok(makeTaskRow({ state: 'working' })),
+      );
+      const p = a.handler.execute(makeArgs({ await_reply: true }), delegatedCtx());
+      await vi.advanceTimersByTimeAsync(100);
+      await p;
+      expect(a.taskRepo.setNotifyWake).not.toHaveBeenCalled();
+      vi.useRealTimers();
+
+      const b = build();
+      (b.taskRepo.findById as unknown as ReturnType<typeof vi.fn>).mockReturnValue(
+        err(new Error('x')),
+      );
+      await b.handler.execute(makeArgs({ await_reply: true }), delegatedCtx());
+      expect(b.taskRepo.setNotifyWake).not.toHaveBeenCalled();
+    });
   });
 
   it('rejects an invalid notify value before submitting', async () => {
@@ -672,7 +754,10 @@ describe('PersonaSendHandler — notify policy (ADR 0003)', () => {
     (taskRepo.findById as unknown as ReturnType<typeof vi.fn>).mockReturnValue(
       ok(makeTaskRow({ state: 'working' })),
     );
-    const p = handler.execute(makeArgs({ await_reply: true, cancel_on_timeout: true }), makeContext());
+    const p = handler.execute(
+      makeArgs({ await_reply: true, cancel_on_timeout: true }),
+      makeContext(),
+    );
     await vi.advanceTimersByTimeAsync(100);
     await p;
     expect(taskRepo.setNotifyWake).not.toHaveBeenCalled();

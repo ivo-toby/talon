@@ -102,7 +102,16 @@ export class A2ATaskMapper {
    * @returns Ok(A2ATaskStatus) on success, Err(A2AError) on validation/persistence failure.
    */
   submitTask(input: SubmitTaskInput): Result<A2ATaskStatus, A2AError> {
-    const { sourcePersona, targetPersona, sourceThreadId, content, hopCount, parentTaskId, traceId, notify } = input;
+    const {
+      sourcePersona,
+      targetPersona,
+      sourceThreadId,
+      content,
+      hopCount,
+      parentTaskId,
+      traceId,
+      notify,
+    } = input;
 
     // 1. Validate content
     if (!content.trim()) {
@@ -293,7 +302,11 @@ export class A2ATaskMapper {
    * up) never wakes the delegating persona: whoever cancelled already knows.
    * Only the reaper's TTL cancel passes `wakeCaller: true` (ADR 0003).
    */
-  cancelTask(taskId: string, reason: string, options?: { wakeCaller?: boolean }): Result<boolean, A2AError> {
+  cancelTask(
+    taskId: string,
+    reason: string,
+    options?: { wakeCaller?: boolean },
+  ): Result<boolean, A2AError> {
     const found = this.taskRepo.findById(taskId);
     if (found.isErr()) {
       return err(new A2AError(`Failed to load task ${taskId}: ${found.error.message}`));
@@ -301,7 +314,9 @@ export class A2ATaskMapper {
     const row = found.value;
     if (!row) return ok(false);
 
-    const result = this.taskRepo.markCanceled(taskId, reason, { suppressNotify: !options?.wakeCaller });
+    const result = this.taskRepo.markCanceled(taskId, reason, {
+      suppressNotify: !options?.wakeCaller,
+    });
     if (result.isErr()) {
       return err(new A2AError(`Failed to cancel task ${taskId}: ${result.error.message}`));
     }

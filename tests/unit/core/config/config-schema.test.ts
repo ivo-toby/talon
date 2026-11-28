@@ -1637,7 +1637,9 @@ describe('A2AConfigSchema.notifyBatchWindowSeconds', () => {
 
   it('accepts 0 and 600 and rejects out-of-range or non-integer values', () => {
     expect(A2AConfigSchema.parse({ notifyBatchWindowSeconds: 0 }).notifyBatchWindowSeconds).toBe(0);
-    expect(A2AConfigSchema.parse({ notifyBatchWindowSeconds: 600 }).notifyBatchWindowSeconds).toBe(600);
+    expect(A2AConfigSchema.parse({ notifyBatchWindowSeconds: 600 }).notifyBatchWindowSeconds).toBe(
+      600,
+    );
     expect(() => A2AConfigSchema.parse({ notifyBatchWindowSeconds: -1 })).toThrow();
     expect(() => A2AConfigSchema.parse({ notifyBatchWindowSeconds: 601 })).toThrow();
     expect(() => A2AConfigSchema.parse({ notifyBatchWindowSeconds: 1.5 })).toThrow();

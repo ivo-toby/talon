@@ -2715,6 +2715,50 @@ describe('AgentRunner', () => {
     });
   });
 
+  describe('a2a completion notification items (ADR 0003)', () => {
+    // Seam: the real AgentRunner.run() with a mocked provider query. The item is
+    // exactly what A2ACompletionNotifier enqueues (type 'message', no messageId).
+    const NOTIFICATION =
+      '[Delegated task finished] 1 task you delegated has finished.\n' +
+      'Task t-1 (target: worker): completed\nResult: all good\n' +
+      'Use persona_task_status with a task ID to fetch the full result.';
+    const notificationItem = () =>
+      makeQueueItem({
+        type: 'message',
+        payload: {
+          personaId: 'persona-001',
+          kind: 'a2a_task_notification',
+          taskIds: ['t-1'],
+          content: NOTIFICATION,
+        },
+      });
+
+    it('runs the SOURCE persona with the notification text as the prompt and attaches no reply target', async () => {
+      const connector = ctx.channelRegistry.get('test-channel')!;
+
+      const result = await runner.run(notificationItem());
+
+      expect(result.isOk()).toBe(true);
+      // Source persona resolved from payload.personaId.
+      expect(ctx.repos.persona.findById).toHaveBeenCalledWith('persona-001');
+      expect(mockQuery).toHaveBeenCalledOnce();
+      const queryCall = mockQuery.mock.calls[0]![0] as { prompt: string };
+      expect(queryCall.prompt).toContain(NOTIFICATION);
+      // Ordinary foreground run: the reply is delivered to the thread's chat,
+      // with no explicit or implicit reply target (no messageId to reply to).
+      const sends = vi.mocked(connector.send).mock.calls;
+      expect(sends.length).toBeGreaterThan(0);
+      for (const call of sends) {
+        expect(JSON.stringify(call[1])).not.toContain('replyTo');
+        expect((call[1] as { replyTo?: unknown }).replyTo).toBeUndefined();
+      }
+      // Not an A2A task run: it is a normal run row for the thread.
+      expect(ctx.repos.run.insert).toHaveBeenCalledWith(
+        expect.objectContaining({ thread_id: 'thread-001', persona_id: 'persona-001' }),
+      );
+    });
+  });
+
   describe('recipient of a schedule thread', () => {
     const notificationItem = () =>
       makeQueueItem({

@@ -599,7 +599,9 @@ describe('TalondDaemon.reload()', () => {
       await localDaemon.reload('/config.yaml');
 
       expect(
-        warnSpy.mock.calls.find((args) => typeof args[0] === 'string' && args[0].includes('a2a limits')),
+        warnSpy.mock.calls.find(
+          (args) => typeof args[0] === 'string' && args[0].includes('a2a limits'),
+        ),
       ).toBeDefined();
       warnSpy.mockRestore();
       await localDaemon.stop();
@@ -817,7 +819,10 @@ describe('TalondDaemon.reload()', () => {
 
     it('starts the A2A completion notifier with the daemon and stops it on stop', async () => {
       const ctx = setupSuccessfulStart();
-      (ctx as any).a2aTaskMapper = { reapStaleTasks: vi.fn().mockReturnValue(ok([])), setAbortHook: vi.fn() };
+      (ctx as any).a2aTaskMapper = {
+        reapStaleTasks: vi.fn().mockReturnValue(ok([])),
+        setAbortHook: vi.fn(),
+      };
       const findOwed = vi.fn().mockReturnValue(ok([]));
       (ctx as any).repos.a2aTask = { findOwedNotifications: findOwed };
       vi.useFakeTimers();

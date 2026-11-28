@@ -131,12 +131,30 @@ export class PersonaSendHandler {
       return this.errorResult(requestId, message);
     }
 
+    // A delegated persona's run executes on the SOURCE thread but is not a
+    // foreground run there: a wake would run it as one in the human's thread.
+    // So onward delegation can never notify (ADR 0003).
+    const delegated = context.a2aTaskId !== undefined && context.a2aTaskId !== '';
+    if (delegated && validatedArgs.value.notify === 'wake') {
+      const message =
+        "persona.send: notify 'wake' is not available to a delegated persona that delegates onward. " +
+        'Use await_reply: true, or send with notify: "none" and follow the task with persona_task_status.';
+      this.deps.logger.warn({ requestId, a2aTaskId: context.a2aTaskId }, message);
+      return this.errorResult(requestId, message);
+    }
+    const notify: A2ANotifyPolicy = delegated
+      ? 'none'
+      : (validatedArgs.value.notify ?? (validatedArgs.value.await_reply ? 'none' : 'wake'));
+    // A timed-out or failed wait may switch the task to wake, unless this is a
+    // delegated run or the caller explicitly opted out.
+    const wakeOnLostWait = !delegated && validatedArgs.value.notify !== 'none';
+
     const submitResult = this.deps.taskMapper.submitTask({
       sourcePersona: sourcePersona.value,
       targetPersona: validatedArgs.value.target_persona,
       sourceThreadId: context.threadId,
       content: validatedArgs.value.message,
-      notify: validatedArgs.value.notify ?? (validatedArgs.value.await_reply ? 'none' : 'wake'),
+      notify,
       hopCount: (context.a2aHopCount ?? 0) + 1,
       ...(context.a2aTaskId ? { parentTaskId: context.a2aTaskId } : {}),
     });
@@ -161,7 +179,7 @@ export class PersonaSendHandler {
     const maxWaitMs = resolvePersonaTaskWaitMs(validatedArgs.value.timeout_ms, this.deps.maxWaitMs);
     const cancelOnTimeout = validatedArgs.value.cancel_on_timeout ?? false;
     const poll = (): Promise<Result<PersonaSendOutput, ToolError>> =>
-      this.pollUntilTerminal(taskId, maxWaitMs, cancelOnTimeout);
+      this.pollUntilTerminal(taskId, maxWaitMs, cancelOnTimeout, wakeOnLostWait);
     const awaitedResult = this.deps.waitScope ? await this.deps.waitScope(poll, context) : await poll();
     if (awaitedResult.isErr()) {
       this.deps.logger.error({ requestId, taskId: submitResult.value.taskId }, awaitedResult.error.message);
@@ -186,6 +204,15 @@ export class PersonaSendHandler {
 
     if (args.notify !== undefined && args.notify !== 'wake' && args.notify !== 'none') {
       return err(new ToolError("persona.send: notify must be 'wake' or 'none'"));
+    }
+
+    if (args.await_reply === true && args.notify === 'wake') {
+      return err(
+        new ToolError(
+          "persona.send: notify 'wake' with await_reply: true would deliver the result twice; " +
+            "use notify 'wake' only without await_reply",
+        ),
+      );
     }
 
     if (args.cancel_on_timeout !== undefined && typeof args.cancel_on_timeout !== 'boolean') {
@@ -232,6 +259,7 @@ export class PersonaSendHandler {
     taskId: string,
     maxWaitMs: number = PERSONA_SEND_DEFAULT_MAX_WAIT_MS,
     cancelOnTimeout = false,
+    wakeOnLostWait = false,
   ): Promise<Result<PersonaSendOutput, ToolError>> {
     const pollIntervalMs = this.deps.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
     const deadline = Date.now() + maxWaitMs;
@@ -239,6 +267,8 @@ export class PersonaSendHandler {
     while (true) {
       const rowResult = this.deps.taskRepo.findById(taskId);
       if (rowResult.isErr()) {
+        // The wait is lost: make sure the result still reaches the caller.
+        if (wakeOnLostWait) this.switchToWake(taskId);
         return err(new ToolError(`persona.send: failed to load task ${taskId}: ${rowResult.error.message}`));
       }
 
@@ -261,24 +291,18 @@ export class PersonaSendHandler {
     }
 
     if (cancelOnTimeout) {
-      return this.cancelAfterTimeout(taskId);
+      return this.cancelAfterTimeout(taskId, wakeOnLostWait);
     }
 
-    return this.timeoutResult(taskId);
+    return this.timeoutResult(taskId, wakeOnLostWait);
   }
 
   /**
    * An awaited call gave up without cancelling: switch the task to 'wake' so
    * the late result still reaches the delegating persona (ADR 0003).
    */
-  private timeoutResult(taskId: string): Result<PersonaSendOutput, ToolError> {
-    const switched = this.deps.taskRepo.setNotifyWake(taskId);
-    if (switched.isErr()) {
-      this.deps.logger.warn(
-        { taskId, err: switched.error.message },
-        'persona.send: failed to switch timed-out task to notify=wake',
-      );
-    }
+  private timeoutResult(taskId: string, wake: boolean): Result<PersonaSendOutput, ToolError> {
+    if (wake) this.switchToWake(taskId);
     return ok({
       task_id: taskId,
       state: 'timeout',
@@ -286,11 +310,21 @@ export class PersonaSendHandler {
     });
   }
 
-  private cancelAfterTimeout(taskId: string): Result<PersonaSendOutput, ToolError> {
+  private switchToWake(taskId: string): void {
+    const switched = this.deps.taskRepo.setNotifyWake(taskId);
+    if (switched.isErr()) {
+      this.deps.logger.warn(
+        { taskId, err: switched.error.message },
+        'persona.send: failed to switch task to notify=wake',
+      );
+    }
+  }
+
+  private cancelAfterTimeout(taskId: string, wake: boolean): Result<PersonaSendOutput, ToolError> {
     const reason = 'await_reply timed out';
     const cancelResult = this.deps.taskMapper.cancelTask(taskId, reason);
     if (cancelResult.isErr()) {
-      this.timeoutResult(taskId);
+      this.timeoutResult(taskId, wake);
       return ok({
         task_id: taskId,
         state: 'timeout',
@@ -317,7 +351,7 @@ export class PersonaSendHandler {
     if (TERMINAL_STATES.has(rowResult.value.state)) {
       return ok(this.toOutput(rowResult.value));
     }
-    return this.timeoutResult(taskId);
+    return this.timeoutResult(taskId, wake);
   }
 
   private toOutput(row: A2ATaskRow): PersonaSendOutput {

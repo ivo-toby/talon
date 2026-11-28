@@ -3841,7 +3841,9 @@ A task sent without `await_reply` does not need polling. When it reaches `comple
 - Finished tasks of one conversation are batched: the message goes out when the oldest finished task is `a2a.notifyBatchWindowSeconds` old (default 20, a fixed window, not sliding), so tasks finishing together cause one message and one run.
 - The message lists, per task, the ID, target persona, state and a result or error excerpt (800 characters per task, 4,000 per message), then tells the persona to call `persona_task_status` for the full result. It is not human input.
 - Delivery is durable and exactly-once: the message is enqueued and the tasks are marked notified in one database transaction, and owed notifications are derived from task state, so a restart loses none.
-- A task canceled by its own caller (`persona_task_cancel`, `talonctl a2a cancel`, `cancel_on_timeout`) does not wake that caller.
+- A task the delegating persona cancels itself (`persona_task_cancel`, `cancel_on_timeout`) does not wake it; a cancel by an operator (`talonctl a2a cancel`) does.
+- A delegated persona that delegates onward cannot use `notify: "wake"` (its run is not a foreground run in the source thread): it must `await_reply` or poll `persona_task_status`. `notify: "wake"` together with `await_reply` is rejected.
+- One message covers at most 20 tasks; the rest follow in the next one. Result text is shown on a single line (line breaks become ` ⏎ `), since it is untrusted model output. A restart during an awaited wait cannot be recovered: use `persona_task_status`.
 - For a voice conversation the message carries only task IDs and states, no excerpt.
 - A persona that delegates to itself or in a cycle can still create wake loops; `a2a.maxHops` bounds each delegation chain, not the wake loop.
 

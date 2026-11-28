@@ -981,7 +981,8 @@ export class TalondDaemon {
             data: { taskId, found: false, canceled: false },
           };
         }
-        const cancelResult = mapper.cancelTask(taskId, reason);
+        // An operator cancel is not the caller: the delegator must learn of it.
+        const cancelResult = mapper.cancelTask(taskId, reason, { wakeCaller: true });
         if (cancelResult.isErr()) {
           return { id: responseId, commandId: command.id, success: false, error: cancelResult.error.message };
         }

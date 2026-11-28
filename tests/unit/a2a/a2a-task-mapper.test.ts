@@ -7,6 +7,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { join } from 'node:path';
 import { ok, err } from 'neverthrow';
+import { DbError } from '../../../src/core/errors/index.js';
 import pino from 'pino';
 import { runMigrations } from '../../../src/core/database/migrations/runner.js';
 import { A2ATaskRepository } from '../../../src/core/database/repositories/a2a-task-repository.js';
@@ -485,7 +486,12 @@ describe('A2ATaskMapper', () => {
       mapper.cancelTask(explicit.taskId, 'user requested');
       expect(taskRepo.findById(explicit.taskId)._unsafeUnwrap()!.notify).toBe('none');
       mapper.cancelTask(ttl.taskId, 'by reaper', { wakeCaller: true });
-      expect(taskRepo.findOwedNotifications()._unsafeUnwrap().map((r) => r.id)).toEqual([ttl.taskId]);
+      expect(
+        taskRepo
+          .findOwedNotifications()
+          ._unsafeUnwrap()
+          .map((r) => r.id),
+      ).toEqual([ttl.taskId]);
     });
 
     it('submitTask defaults notify to none', () => {
@@ -560,11 +566,19 @@ describe('A2ATaskMapper', () => {
       const orphan = mk();
       queueRepo.purge(['pending']);
       mapper.reapStaleTasks(Date.now() + 61_000);
-      expect(taskRepo.findOwedNotifications()._unsafeUnwrap().map((r) => r.id)).toEqual([orphan.taskId]);
+      expect(
+        taskRepo
+          .findOwedNotifications()
+          ._unsafeUnwrap()
+          .map((r) => r.id),
+      ).toEqual([orphan.taskId]);
 
       const expired = mk();
       mapper.reapStaleTasks(Date.now() + 61 * 60_000);
-      const owed = taskRepo.findOwedNotifications()._unsafeUnwrap().map((r) => r.id);
+      const owed = taskRepo
+        .findOwedNotifications()
+        ._unsafeUnwrap()
+        .map((r) => r.id);
       expect(owed.sort()).toEqual([orphan.taskId, expired.taskId].sort());
       expect(taskRepo.findById(expired.taskId)._unsafeUnwrap()!.state).toBe('canceled');
     });
@@ -583,6 +597,148 @@ describe('A2ATaskMapper', () => {
       const task = submitOne();
       taskRepo.markCompleted(task.taskId, 'done');
       expect(mapper.reapStaleTasks(Date.now() + 10 * 60 * 60_000)._unsafeUnwrap()).toEqual([]);
+    });
+  });
+  // -------------------------------------------------------------------------
+  // Failure handling: repository errors become A2AErrors and roll back
+  // -------------------------------------------------------------------------
+
+  describe('repository failures', () => {
+    const input = () => ({
+      sourcePersona: 'assistant',
+      targetPersona: 'software-engineer',
+      sourceThreadId: threadId,
+      content: 'x',
+      hopCount: 0,
+    });
+    const dbErr = (m = 'boom') => err(new DbError(m));
+    const taskCount = (): number =>
+      (db.prepare('SELECT COUNT(*) AS c FROM a2a_tasks').get() as { c: number }).c;
+
+    it('reports persona and thread lookup failures', () => {
+      vi.spyOn(personaRepo, 'findByName').mockReturnValueOnce(dbErr() as never);
+      expect(mapper.submitTask(input())._unsafeUnwrapErr().message).toMatch(
+        /Failed to look up persona/,
+      );
+      vi.spyOn(threadRepo, 'findById').mockReturnValueOnce(dbErr() as never);
+      expect(mapper.submitTask(input())._unsafeUnwrapErr().message).toMatch(
+        /Failed to look up thread/,
+      );
+    });
+
+    it('rejects a target that is in the registry but missing from the database', () => {
+      vi.spyOn(personaRepo, 'findByName').mockReturnValueOnce(ok(null) as never);
+      expect(mapper.submitTask(input())._unsafeUnwrapErr().message).toMatch(
+        /Unknown target persona/,
+      );
+    });
+
+    it('persists nothing when the backlog check, insert or enqueue fails', () => {
+      vi.spyOn(taskRepo, 'countQueuedByTarget').mockReturnValueOnce(dbErr() as never);
+      expect(mapper.submitTask(input())._unsafeUnwrapErr().message).toMatch(
+        /Failed to check backlog/,
+      );
+
+      vi.spyOn(taskRepo, 'insertSubmitted').mockReturnValueOnce(dbErr() as never);
+      expect(mapper.submitTask(input())._unsafeUnwrapErr().message).toMatch(
+        /Failed to persist A2A task/,
+      );
+
+      vi.spyOn(queueRepo, 'enqueue').mockReturnValueOnce(dbErr() as never);
+      expect(mapper.submitTask(input())._unsafeUnwrapErr().message).toMatch(
+        /Failed to enqueue A2A task/,
+      );
+      expect(taskCount()).toBe(0); // the insert was rolled back with the failed enqueue
+    });
+
+    it('rejects when the backlog for the target is full', () => {
+      const small = new A2ATaskMapper(
+        taskRepo,
+        queueRepo,
+        threadRepo,
+        personaRepo,
+        registry,
+        createTestLogger(),
+        {
+          ...defaultA2ALimits(),
+          maxQueuedPerTarget: 0,
+        },
+      );
+      expect(small.submitTask(input())._unsafeUnwrapErr().message).toMatch(/Max queued/);
+    });
+
+    it('fails the submission when the delegation chain cannot be inspected', () => {
+      vi.spyOn(taskRepo, 'findById').mockReturnValueOnce(dbErr() as never);
+      const result = mapper.submitTask({ ...input(), parentTaskId: 'parent' });
+      expect(result._unsafeUnwrapErr().message).toMatch(/Failed to inspect delegation chain/);
+    });
+
+    it('still submits when attaching the queue item fails (the task will run)', () => {
+      vi.spyOn(taskRepo, 'attachQueueItem').mockReturnValueOnce(dbErr() as never);
+      expect(mapper.submitTask(input()).isOk()).toBe(true);
+    });
+
+    it('cancelTask reports lookup and update failures', () => {
+      const t = mapper.submitTask(input())._unsafeUnwrap();
+      vi.spyOn(taskRepo, 'findById').mockReturnValueOnce(dbErr() as never);
+      expect(mapper.cancelTask(t.taskId, 'r')._unsafeUnwrapErr().message).toMatch(
+        /Failed to load task/,
+      );
+      vi.spyOn(taskRepo, 'markCanceled').mockReturnValueOnce(dbErr() as never);
+      expect(mapper.cancelTask(t.taskId, 'r')._unsafeUnwrapErr().message).toMatch(
+        /Failed to cancel task/,
+      );
+      expect(taskRepo.findById(t.taskId)._unsafeUnwrap()!.state).toBe('submitted');
+    });
+
+    it('cancelTask still cancels when the queue item cancel fails or the abort hook throws', () => {
+      const t = mapper.submitTask(input())._unsafeUnwrap();
+      vi.spyOn(queueRepo, 'cancelPending').mockReturnValueOnce(dbErr() as never);
+      mapper.setAbortHook(() => {
+        throw new Error('hook');
+      });
+      expect(mapper.cancelTask(t.taskId, 'r')._unsafeUnwrap()).toBe(true);
+      expect(taskRepo.findById(t.taskId)._unsafeUnwrap()!.state).toBe('canceled');
+    });
+
+    it('reapStaleTasks surfaces a listing failure and logs per-task failures without aborting', () => {
+      vi.spyOn(taskRepo, 'findNonTerminalWithQueueStatus').mockReturnValueOnce(dbErr() as never);
+      expect(mapper.reapStaleTasks()._unsafeUnwrapErr().message).toMatch(
+        /Failed to list non-terminal tasks/,
+      );
+
+      const orphan = mapper.submitTask(input())._unsafeUnwrap();
+      queueRepo.purge(['pending']);
+      vi.spyOn(taskRepo, 'markFailed').mockReturnValueOnce(dbErr() as never);
+      expect(mapper.reapStaleTasks(Date.now() + 61_000)._unsafeUnwrap()).toEqual([]);
+      expect(taskRepo.findById(orphan.taskId)._unsafeUnwrap()!.state).toBe('submitted');
+
+      const old = mapper.submitTask(input())._unsafeUnwrap();
+      vi.spyOn(taskRepo, 'markCanceled').mockReturnValueOnce(dbErr() as never);
+      expect(mapper.reapStaleTasks(Date.now() + 61 * 60_000)._unsafeUnwrap()).not.toContain(
+        old.taskId,
+      );
+    });
+
+    it('getTaskStatus exposes result text, error details and tolerates a malformed result', () => {
+      const done = mapper.submitTask(input())._unsafeUnwrap();
+      taskRepo.markCompleted(done.taskId, 'the answer');
+      const doneStatus = mapper.getTaskStatus(done.taskId)._unsafeUnwrap()!;
+      expect(doneStatus.result).toEqual({ text: 'the answer' });
+      expect(doneStatus.completedAt).toBeDefined();
+
+      db.prepare("UPDATE a2a_tasks SET result_payload = '{not json' WHERE id = ?").run(done.taskId);
+      expect(mapper.getTaskStatus(done.taskId)._unsafeUnwrap()!.result).toBeUndefined();
+
+      const bad = mapper.submitTask(input())._unsafeUnwrap();
+      taskRepo.markFailed(bad.taskId, 'EXECUTION_ERROR', 'it broke');
+      expect(mapper.getTaskStatus(bad.taskId)._unsafeUnwrap()!.error).toEqual({
+        code: 'EXECUTION_ERROR',
+        message: 'it broke',
+      });
+
+      vi.spyOn(taskRepo, 'findById').mockReturnValueOnce(dbErr() as never);
+      expect(mapper.getTaskStatus('x')._unsafeUnwrapErr().message).toMatch(/Failed to load task/);
     });
   });
 });

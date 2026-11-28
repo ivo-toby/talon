@@ -79,8 +79,7 @@ export class A2ATaskRepository extends BaseRepository {
     // Owed completion notifications (ADR 0003): terminal, wake, not yet notified.
     this.findOwedNotificationsStmt = db.prepare(`
       SELECT * FROM a2a_tasks
-      WHERE state IN ('completed', 'failed', 'canceled')
-        AND notify = 'wake' AND notified_at IS NULL
+      WHERE notify = 'wake' AND notified_at IS NULL AND completed_at IS NOT NULL
       ORDER BY completed_at ASC, rowid ASC
     `);
 
@@ -283,13 +282,15 @@ export class A2ATaskRepository extends BaseRepository {
     reason: string,
     options?: { suppressNotify?: boolean },
   ): Result<boolean, DbError> {
-    return this.guarded(`mark A2A task ${taskId} as canceled`, () =>
-      this.markCanceledStmt.run({
-        id: taskId,
-        reason,
-        now: this.now(),
-        suppress_notify: options?.suppressNotify ? 1 : 0,
-      }).changes > 0,
+    return this.guarded(
+      `mark A2A task ${taskId} as canceled`,
+      () =>
+        this.markCanceledStmt.run({
+          id: taskId,
+          reason,
+          now: this.now(),
+          suppress_notify: options?.suppressNotify ? 1 : 0,
+        }).changes > 0,
     );
   }
 
@@ -316,8 +317,9 @@ export class A2ATaskRepository extends BaseRepository {
    * already 'wake', or terminal and already notified.
    */
   setNotifyWake(taskId: string): Result<boolean, DbError> {
-    return this.guarded(`switch A2A task ${taskId} to wake`, () =>
-      this.setNotifyWakeStmt.run({ id: taskId }).changes > 0,
+    return this.guarded(
+      `switch A2A task ${taskId} to wake`,
+      () => this.setNotifyWakeStmt.run({ id: taskId }).changes > 0,
     );
   }
 
@@ -326,8 +328,9 @@ export class A2ATaskRepository extends BaseRepository {
    * notified, is not terminal or is not 'wake'. Safe inside a transaction.
    */
   markNotified(taskId: string): Result<boolean, DbError> {
-    return this.guarded(`mark A2A task ${taskId} as notified`, () =>
-      this.markNotifiedStmt.run({ id: taskId, now: this.now() }).changes > 0,
+    return this.guarded(
+      `mark A2A task ${taskId} as notified`,
+      () => this.markNotifiedStmt.run({ id: taskId, now: this.now() }).changes > 0,
     );
   }
 

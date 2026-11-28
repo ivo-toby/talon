@@ -15,7 +15,11 @@ ALTER TABLE a2a_tasks ADD COLUMN notify TEXT NOT NULL DEFAULT 'none'
 
 ALTER TABLE a2a_tasks ADD COLUMN notified_at INTEGER;
 
-CREATE INDEX idx_a2a_tasks_notify_owed ON a2a_tasks(thread_id, completed_at)
-  WHERE state IN ('completed', 'failed', 'canceled')
-    AND notify = 'wake'
-    AND notified_at IS NULL;
+-- completed_at IS NOT NULL stands for "terminal" (every terminal transition sets
+-- it). SQLite uses a partial index only when the query repeats its predicate, and
+-- an IN (...) over state makes the planner pick idx_a2a_tasks_state instead, so
+-- the owed query uses exactly these three terms.
+CREATE INDEX idx_a2a_tasks_notify_owed ON a2a_tasks(completed_at)
+  WHERE notify = 'wake'
+    AND notified_at IS NULL
+    AND completed_at IS NOT NULL;

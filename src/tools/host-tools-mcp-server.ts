@@ -413,19 +413,19 @@ const TOOLS = [
   {
     name: 'persona_send',
     description:
-      'Delegate a self-contained task to another persona, which has its own system prompt, skills and tools, '
-      + 'keeping that work out of your own context. The target sees ONLY `message`: no conversation history, summary, '
-      + 'images or findings from this thread, so write a complete brief (goal, relevant facts and identifiers, constraints, '
-      + 'expected output format). Use persona_list to pick a target (only the personas listed there are allowed). Tasks sent to a busy persona are queued, not rejected. '
-      + 'Set await_reply to wait for the result, which comes back as text in `result`; the wait (including any queue time) is '
-      + 'capped by timeout_ms (max 1800000 ms, default 300000). '
-      + 'If the state is "timeout", the delegated task keeps running: fetch it later with persona_task_status, '
-      + 'unless cancel_on_timeout was set, in which case it is canceled and the state is "canceled"; '
-      + 'stop it yourself with persona_task_cancel. '
-      + 'Without await_reply you do not need to poll: when the task finishes (completed, failed or canceled by the system) '
-      + 'you are woken once with a message in this thread, batched with other tasks that finished around the same time, '
-      + 'and can fetch the full result with persona_task_status. Set notify to "none" to opt out. '
-      + 'A "failed" state is final (no automatic retry); you decide whether to resend.',
+      'Delegate a self-contained task to another persona, which has its own system prompt, skills and tools, ' +
+      'keeping that work out of your own context. The target sees ONLY `message`: no conversation history, summary, ' +
+      'images or findings from this thread, so write a complete brief (goal, relevant facts and identifiers, constraints, ' +
+      'expected output format). Use persona_list to pick a target (only the personas listed there are allowed). Tasks sent to a busy persona are queued, not rejected. ' +
+      'Set await_reply to wait for the result, which comes back as text in `result`; the wait (including any queue time) is ' +
+      'capped by timeout_ms (max 1800000 ms, default 300000). ' +
+      'If the state is "timeout", the delegated task keeps running: fetch it later with persona_task_status, ' +
+      'unless cancel_on_timeout was set, in which case it is canceled and the state is "canceled"; ' +
+      'stop it yourself with persona_task_cancel. ' +
+      'Without await_reply you do not need to poll: when the task finishes (completed, failed or canceled by the system) ' +
+      'you are woken once with a message in this thread, batched with other tasks that finished around the same time, ' +
+      'and can fetch the full result with persona_task_status. Set notify to "none" to opt out. ' +
+      'A "failed" state is final (no automatic retry); you decide whether to resend.',
     inputSchema: {
       type: 'object' as const,
       properties: {

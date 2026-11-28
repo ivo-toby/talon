@@ -121,7 +121,6 @@ function makeMockContext(overrides: Partial<DaemonContext> = {}): DaemonContext 
     dataDir: '/tmp/test-data',
     repos: {
       queue: {} as any,
-      a2aTask: {} as any,
       thread: {} as any,
       channel: {} as any,
       persona: {} as any,
@@ -1065,7 +1064,7 @@ describe('TalondDaemon', () => {
 
       const response = await handle({ taskId: 't1', reason: 'because' });
 
-      expect(a2aTaskMapper.cancelTask).toHaveBeenCalledWith('t1', 'because');
+      expect(a2aTaskMapper.cancelTask).toHaveBeenCalledWith('t1', 'because', { wakeCaller: true });
       expect(response.success).toBe(true);
       expect(response.data).toEqual({ taskId: 't1', found: true, canceled: true, state: 'canceled' });
     });
@@ -1080,8 +1079,15 @@ describe('TalondDaemon', () => {
 
       const response = await handle({ taskId: 't1' });
 
-      expect(a2aTaskMapper.cancelTask).toHaveBeenCalledWith('t1', 'canceled via talonctl');
-      expect(response.data).toEqual({ taskId: 't1', found: true, canceled: false, state: 'completed' });
+      expect(a2aTaskMapper.cancelTask).toHaveBeenCalledWith('t1', 'canceled via talonctl', {
+        wakeCaller: true,
+      });
+      expect(response.data).toEqual({
+        taskId: 't1',
+        found: true,
+        canceled: false,
+        state: 'completed',
+      });
     });
 
     it('reports an unknown task as found=false without canceling', async () => {

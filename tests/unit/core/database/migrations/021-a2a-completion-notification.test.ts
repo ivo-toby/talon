@@ -64,6 +64,21 @@ describe('migration 021: a2a completion notification', () => {
       .prepare("SELECT sql FROM sqlite_master WHERE name = 'idx_a2a_tasks_notify_owed'")
       .get() as { sql: string };
     expect(idx.sql).toMatch(/notify = 'wake'/);
+    expect(idx.sql).toMatch(/completed_at IS NOT NULL/);
     expect(idx.sql).toMatch(/notified_at IS NULL/);
+  });
+
+  it('the owed-rows query is served by the partial index', () => {
+    db = new Database(':memory:');
+    runMigrations(db, realDir);
+    const plan = db
+      .prepare(
+        `EXPLAIN QUERY PLAN SELECT * FROM a2a_tasks
+         WHERE notify = 'wake' AND notified_at IS NULL AND completed_at IS NOT NULL
+         ORDER BY completed_at ASC, rowid ASC`,
+      )
+      .all() as Array<{ detail: string }>;
+    console.info(plan.map((p) => p.detail).join(' | '));
+    expect(plan.some((p) => p.detail.includes('idx_a2a_tasks_notify_owed'))).toBe(true);
   });
 });
