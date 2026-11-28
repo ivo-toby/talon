@@ -75,6 +75,10 @@ integration, or automation is safe without your configuration and review.
 
 ## Features
 
+### Home Assistant add-on
+
+Home Assistant users can install Talon using the [Home Assistant add-on](talon-haos/README.md). It provides a managed daemon, an ingress-protected terminal and private persistent workspaces. See the add-on documentation for storage, access restrictions and upgrade considerations. The add-on image is versioned separately from the daemon.
+
 ### Channels
 
 - **Telegram** — Long polling with MarkdownV2 formatting
