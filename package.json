@@ -44,7 +44,7 @@
     "@opentelemetry/sdk-trace-node": "^2.6.0",
     "@opentelemetry/semantic-conventions": "^1.40.0",
     "@whiskeysockets/baileys": "^7.0.0-rc14",
-    "ai": "^6.0.116",
+    "ai": "^6.0.339",
     "better-sqlite3": "^12.11.1",
     "commander": "^12.1.0",
     "cron-parser": "^4.9.0",
