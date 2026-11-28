@@ -231,6 +231,7 @@ export class QueueManager {
    * @param payload     - Type-specific data for the handler.
    * @param messageId   - Optional message that triggered this item.
    * @param commit      - Synchronous companion write, committed with the item.
+   * @param options     - `logSuccess: false` suppresses the success log (caller logs it).
    * @returns Ok({ item, value }) after commit, or a QueueError (no log, rolled back).
    */
   enqueueWithCommit<T>(
@@ -239,6 +240,7 @@ export class QueueManager {
     payload: Record<string, unknown>,
     messageId: string | undefined,
     commit: (item: QueueItem) => Result<T, Error>,
+    options?: { logSuccess?: boolean },
   ): Result<{ item: QueueItem; value: T }, QueueError> {
     // Nested-invocation fence. Inside an enclosing transaction (including a
     // raw queueRepo.transaction() savepoint) this method's own transaction
@@ -308,10 +310,11 @@ export class QueueManager {
     }
 
     // Success log only after the transaction committed; rollback never logs.
-    this.logger.info(
-      { itemId: committed.item.id, threadId, type },
-      'queue item enqueued',
-    );
+    // A caller that must classify the thread for privacy (voice-safe logging)
+    // passes `logSuccess: false` and logs the committed item itself.
+    if (options?.logSuccess !== false) {
+      this.logger.info({ itemId: committed.item.id, threadId, type }, 'queue item enqueued');
+    }
     return ok(committed);
   }
 

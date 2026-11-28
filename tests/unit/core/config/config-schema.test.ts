@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  A2AConfigSchema,
   TalondConfigSchema,
   LangfuseConfigSchema,
   StorageConfigSchema,
@@ -1626,5 +1627,21 @@ describe('TalondConfigSchema', () => {
         }),
       ).toThrow(/reasoningEffort is not supported by backgroundProvider/i);
     });
+  });
+});
+
+describe('A2AConfigSchema.notifyBatchWindowSeconds', () => {
+  it('defaults to 20 seconds', () => {
+    expect(A2AConfigSchema.parse({}).notifyBatchWindowSeconds).toBe(20);
+  });
+
+  it('accepts 0 and 600 and rejects out-of-range or non-integer values', () => {
+    expect(A2AConfigSchema.parse({ notifyBatchWindowSeconds: 0 }).notifyBatchWindowSeconds).toBe(0);
+    expect(A2AConfigSchema.parse({ notifyBatchWindowSeconds: 600 }).notifyBatchWindowSeconds).toBe(
+      600,
+    );
+    expect(() => A2AConfigSchema.parse({ notifyBatchWindowSeconds: -1 })).toThrow();
+    expect(() => A2AConfigSchema.parse({ notifyBatchWindowSeconds: 601 })).toThrow();
+    expect(() => A2AConfigSchema.parse({ notifyBatchWindowSeconds: 1.5 })).toThrow();
   });
 });

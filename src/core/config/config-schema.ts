@@ -25,6 +25,7 @@ import {
   DEFAULT_A2A_MAX_ATTEMPTS,
   DEFAULT_A2A_MAX_QUEUED_PER_TARGET,
   DEFAULT_A2A_TASK_TTL_MINUTES,
+  DEFAULT_A2A_NOTIFY_BATCH_WINDOW_SECONDS,
 } from '../../a2a/a2a-types.js';
 
 // ---------------------------------------------------------------------------
@@ -481,6 +482,17 @@ export const A2AConfigSchema = z.object({
   maxQueuedPerTarget: z.number().int().min(0).max(1000).default(DEFAULT_A2A_MAX_QUEUED_PER_TARGET),
   /** Non-terminal tasks older than this many minutes are canceled by the reaper. */
   taskTtlMinutes: z.number().int().min(1).max(1440).default(DEFAULT_A2A_TASK_TTL_MINUTES),
+  /**
+   * Fixed batching window (seconds) for completion notifications: a source
+   * thread is woken once its oldest unnotified finished task is this old.
+   * 0 delivers on the next notifier tick. Fixed until restart.
+   */
+  notifyBatchWindowSeconds: z
+    .number()
+    .int()
+    .min(0)
+    .max(600)
+    .default(DEFAULT_A2A_NOTIFY_BATCH_WINDOW_SECONDS),
 });
 
 // ---------------------------------------------------------------------------

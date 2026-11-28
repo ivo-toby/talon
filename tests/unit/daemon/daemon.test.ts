@@ -98,6 +98,7 @@ function makeMockContext(overrides: Partial<DaemonContext> = {}): DaemonContext 
       ipc: { pollIntervalMs: 500, daemonSocketDir: 'data/ipc/daemon' },
       queue: { maxAttempts: 3, backoffBaseMs: 1000, backoffMaxMs: 60000, concurrencyLimit: 2 },
       scheduler: { tickIntervalMs: 5000 },
+      a2a: { notifyBatchWindowSeconds: 20 },
       sandbox: {
         runtime: 'docker',
         image: 'talon-sandbox:latest',
@@ -1063,7 +1064,7 @@ describe('TalondDaemon', () => {
 
       const response = await handle({ taskId: 't1', reason: 'because' });
 
-      expect(a2aTaskMapper.cancelTask).toHaveBeenCalledWith('t1', 'because');
+      expect(a2aTaskMapper.cancelTask).toHaveBeenCalledWith('t1', 'because', { wakeCaller: true });
       expect(response.success).toBe(true);
       expect(response.data).toEqual({ taskId: 't1', found: true, canceled: true, state: 'canceled' });
     });
@@ -1078,8 +1079,15 @@ describe('TalondDaemon', () => {
 
       const response = await handle({ taskId: 't1' });
 
-      expect(a2aTaskMapper.cancelTask).toHaveBeenCalledWith('t1', 'canceled via talonctl');
-      expect(response.data).toEqual({ taskId: 't1', found: true, canceled: false, state: 'completed' });
+      expect(a2aTaskMapper.cancelTask).toHaveBeenCalledWith('t1', 'canceled via talonctl', {
+        wakeCaller: true,
+      });
+      expect(response.data).toEqual({
+        taskId: 't1',
+        found: true,
+        canceled: false,
+        state: 'completed',
+      });
     });
 
     it('reports an unknown task as found=false without canceling', async () => {

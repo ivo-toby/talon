@@ -3,6 +3,8 @@ import Database from 'better-sqlite3';
 import { A2ATaskRepository } from '../../../../../src/core/database/repositories/a2a-task-repository.js';
 import { ThreadRepository } from '../../../../../src/core/database/repositories/thread-repository.js';
 import { ChannelRepository } from '../../../../../src/core/database/repositories/channel-repository.js';
+import { PersonaRepository } from '../../../../../src/core/database/repositories/persona-repository.js';
+import { RunRepository } from '../../../../../src/core/database/repositories/run-repository.js';
 import { createTestDb, uuid } from './helpers.js';
 
 describe('A2ATaskRepository state guards and admission', () => {
@@ -181,6 +183,244 @@ describe('A2ATaskRepository state guards and admission', () => {
       const rows = repo.findNonTerminalWithQueueStatus()._unsafeUnwrap();
       expect(rows.map((r) => r.id)).toEqual([live]);
       expect(rows[0]!.queue_status).toBeNull();
+    });
+  });
+  describe('completion notification (ADR 0003)', () => {
+    const insertWith = (notify?: 'wake' | 'none'): string => {
+      const id = uuid();
+      repo
+        .insertSubmitted({
+          id,
+          source_persona: 'src',
+          target_persona: 'worker',
+          thread_id: threadId,
+          request_payload: '{}',
+          hop_count: 0,
+          parent_task_id: null,
+          submitted_at: Date.now(),
+          ...(notify ? { notify } : {}),
+        })
+        ._unsafeUnwrap();
+      return id;
+    };
+    const row = (id: string) => repo.findById(id)._unsafeUnwrap()!;
+
+    it('persists notify at create and defaults to none', () => {
+      expect(row(insertWith()).notify).toBe('none');
+      expect(row(insertWith('wake')).notify).toBe('wake');
+      expect(row(insertWith('wake')).notified_at).toBeNull();
+    });
+
+    it('findOwedNotifications returns only terminal wake tasks not yet notified', () => {
+      const completed = insertWith('wake');
+      const failed = insertWith('wake');
+      const canceled = insertWith('wake');
+      const running = insertWith('wake');
+      const quiet = insertWith('none');
+      repo.markCompleted(completed, 'ok');
+      repo.markFailed(failed, 'X', 'boom');
+      repo.markCanceled(canceled, 'ttl expired');
+      repo.markWorking(running, null as unknown as string);
+      repo.markCompleted(quiet, 'ok');
+      const owed = repo
+        .findOwedNotifications()
+        ._unsafeUnwrap()
+        .map((r) => r.id);
+      expect(owed.sort()).toEqual([completed, failed, canceled].sort());
+    });
+
+    it('markNotified sets notified_at only from NULL and removes the task from owed', () => {
+      const id = insertWith('wake');
+      expect(repo.markNotified(id)._unsafeUnwrap()).toBe(false); // not terminal yet
+      repo.markCompleted(id, 'ok');
+      expect(repo.markNotified(id)._unsafeUnwrap()).toBe(true);
+      const first = row(id).notified_at;
+      expect(first).not.toBeNull();
+      expect(repo.markNotified(id)._unsafeUnwrap()).toBe(false);
+      expect(row(id).notified_at).toBe(first);
+      expect(repo.findOwedNotifications()._unsafeUnwrap()).toEqual([]);
+    });
+
+    it('markNotified ignores none tasks and unknown ids', () => {
+      const id = insertWith('none');
+      repo.markCompleted(id, 'ok');
+      expect(repo.markNotified(id)._unsafeUnwrap()).toBe(false);
+      expect(repo.markNotified('missing')._unsafeUnwrap()).toBe(false);
+    });
+
+    it('markNotified participates in a caller transaction and rolls back with it', () => {
+      const id = insertWith('wake');
+      repo.markCompleted(id, 'ok');
+      expect(() =>
+        repo.transaction(() => {
+          repo.markNotified(id);
+          throw new Error('abort');
+        }),
+      ).toThrow('abort');
+      expect(row(id).notified_at).toBeNull();
+      expect(
+        repo
+          .findOwedNotifications()
+          ._unsafeUnwrap()
+          .map((r) => r.id),
+      ).toEqual([id]);
+    });
+
+    it('setNotifyWake switches a non-terminal or unnotified terminal none task', () => {
+      const running = insertWith('none');
+      expect(repo.setNotifyWake(running)._unsafeUnwrap()).toBe(true);
+      expect(row(running).notify).toBe('wake');
+      expect(repo.setNotifyWake(running)._unsafeUnwrap()).toBe(false); // already wake
+
+      const late = insertWith('none');
+      repo.markCompleted(late, 'ok');
+      expect(repo.setNotifyWake(late)._unsafeUnwrap()).toBe(true);
+      expect(
+        repo
+          .findOwedNotifications()
+          ._unsafeUnwrap()
+          .map((r) => r.id),
+      ).toContain(late);
+      expect(repo.setNotifyWake('missing')._unsafeUnwrap()).toBe(false);
+    });
+
+    it('setNotifyWake never touches a terminal task that was already notified', () => {
+      const id = insertWith('wake');
+      repo.markCompleted(id, 'ok');
+      repo.markNotified(id);
+      db.prepare("UPDATE a2a_tasks SET notify = 'none' WHERE id = ?").run(id);
+      expect(repo.setNotifyWake(id)._unsafeUnwrap()).toBe(false);
+      expect(row(id).notify).toBe('none');
+    });
+
+    it('markCanceled with suppressNotify flips the task to none', () => {
+      const a = insertWith('wake');
+      const b = insertWith('wake');
+      repo.markCanceled(a, 'by caller', { suppressNotify: true });
+      repo.markCanceled(b, 'ttl expired');
+      expect(row(a).notify).toBe('none');
+      expect(row(b).notify).toBe('wake');
+      expect(
+        repo
+          .findOwedNotifications()
+          ._unsafeUnwrap()
+          .map((r) => r.id),
+      ).toEqual([b]);
+    });
+  });
+  describe('queries and error mapping', () => {
+    it('findAll filters by state, target, both, and honours the limit', () => {
+      const a = insert('alpha', 1000);
+      const b = insert('beta', 2000);
+      insert('alpha', 3000);
+      repo.markCompleted(a, 'x');
+      const ids = (rows: Array<{ id: string }>): string[] => rows.map((r) => r.id);
+      expect(repo.findAll()._unsafeUnwrap()).toHaveLength(3);
+      expect(repo.findAll({ limit: 2 })._unsafeUnwrap()).toHaveLength(2);
+      expect(ids(repo.findAll({ state: 'completed' })._unsafeUnwrap())).toEqual([a]);
+      expect(repo.findAll({ targetPersona: 'alpha' })._unsafeUnwrap()).toHaveLength(2);
+      expect(
+        ids(repo.findAll({ state: 'submitted', targetPersona: 'beta' })._unsafeUnwrap()),
+      ).toEqual([b]);
+    });
+
+    it('attachQueueItem links a live task and reports a terminal or unknown task as an error', () => {
+      const id = insert();
+      const queueId = uuid();
+      db.prepare(
+        `INSERT INTO queue_items (id, thread_id, type, status, payload, attempts, max_attempts, created_at, updated_at)
+         VALUES (?, ?, 'collaboration', 'pending', '{}', 0, 1, 1, 1)`,
+      ).run(queueId, threadId);
+      expect(repo.attachQueueItem(id, queueId).isOk()).toBe(true);
+      expect(repo.findById(id)._unsafeUnwrap()!.queue_item_id).toBe(queueId);
+      expect(repo.attachQueueItem('missing', queueId).isErr()).toBe(true);
+    });
+
+    it('tryAdmit reports unknown, working and input-required tasks', () => {
+      expect(repo.tryAdmit('missing', 1)._unsafeUnwrap()).toBe('missing');
+      const id = insert();
+      db.prepare("UPDATE a2a_tasks SET state = 'input-required' WHERE id = ?").run(id);
+      expect(repo.tryAdmit(id, 1)._unsafeUnwrap()).toBe('admitted');
+    });
+
+    it('isRunBoundToTask is true only for a run recorded on a task', () => {
+      const id = insert();
+      const runId = uuid();
+      expect(repo.isRunBoundToTask(runId)._unsafeUnwrap()).toBe(false);
+      const personaId = uuid();
+      new PersonaRepository(db).insert({
+        id: personaId,
+        name: `p-${personaId}`,
+        model: 'm',
+        system_prompt_file: null,
+        skills: '[]',
+        capabilities: '{}',
+        mounts: '[]',
+        max_concurrent: null,
+      });
+      new RunRepository(db)
+        .insert({
+          id: runId,
+          thread_id: threadId,
+          persona_id: personaId,
+          provider_name: 'claude-code',
+          sandbox_id: null,
+          session_id: null,
+          status: 'running',
+          parent_run_id: null,
+          queue_item_id: null,
+          input_tokens: 0,
+          output_tokens: 0,
+          cache_read_tokens: 0,
+          cache_write_tokens: 0,
+          cost_usd: 0,
+          error: null,
+          started_at: 1,
+          ended_at: null,
+        })
+        ._unsafeUnwrap();
+      repo.markWorking(id, runId);
+      expect(repo.isRunBoundToTask(runId)._unsafeUnwrap()).toBe(true);
+    });
+
+    it('findById returns null for an unknown id', () => {
+      expect(repo.findById('nope')._unsafeUnwrap()).toBeNull();
+    });
+
+    it('returns a DbError instead of throwing when the database is unavailable', () => {
+      const id = insert();
+      db.close();
+      const results = [
+        repo.insertSubmitted({
+          id: uuid(),
+          source_persona: 's',
+          target_persona: 't',
+          thread_id: threadId,
+          request_payload: '{}',
+          hop_count: 0,
+          parent_task_id: null,
+          submitted_at: 1,
+        }),
+        repo.attachQueueItem(id, 'q'),
+        repo.markWorking(id, 'r'),
+        repo.markCompleted(id, 'x'),
+        repo.markFailed(id, 'C', 'm'),
+        repo.markCanceled(id, 'why'),
+        repo.findOwedNotifications(),
+        repo.setNotifyWake(id),
+        repo.markNotified(id),
+        repo.isRunBoundToTask('r'),
+        repo.tryAdmit(id, 1),
+        repo.findNonTerminalWithQueueStatus(),
+        repo.countQueuedByTarget('worker'),
+        repo.countActiveByTarget('worker'),
+        repo.findById(id),
+        repo.findAll(),
+      ];
+      for (const r of results) {
+        expect(r.isErr()).toBe(true);
+        expect(r._unsafeUnwrapErr().message).toMatch(/Failed to|not open|closed/i);
+      }
     });
   });
 });

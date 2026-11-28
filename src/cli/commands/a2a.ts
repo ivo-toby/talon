@@ -282,7 +282,8 @@ export function cancelA2ATask(options: CancelA2ATaskOptions): CancelA2ATaskResul
   if (before.isErr()) throw new Error(before.error.message);
   if (before.value === null) return { taskId, found: false, canceled: false };
 
-  const result = mapper.cancelTask(taskId, reason);
+  // An operator cancel is not the caller: the delegator must learn of it.
+  const result = mapper.cancelTask(taskId, reason, { wakeCaller: true });
   if (result.isErr()) throw new Error(result.error.message);
 
   const after = mapper.getTaskStatus(taskId);

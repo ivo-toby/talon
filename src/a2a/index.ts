@@ -8,3 +8,4 @@ export * from './a2a-types.js';
 export { buildAgentCard, buildAgentCardRegistry } from './persona-agent-card.js';
 export { A2ATaskMapper } from './a2a-task-mapper.js';
 export { A2AServer } from './a2a-server.js';
+export { A2ACompletionNotifier } from './a2a-completion-notifier.js';

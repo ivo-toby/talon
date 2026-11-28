@@ -58,7 +58,13 @@ function seedThread(db: Database.Database, channelId: string, externalId = 'thre
 
 function insertTask(
   db: Database.Database,
-  overrides: { source?: string; target?: string; state?: string; threadId?: string } = {},
+  overrides: {
+    source?: string;
+    target?: string;
+    state?: string;
+    threadId?: string;
+    notify?: 'wake' | 'none';
+  } = {},
 ): string {
   const channelId = seedChannel(db, `ch-${uuid()}`);
   const threadId = overrides.threadId ?? seedThread(db, channelId, uuid());
@@ -81,6 +87,8 @@ function insertTask(
     Date.now(),
     Date.now(),
   );
+  if (overrides.notify)
+    db.prepare('UPDATE a2a_tasks SET notify = ? WHERE id = ?').run(overrides.notify, taskId);
   return taskId;
 }
 
@@ -252,6 +260,20 @@ describe('cancelA2ATask()', () => {
     expect(queue.status).not.toBe('pending');
   });
 
+  it('an operator cancel keeps notify=wake so the delegator learns of it', () => {
+    const taskId = insertTask(db, { state: 'working', notify: 'wake' });
+    cancelA2ATask({ db, taskId });
+    const row = new A2ATaskRepository(db).findById(taskId)._unsafeUnwrap()!;
+    expect(row.state).toBe('canceled');
+    expect(row.notify).toBe('wake');
+    expect(
+      new A2ATaskRepository(db)
+        .findOwedNotifications()
+        ._unsafeUnwrap()
+        .map((r) => r.id),
+    ).toEqual([taskId]);
+  });
+
   it('uses a default reason when none is given', () => {
     const taskId = insertTask(db, { state: 'working' });
     cancelA2ATask({ db, taskId });
@@ -388,6 +410,17 @@ describe('cancelA2ATaskViaDaemonOrDb()', () => {
     };
     expect(row).toEqual({ state: 'canceled', error_message: 'cli' });
     expect(await fs.readdir(path.join(tmpDir, 'input'))).toEqual([]);
+  });
+
+  it('the DB fallback keeps the wake so the delegator is notified', async () => {
+    const taskId = insertTask(db, { state: 'working', notify: 'wake' });
+    await cancelA2ATaskViaDaemonOrDb({ taskId, ipcDir: tmpDir, timeoutMs: 150, openDatabase });
+    expect(
+      new A2ATaskRepository(db)
+        .findOwedNotifications()
+        ._unsafeUnwrap()
+        .map((r) => r.id),
+    ).toEqual([taskId]);
   });
 
   it('fallback reports not found for an unknown task', async () => {

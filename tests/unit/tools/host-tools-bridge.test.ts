@@ -1138,7 +1138,15 @@ describe('HostToolsBridge', () => {
           ...mockCtx,
           a2aTaskMapper: { submitTask, cancelTask, getTaskStatus } as any,
           queueManager: { runWithSlotReleased: vi.fn(async (fn: () => Promise<unknown>) => fn()) } as any,
-          repos: { ...mockCtx.repos, a2aTask: {} as any },
+          repos: {
+            ...mockCtx.repos,
+            a2aTask: { isRunBoundToTask: vi.fn().mockReturnValue(ok(false)) } as any,
+            thread: {
+              findById: vi
+                .fn()
+                .mockReturnValue(ok({ id: 'thread-001', external_id: 'chat-1', metadata: '{}' })),
+            } as any,
+          },
           personaLoader: {
             listNames: vi.fn().mockReturnValue(['test', 'researcher', 'coder', 'admin']),
             getById: vi.fn().mockReturnValue(ok({ config: { name: 'test' } })),
@@ -1165,6 +1173,8 @@ describe('HostToolsBridge', () => {
         expect((allowed.result as any).status).toBe('success');
         expect(submitTask).toHaveBeenCalledTimes(1);
         expect(submitTask.mock.calls[0][0].sourcePersona).toBe('test');
+        // The bridge wires the host-owned run lookup, so a foreground run keeps the default wake.
+        expect(submitTask.mock.calls[0][0].notify).toBe('wake');
 
         const denied = await call('persona_send', { target_persona: 'admin', message: 'hi' });
         expect((denied.result as any).status).toBe('error');

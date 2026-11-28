@@ -71,6 +71,7 @@ function makeConfig(overrides: Record<string, unknown> = {}): unknown {
     ipc: { pollIntervalMs: 500, daemonSocketDir: 'data/ipc/daemon' },
     queue: { maxAttempts: 3, backoffBaseMs: 1000, backoffMaxMs: 60000, concurrencyLimit: 2 },
     scheduler: { tickIntervalMs: 5000 },
+    a2a: { notifyBatchWindowSeconds: 20 },
     sandbox: {
       runtime: 'docker',
       image: 'talon-sandbox:latest',
@@ -94,6 +95,7 @@ function makeMockContext(configOverrides: Record<string, unknown> = {}): DaemonC
     dataDir: '/tmp/test-data',
     repos: {
       queue: {} as any,
+      a2aTask: {} as any,
       thread: {} as any,
       channel: {} as any,
       persona: {} as any,
@@ -584,6 +586,27 @@ describe('TalondDaemon.reload()', () => {
       await localDaemon.stop();
     });
 
+    it('logs a warning when a2a limits change', async () => {
+      setupSuccessfulStart();
+      const logger = createDiscardLogger('silent');
+      const localDaemon = new TalondDaemon(logger);
+      await localDaemon.start('/config.yaml');
+      const warnSpy = vi.spyOn(logger, 'warn');
+
+      vi.mocked(loadConfig).mockReturnValue(
+        ok(makeConfig({ a2a: { notifyBatchWindowSeconds: 60 } }) as any),
+      );
+      await localDaemon.reload('/config.yaml');
+
+      expect(
+        warnSpy.mock.calls.find(
+          (args) => typeof args[0] === 'string' && args[0].includes('a2a limits'),
+        ),
+      ).toBeDefined();
+      warnSpy.mockRestore();
+      await localDaemon.stop();
+    });
+
     it('logs a warning when scheduler config changes', async () => {
       setupSuccessfulStart({ scheduler: { tickIntervalMs: 5000 } });
       const logger = createDiscardLogger('silent');
@@ -792,6 +815,27 @@ describe('TalondDaemon.reload()', () => {
       await daemon.start('/config.yaml');
       expect(reapStaleTasks).toHaveBeenCalledTimes(1);
       await daemon.stop();
+    });
+
+    it('starts the A2A completion notifier with the daemon and stops it on stop', async () => {
+      const ctx = setupSuccessfulStart();
+      (ctx as any).a2aTaskMapper = {
+        reapStaleTasks: vi.fn().mockReturnValue(ok([])),
+        setAbortHook: vi.fn(),
+      };
+      const findOwed = vi.fn().mockReturnValue(ok([]));
+      (ctx as any).repos.a2aTask = { findOwedNotifications: findOwed };
+      vi.useFakeTimers();
+      try {
+        await daemon.start('/config.yaml');
+        vi.advanceTimersByTime(5_000);
+        expect(findOwed).toHaveBeenCalledTimes(1);
+        await daemon.stop();
+        vi.advanceTimersByTime(30_000);
+        expect(findOwed).toHaveBeenCalledTimes(1);
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 });
