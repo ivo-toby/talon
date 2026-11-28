@@ -98,7 +98,7 @@ describe('SubAgentInvokeHandler', () => {
     expect(execute.mock.calls[0][1]).toEqual({ runId: 'model-authored-run' });
   });
 
-  it('hands a schedule run\'s origin conversation to the sub-agent as memoryThreadId only', async () => {
+  it('hands the origin conversation to the sub-agent only for scope "conversation"', async () => {
     const execute = vi.fn().mockResolvedValue(ok({ summary: 'Done' }));
     const handler = new SubAgentInvokeHandler({
       runner: { execute } as any,
@@ -114,20 +114,28 @@ describe('SubAgentInvokeHandler', () => {
       logger: makeLogger(),
     });
 
-    await handler.execute(
-      { name: 'memory-groomer', input: {} },
-      { runId: 'run-1', threadId: 'schedule-thread', personaId: 'p1', originThreadId: 'chat-thread' },
-    );
-    await handler.execute(
-      { name: 'memory-groomer', input: {} },
-      { runId: 'run-2', threadId: 'chat-thread', personaId: 'p1' },
+    const scheduleRun = {
+      runId: 'run-1',
+      threadId: 'schedule-thread',
+      personaId: 'p1',
+      originThreadId: 'chat-thread',
+      scheduleRun: true,
+    };
+    await handler.execute({ name: 'memory-groomer', input: {}, scope: 'conversation' }, scheduleRun);
+    await handler.execute({ name: 'memory-groomer', input: {} }, scheduleRun);
+    const noOrigin = await handler.execute(
+      { name: 'memory-groomer', input: {}, scope: 'conversation' },
+      { runId: 'run-3', threadId: 'schedule-thread', personaId: 'p1', scheduleRun: true },
     );
 
     // Run provenance stays on the run's own thread.
     expect(execute.mock.calls[0][2]).toEqual(
       expect.objectContaining({ threadId: 'schedule-thread', memoryThreadId: 'chat-thread' }),
     );
+    // Default scope: the schedule's own memory.
     expect(execute.mock.calls[1][2]).not.toHaveProperty('memoryThreadId');
+    expect(noOrigin.status).toBe('error');
+    expect(execute).toHaveBeenCalledTimes(2);
   });
 
   it('returns error when runner rejects', async () => {

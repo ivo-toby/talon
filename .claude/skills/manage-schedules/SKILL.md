@@ -39,8 +39,9 @@ Ask what they want to do:
    - Every 30 minutes: `*/30 * * * *`
 6. Ask for a label (short name like `memory-grooming` or `git-pull-notes`).
 7. Ask for the prompt (what the agent should do when triggered).
-8. Run: `npx talonctl add-schedule --persona <name> --channel <channel> --cron "<expr>" --label "<label>" --prompt "<prompt>" --config talond.yaml`
-9. Confirm with schedule ID and next run time.
+8. Ask whether the task should act on a chat's memory or send to a chat by default (e.g. memory grooming, a weekly review). If so, get the chat ID (`/chatid` in that chat) and add `--origin <chatId>`.
+9. Run: `npx talonctl add-schedule --persona <name> --channel <channel> --cron "<expr>" --label "<label>" --prompt "<prompt>" [--origin <chatId>] --config talond.yaml`
+10. Confirm with schedule ID and next run time.
 
 ## Phase 2b: List Schedules
 
@@ -57,6 +58,6 @@ Optionally filter: `--persona <name>`
 
 - Schedules fire in system local time (CET on the VM).
 - Schedule output is silent -- the agent only sends messages if it explicitly uses channel.send.
-- A schedule created from a chat works on that chat's memory (memory.access, db.query, memory-groomer, memory-retriever), as long as the chat is bound to the same persona. Maintenance schedules such as memory grooming therefore act on the conversation. Schedules created with `talonctl add-schedule` have no origin chat and stay on their own schedule thread.
+- A schedule keeps its own state on its schedule thread. To work on the chat it serves (grooming its notes, a weekly review), its prompt must pass `scope: "conversation"` to `memory_access`, or to `subagent_invoke` for `memory-groomer`/`memory-retriever`. That needs an origin chat bound to the same persona: schedules created from the chat have one; for `talonctl add-schedule` pass `--origin <chatId>` (ask the user for it — `/chatid` in the chat shows it), or fix an existing schedule with `npx talonctl set-schedule-origin <id> --origin <chatId> --config talond.yaml`.
 - The daemon must be running for schedules to fire (they live in the DB, not the config).
 - After creating schedules, remind the user: schedules require a running daemon to execute.

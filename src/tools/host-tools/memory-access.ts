@@ -17,6 +17,7 @@ import type { ToolManifest, ToolCallResult } from '../tool-types.js';
 import type { MemoryRepository } from '../../core/database/repositories/memory-repository.js';
 import { ToolError } from '../../core/errors/error-types.js';
 import type { ToolExecutionContext } from './channel-send.js';
+import { resolveMemoryScope, type MemoryScope } from './memory-scope.js';
 
 /** Manifest for the memory.access host tool. */
 export interface MemoryAccessTool {
@@ -33,6 +34,11 @@ export interface MemoryAccessArgs {
   value?: unknown;
   /** Optional namespace/layer to scope the operation. */
   namespace?: string;
+  /**
+   * `thread` (default): this run's own thread. `conversation`: for a schedule
+   * run, the chat it was created in (see `memory-scope.ts`).
+   */
+  scope?: MemoryScope;
 }
 
 /** Valid operations for the memory.access tool. */
@@ -82,20 +88,24 @@ export class MemoryAccessHandler {
     const requestId = context.requestId ?? 'unknown';
     const { operation, key, namespace } = args;
 
-    // A schedule run on a dedicated schedule thread works on the memory of the
-    // conversation it serves (server-resolved, same persona only); every other
-    // run works on its own thread. All handlers below read `threadId`.
+    // Own thread by default; a schedule run reaches the chat it serves only
+    // with scope "conversation". All handlers below read `threadId`.
+    const scoped = resolveMemoryScope(context, args.scope);
+    if (!scoped.ok) {
+      const error = new ToolError(`memory.access: ${scoped.error}`);
+      this.deps.logger.warn({ requestId, runId: context.runId, scope: args.scope }, error.message);
+      return { requestId, tool: 'memory.access', status: 'error', error: error.message };
+    }
     const memoryContext: ToolExecutionContext =
-      context.originThreadId !== undefined
-        ? { ...context, threadId: context.originThreadId }
-        : context;
+      scoped.threadId === context.threadId ? context : { ...context, threadId: scoped.threadId };
 
     this.deps.logger.info(
       {
         requestId,
         runId: context.runId,
         threadId: memoryContext.threadId,
-        ...(context.originThreadId !== undefined ? { runThreadId: context.threadId } : {}),
+        scope: scoped.scope,
+        ...(memoryContext.threadId !== context.threadId ? { runThreadId: context.threadId } : {}),
         operation,
         key,
         namespace,

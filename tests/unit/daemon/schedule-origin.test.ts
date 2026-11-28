@@ -159,6 +159,7 @@ describe('schedule origin conversation', () => {
       personaId: PERSONA,
       requestId: 'req-1',
       originThreadId: CHAT,
+      scheduleRun: true,
     };
 
     beforeEach(() => {
@@ -195,33 +196,66 @@ describe('schedule origin conversation', () => {
       expect(memory.findById('unrelated-thread-id', 'elsewhere')._unsafeUnwrap()).not.toBeNull();
     });
 
-    it('memory.access lists, writes and deletes on the chat thread', async () => {
+    it('memory.access keeps a schedule on its own state by default', async () => {
       const handler = new MemoryAccessHandler({ memoryRepository: memory, logger: makeLogger() });
 
       const listed = await handler.execute({ operation: 'list' }, scheduleContext);
+      expect(JSON.stringify(listed.result)).toContain('schedule bookkeeping');
+      expect(JSON.stringify(listed.result)).not.toContain('Ivo prefers short answers');
+
+      await handler.execute(
+        { operation: 'write', key: 'heartbeat:sent', value: 'x' },
+        scheduleContext,
+      );
+      expect(memory.findById(SCHEDULE, 'heartbeat:sent')._unsafeUnwrap()).not.toBeNull();
+      expect(memory.findById(CHAT, 'heartbeat:sent')._unsafeUnwrap()).toBeNull();
+    });
+
+    it('memory.access with scope "conversation" lists, writes and deletes on the chat', async () => {
+      const handler = new MemoryAccessHandler({ memoryRepository: memory, logger: makeLogger() });
+
+      const listed = await handler.execute(
+        { operation: 'list', scope: 'conversation' },
+        scheduleContext,
+      );
       expect(listed.status).toBe('success');
       expect(JSON.stringify(listed.result)).toContain('Ivo prefers short answers');
       expect(JSON.stringify(listed.result)).not.toContain('schedule bookkeeping');
 
       await handler.execute(
-        { operation: 'write', key: 'groomed', value: 'merged' },
+        { operation: 'write', key: 'groomed', value: 'merged', scope: 'conversation' },
         scheduleContext,
       );
       expect(memory.findById(CHAT, 'groomed')._unsafeUnwrap()?.content).toContain('merged');
       expect(memory.findById(SCHEDULE, 'groomed')._unsafeUnwrap()).toBeNull();
 
-      await handler.execute({ operation: 'delete', key: 'chat-note' }, scheduleContext);
+      await handler.execute(
+        { operation: 'delete', key: 'chat-note', scope: 'conversation' },
+        scheduleContext,
+      );
       expect(memory.findById(CHAT, 'chat-note')._unsafeUnwrap()).toBeNull();
     });
 
-    it('memory.access stays on the run thread without an origin', async () => {
+    it('refuses scope "conversation" for a schedule without an origin', async () => {
       const handler = new MemoryAccessHandler({ memoryRepository: memory, logger: makeLogger() });
-      const { originThreadId: _omit, ...plain } = scheduleContext;
+      const { originThreadId: _omit, ...noOrigin } = scheduleContext;
 
-      const listed = await handler.execute({ operation: 'list' }, plain);
+      const result = await handler.execute({ operation: 'list', scope: 'conversation' }, noOrigin);
 
-      expect(JSON.stringify(listed.result)).toContain('schedule bookkeeping');
-      expect(JSON.stringify(listed.result)).not.toContain('Ivo prefers short answers');
+      expect(result.status).toBe('error');
+      expect(result.error).toContain('no origin conversation');
+      expect(result.error).toContain('set-schedule-origin');
+    });
+
+    it('treats scope "conversation" on a chat run as the chat itself, and rejects unknown scopes', async () => {
+      const handler = new MemoryAccessHandler({ memoryRepository: memory, logger: makeLogger() });
+      const chatRun: ToolExecutionContext = { runId: 'r', threadId: CHAT, personaId: PERSONA };
+
+      const listed = await handler.execute({ operation: 'list', scope: 'conversation' }, chatRun);
+      expect(JSON.stringify(listed.result)).toContain('Ivo prefers short answers');
+
+      const bad = await handler.execute({ operation: 'list', scope: 'everything' as any }, chatRun);
+      expect(bad.status).toBe('error');
     });
 
     it('db.query reads the schedule thread and the chat, nothing else', async () => {

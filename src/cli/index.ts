@@ -39,6 +39,7 @@ import { addScheduleCommand } from './commands/add-schedule.js';
 import { authMcp, AuthMcpError } from './commands/auth-mcp.js';
 import { listSchedulesCommand } from './commands/list-schedules.js';
 import { removeScheduleCommand } from './commands/remove-schedule.js';
+import { setScheduleOriginCommand } from './commands/set-schedule-origin.js';
 import { runSubAgentCommand } from './commands/run-subagent.js';
 import { listProvidersCommand } from './commands/list-providers.js';
 import { addProviderCommand } from './commands/add-provider.js';
@@ -570,6 +571,10 @@ program
     '--prompt-file <name>',
     "Prompt file basename in the persona's prompts/ dir (without .md), resolved by the scheduler at fire time",
   )
+  .option(
+    '--origin <chatId>',
+    'Chat the schedule serves (e.g. a Telegram chat_id or <chat_id>:<topic_id>): outbound defaults to it and memory tools reach it with scope "conversation"',
+  )
   .option('--config <path>', 'Path to talond.yaml', DEFAULT_CONFIG_PATH)
   .action(
     async (opts: {
@@ -579,6 +584,7 @@ program
       label: string;
       prompt?: string;
       promptFile?: string;
+      origin?: string;
       config: string;
     }) => {
       if (opts.prompt && opts.promptFile) {
@@ -598,10 +604,23 @@ program
         label: opts.label,
         ...(opts.prompt !== undefined ? { prompt: opts.prompt } : {}),
         ...(opts.promptFile !== undefined ? { promptFile: opts.promptFile } : {}),
+        ...(opts.origin !== undefined ? { origin: opts.origin } : {}),
         configPath: opts.config,
       });
     },
   );
+
+program
+  .command('set-schedule-origin')
+  .description(
+    'Move a schedule onto the dedicated thread of a chat, so it serves that chat (outbound default, memory scope "conversation")',
+  )
+  .argument('<scheduleId>', 'Schedule ID (see list-schedules)')
+  .requiredOption('--origin <chatId>', 'Chat external ID (e.g. Telegram chat_id or <chat_id>:<topic_id>)')
+  .option('--config <path>', 'Path to talond.yaml', DEFAULT_CONFIG_PATH)
+  .action(async (scheduleId: string, opts: { origin: string; config: string }) => {
+    await setScheduleOriginCommand({ scheduleId, origin: opts.origin, configPath: opts.config });
+  });
 
 program
   .command('list-schedules')
