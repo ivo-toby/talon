@@ -718,6 +718,183 @@ describe('WhatsAppBaileysConnector', () => {
   });
 
   // -------------------------------------------------------------------------
+  // Group addressing: @mention, trigger word, reply to the bot, requireMention
+  // -------------------------------------------------------------------------
+
+  describe('group addressing', () => {
+    const GROUP = '120363001234567890@g.us';
+    const SELF_PN = '31624544584:49@s.whatsapp.net';
+    const SELF_LID = '96490886312027:49@lid';
+
+    /** A group message, optionally @mentioning JIDs or quoting a message. */
+    function groupMsg(opts: {
+      text: string;
+      participant?: string;
+      mentionedJid?: string[];
+      quoted?: { stanzaId: string; participant: string; text: string };
+    }): unknown {
+      const contextInfo: Record<string, unknown> = {};
+      if (opts.mentionedJid) contextInfo['mentionedJid'] = opts.mentionedJid;
+      if (opts.quoted) {
+        contextInfo['stanzaId'] = opts.quoted.stanzaId;
+        contextInfo['participant'] = opts.quoted.participant;
+        contextInfo['quotedMessage'] = { conversation: opts.quoted.text };
+      }
+      return {
+        key: {
+          fromMe: false,
+          remoteJid: GROUP,
+          participant: opts.participant ?? '31612345678@s.whatsapp.net',
+          id: 'grp-001',
+        },
+        message: { extendedTextMessage: { text: opts.text, contextInfo } },
+        messageTimestamp: 1700000000,
+      };
+    }
+
+    function groupConnector(config: WhatsAppBaileysConfig = {}): {
+      c: WhatsAppBaileysConnector;
+      received: InboundEvent[];
+    } {
+      const c = makeConnector({ allowGroupChats: true, ...config });
+      setSelfIds(c, SELF_PN, SELF_LID);
+      const received: InboundEvent[] = [];
+      c.onMessage(async (event) => { received.push(event); });
+      return { c, received };
+    }
+
+    it('drops a group message that does not address the bot', async () => {
+      const { c, received } = groupConnector({ triggerWords: ['@Talon'] });
+
+      await handle(c, groupMsg({ text: 'just chatting' }));
+
+      expect(received).toHaveLength(0);
+    });
+
+    it('accepts a leading trigger word and strips it', async () => {
+      const { c, received } = groupConnector({ triggerWords: ['@Talon'] });
+
+      await handle(c, groupMsg({ text: '@Talon what is on today?' }));
+
+      expect(received).toHaveLength(1);
+      expect(received[0].content).toBe('what is on today?');
+    });
+
+    it('accepts a native @mention of the bot account (LID) and strips the token', async () => {
+      const { c, received } = groupConnector({ triggerWords: ['@Talon'] });
+
+      await handle(
+        c,
+        groupMsg({ text: '@96490886312027 what is on today?', mentionedJid: ['96490886312027@lid'] }),
+      );
+
+      expect(received).toHaveLength(1);
+      expect(received[0].content).toBe('what is on today?');
+    });
+
+    it('accepts an @mention without any trigger words configured', async () => {
+      // Previously every group message was dropped without triggerWords.
+      const { c, received } = groupConnector();
+
+      await handle(
+        c,
+        groupMsg({ text: 'hi @31624544584', mentionedJid: ['31624544584@s.whatsapp.net'] }),
+      );
+      await handle(c, groupMsg({ text: 'just chatting' }));
+
+      expect(received).toHaveLength(1);
+      expect(received[0].content).toBe('hi');
+    });
+
+    it('ignores an @mention of someone else', async () => {
+      const { c, received } = groupConnector({ triggerWords: ['@Talon'] });
+
+      await handle(c, groupMsg({ text: '@111 can you help', mentionedJid: ['111@lid'] }));
+
+      expect(received).toHaveLength(0);
+    });
+
+    it('accepts a quoted reply to a message from the bot account', async () => {
+      const { c, received } = groupConnector({ triggerWords: ['@Talon'] });
+
+      await handle(
+        c,
+        groupMsg({
+          text: 'and tomorrow?',
+          quoted: { stanzaId: 'bot-msg-1', participant: '96490886312027@lid', text: 'Sunny today' },
+        }),
+      );
+
+      expect(received).toHaveLength(1);
+      expect(received[0].content).toBe('and tomorrow?');
+      // Authorship stays with the pipeline's message ledger: the connector
+      // does not claim the quoted message is Talon's.
+      expect(received[0].replyTo).toEqual({
+        externalMessageId: 'bot-msg-1',
+        senderId: '96490886312027@lid',
+        text: 'Sunny today',
+      });
+    });
+
+    it('ignores a quoted reply to someone else', async () => {
+      const { c, received } = groupConnector({ triggerWords: ['@Talon'] });
+
+      await handle(
+        c,
+        groupMsg({
+          text: 'agreed',
+          quoted: { stanzaId: 'm-2', participant: '111@s.whatsapp.net', text: 'pizza?' },
+        }),
+      );
+
+      expect(received).toHaveLength(0);
+    });
+
+    it('answers every group message when requireMention is false', async () => {
+      const { c, received } = groupConnector({ requireMention: false });
+
+      await handle(c, groupMsg({ text: 'just chatting' }));
+
+      expect(received).toHaveLength(1);
+      expect(received[0].content).toBe('just chatting');
+    });
+
+    it('requireMention: false does not affect direct chats', async () => {
+      const { c, received } = groupConnector({ requireMention: false, triggerWords: ['@Talon'] });
+
+      await handle(c, makeMsg({ text: 'no trigger here' }));
+
+      expect(received).toHaveLength(0);
+    });
+
+    it('still enforces allowedSenders on an @mention', async () => {
+      const { c, received } = groupConnector({ allowedSenders: ['31612345678'] });
+
+      await handle(
+        c,
+        groupMsg({
+          text: '@96490886312027 hi',
+          participant: '447700900000@s.whatsapp.net',
+          mentionedJid: ['96490886312027@lid'],
+        }),
+      );
+
+      expect(received).toHaveLength(0);
+    });
+
+    it('drops a mention-only group message', async () => {
+      const { c, received } = groupConnector();
+
+      await handle(
+        c,
+        groupMsg({ text: '@96490886312027', mentionedJid: ['96490886312027@lid'] }),
+      );
+
+      expect(received).toHaveLength(0);
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // Handler error resilience
   // -------------------------------------------------------------------------
 

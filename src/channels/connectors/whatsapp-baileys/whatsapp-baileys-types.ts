@@ -47,18 +47,28 @@ export interface WhatsAppBaileysConfig {
    * Optional list of trigger words that must appear at the start of a message
    * for it to be processed (case-insensitive). The trigger word is stripped
    * before the message reaches the agent. Example: ['@Talon', '@Bot'].
-   * When empty or omitted, all messages pass through without filtering.
-   * In group chats at least one triggerWord must match — there is no automatic
-   * @mention detection on WhatsApp.
+   * When empty or omitted, direct and self-chat messages pass through without
+   * filtering. In group chats a trigger word is one of the ways to address
+   * the bot; see `allowGroupChats`.
    */
   triggerWords?: string[];
   /**
    * Allow messages from WhatsApp group chats (JIDs ending in @g.us).
-   * Requires at least one triggerWord to be configured so the bot does not
-   * respond to every message in the group.
+   * In group chats the bot only responds when its account is @mentioned,
+   * when a message starts with one of the configured triggerWords, or when a
+   * message quotes a message from the bot's account — unless
+   * `requireMention` is false.
    * Defaults to false.
    */
   allowGroupChats?: boolean;
+  /**
+   * Whether a group message must address the bot (an @mention, a trigger
+   * word, or a reply to the bot) to be answered. Defaults to true. Set to
+   * false to answer every message in the group chats the bot is in. Combine
+   * with `allowedSenders`: without it the bot answers anyone in any group it
+   * is added to. Direct chats are not affected.
+   */
+  requireMention?: boolean;
   /**
    * When Talon's answer is sent as a quoted reply to the message that
    * triggered it: `groups` (default) in group chats only, `always`, or
