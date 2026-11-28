@@ -59,6 +59,7 @@ export class TalondDaemon {
   private ipcServer: DaemonIpcServer | null = null;
   private watchdog: WatchdogNotifier | null = null;
   private mcpRegistry: McpRegistry | null = null;
+  private reloading = false;
   private a2aReaperTimer: ReturnType<typeof setInterval> | null = null;
   /** Abort registry shared across AgentRunner rebuilds (hot reload). */
   private readonly a2aAborts = new Map<string, () => void>();
@@ -547,6 +548,24 @@ export class TalondDaemon {
       return err(
         new DaemonError(`Cannot reload daemon in state '${this._state}' (expected 'running')`),
       );
+    }
+
+    // Overlapping reloads interleave stopAll/unregister/register on the shared
+    // channel registry and orphan connectors that keep polling (Telegram 409s).
+    if (this.reloading) {
+      return err(new DaemonError('Reload already in progress'));
+    }
+    this.reloading = true;
+    try {
+      return await this.applyReload(configPath);
+    } finally {
+      this.reloading = false;
+    }
+  }
+
+  private async applyReload(configPath?: string): Promise<Result<void, DaemonError>> {
+    if (this.ctx === null) {
+      return err(new DaemonError('Cannot reload daemon without a context'));
     }
 
     const effectivePath = configPath ?? this.ctx.configPath;

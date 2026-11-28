@@ -713,6 +713,29 @@ describe('TalondDaemon.reload()', () => {
       expect(daemon.state).toBe('running');
     });
 
+    it('rejects a reload while another reload is in progress', async () => {
+      const ctx = setupSuccessfulStart();
+      await daemon.start('/config.yaml');
+      vi.mocked(loadConfig).mockReturnValue(ok(makeConfig() as any));
+
+      let release!: () => void;
+      vi.mocked(ctx.channelRegistry.stopAll).mockReturnValueOnce(
+        new Promise<void>((r) => {
+          release = r;
+        }),
+      );
+
+      const first = daemon.reload('/config.yaml');
+      const second = await daemon.reload('/config.yaml');
+
+      expect(second.isErr()).toBe(true);
+      expect(second._unsafeUnwrapErr().message).toContain('already in progress');
+
+      release();
+      expect((await first).isOk()).toBe(true);
+      expect((await daemon.reload('/config.yaml')).isOk()).toBe(true);
+    });
+
     it('successive reloads are all successful', async () => {
       setupSuccessfulStart();
       await daemon.start('/config.yaml');
