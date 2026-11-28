@@ -3810,6 +3810,7 @@ Lifecycle guarantees:
 - **Waiting does not hold a queue slot.** A run blocked in `persona_send` (`await_reply`) or `persona_task_status` (`wait_ms`) releases its `queue.concurrencyLimit` slot until it resumes, so delegated children can always be dispatched.
 - **Stale tasks are reaped.** At startup and every 60 seconds, tasks whose queue item is gone, completed or dead-lettered are marked `failed` (`ORPHANED`), and tasks older than `taskTtlMinutes` are canceled.
 - **Hot reload** rebuilds the agent cards, so a persona added by `talonctl reload` is routable immediately. Changes to the `a2a:` limits themselves need a restart.
+- **Finished tasks wake the delegator.** See [Completion notification](#completion-notification).
 
 ### Persona discovery
 
@@ -3832,7 +3833,19 @@ The normal synchronous pattern is:
 
 `persona_send` waits up to 5 minutes by default when `await_reply: true`. You can override that with `timeout_ms` (max 30 minutes). After a `timeout` result the delegated task keeps running; set `cancel_on_timeout: true` to cancel it instead (a pending task is dropped, an in-flight run is aborted). `persona_task_status` supports an optional `wait_ms` parameter for polling until the task reaches a terminal state. To stop a delegation you no longer need, call `persona_task_cancel` with its `task_id`.
 
-Timeouts to keep aligned: the wait includes time the task spends queued behind other tasks for the same persona, and it counts toward the calling persona's own `queryTimeoutMinutes` (default 10). For delegations that can take longer than 5 minutes, raise `timeout_ms` and the orchestrating persona's `queryTimeoutMinutes` together, or send without `await_reply` and collect the result with `persona_task_status`.
+#### Completion notification
+
+A task sent without `await_reply` does not need polling. When it reaches `completed`, `failed` or `canceled` (including tasks the reaper fails as orphaned or cancels at the TTL), Talon delivers one message into the conversation that delegated it and wakes the delegating persona once. Its reply reaches the human through the conversation's normal channel, so agents never handle chat IDs.
+
+- `persona_send` takes `notify: "wake" | "none"`. The default is `wake` without `await_reply` and `none` with it (the caller is already blocked on the result). If an awaited call times out without `cancel_on_timeout`, the task switches to `wake` so the late result still arrives. `talonctl a2a send` tasks never notify.
+- Finished tasks of one conversation are batched: the message goes out when the oldest finished task is `a2a.notifyBatchWindowSeconds` old (default 20, a fixed window, not sliding), so tasks finishing together cause one message and one run.
+- The message lists, per task, the ID, target persona, state and a result or error excerpt (800 characters per task, 4,000 per message), then tells the persona to call `persona_task_status` for the full result. It is not human input.
+- Delivery is durable and exactly-once: the message is enqueued and the tasks are marked notified in one database transaction, and owed notifications are derived from task state, so a restart loses none.
+- A task canceled by its own caller (`persona_task_cancel`, `talonctl a2a cancel`, `cancel_on_timeout`) does not wake that caller.
+- For a voice conversation the message carries only task IDs and states, no excerpt.
+- A persona that delegates to itself or in a cycle can still create wake loops; `a2a.maxHops` bounds each delegation chain, not the wake loop.
+
+Timeouts to keep aligned: the wait includes time the task spends queued behind other tasks for the same persona, and it counts toward the calling persona's own `queryTimeoutMinutes` (default 10). For delegations that can take longer than 5 minutes, raise `timeout_ms` and the orchestrating persona's `queryTimeoutMinutes` together, or send without `await_reply`: you are woken when it finishes and can fetch the result with `persona_task_status`.
 
 Examples:
 
@@ -3903,6 +3916,7 @@ a2a:
   maxQueuedPerTarget: 10 # tasks that may wait per target persona (0..1000)
   maxAttempts: 1 # queue attempts before dead-letter (1..20)
   taskTtlMinutes: 60 # non-terminal tasks older than this are canceled (1..1440)
+  notifyBatchWindowSeconds: 20 # batch window for completion notifications (0..600)
 ```
 
 - **`maxHops`** — a task is rejected when its incoming `hopCount >= maxHops`.
@@ -3918,6 +3932,10 @@ a2a:
   re-runs the whole delegated task, including its side effects.
 - **`taskTtlMinutes`** — upper bound on how long a task may stay non-terminal
   before the reaper cancels it.
+- **`notifyBatchWindowSeconds`** — how long finished tasks of one conversation
+  are collected before the delegating persona is woken (see
+  [Completion notification](#completion-notification)). Fixed window from the
+  oldest finished task; `0` delivers on the next 5 s tick. Needs a restart.
 
 ### Milestone 1 scope
 
@@ -3929,6 +3947,7 @@ The current implementation covers:
   default 1; `a2a.maxQueuedPerTarget`, default 10)
 - Configurable queue attempt budget (`a2a.maxAttempts`, default 1)
 - Cancellation, stale-task reaping and a task TTL (`a2a.taskTtlMinutes`, default 60)
+- Batched completion notifications that wake the delegating persona (`a2a.notifyBatchWindowSeconds`, default 20)
 - Full task lifecycle tracking in `a2a_tasks` table
 - Agent card discovery per persona
 - CLI commands for listing and submitting tasks

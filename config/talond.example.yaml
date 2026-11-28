@@ -376,6 +376,12 @@ a2a:
   # Non-terminal A2A tasks older than this are canceled by the reaper.
   # Bounded to 1..1440.
   taskTtlMinutes: 60
+  # A persona that delegated with persona_send is woken once when its tasks
+  # finish (completed, failed or canceled by the reaper). Finished tasks of one
+  # conversation are batched: the message is sent when the OLDEST finished task
+  # is this many seconds old (fixed window, not sliding). 0 = next tick (~5 s).
+  # Fixed until restart. Bounded to 0..600.
+  notifyBatchWindowSeconds: 20
 
 auth:
   mode: subscription

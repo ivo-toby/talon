@@ -127,6 +127,9 @@ export interface A2ATaskStatus {
 // Database row (internal)
 // ---------------------------------------------------------------------------
 
+/** Whether a terminal task wakes the delegating persona. */
+export type A2ANotifyPolicy = 'wake' | 'none';
+
 /** Raw database row for the a2a_tasks table. */
 export interface A2ATaskRow {
   id: string;
@@ -145,6 +148,10 @@ export interface A2ATaskRow {
   submitted_at: number;
   updated_at: number;
   completed_at: number | null;
+  /** Completion notification policy (ADR 0003). */
+  notify: A2ANotifyPolicy;
+  /** Epoch ms when the completion notification was enqueued; null while owed or not applicable. */
+  notified_at: number | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -174,6 +181,9 @@ export const DEFAULT_A2A_MAX_QUEUED_PER_TARGET = 10;
 /** Default time-to-live (minutes since submission) for a non-terminal A2A task. */
 export const DEFAULT_A2A_TASK_TTL_MINUTES = 60;
 
+/** Default batching window (seconds) for completion notifications into one source thread. */
+export const DEFAULT_A2A_NOTIFY_BATCH_WINDOW_SECONDS = 20;
+
 /** Runtime A2A limits resolved from config. Defaults mirror the constants above. */
 export interface A2ALimits {
   maxHops: number;
@@ -181,6 +191,7 @@ export interface A2ALimits {
   maxAttempts: number;
   maxQueuedPerTarget: number;
   taskTtlMinutes: number;
+  notifyBatchWindowSeconds: number;
 }
 
 /** Returns A2ALimits populated with the built-in defaults. */
@@ -191,5 +202,6 @@ export function defaultA2ALimits(): A2ALimits {
     maxAttempts: DEFAULT_A2A_MAX_ATTEMPTS,
     maxQueuedPerTarget: DEFAULT_A2A_MAX_QUEUED_PER_TARGET,
     taskTtlMinutes: DEFAULT_A2A_TASK_TTL_MINUTES,
+    notifyBatchWindowSeconds: DEFAULT_A2A_NOTIFY_BATCH_WINDOW_SECONDS,
   };
 }

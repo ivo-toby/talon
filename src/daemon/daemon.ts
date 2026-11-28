@@ -36,6 +36,7 @@ import { DaemonIpcServer } from '../ipc/daemon-ipc-server.js';
 import type { DaemonCommand, DaemonResponse } from '../ipc/daemon-ipc.js';
 import type { TalondConfig } from '../core/config/config-types.js';
 import { buildAgentCardRegistry } from '../a2a/persona-agent-card.js';
+import { A2ACompletionNotifier } from '../a2a/a2a-completion-notifier.js';
 import { ensureOwnerOnlyDir } from '../core/fs/private-paths.js';
 import { waitForCodexSandboxRunner } from '../subagents/codex-sandbox-runner-readiness.js';
 
@@ -61,6 +62,7 @@ export class TalondDaemon {
   private mcpRegistry: McpRegistry | null = null;
   private reloading = false;
   private a2aReaperTimer: ReturnType<typeof setInterval> | null = null;
+  private a2aNotifier: A2ACompletionNotifier | null = null;
   /** Abort registry shared across AgentRunner rebuilds (hot reload). */
   private readonly a2aAborts = new Map<string, () => void>();
 
@@ -258,6 +260,23 @@ export class TalondDaemon {
     this.a2aReaperTimer = setInterval(() => this.reapA2ATasks(), A2A_REAPER_INTERVAL_MS);
     this.a2aReaperTimer.unref();
 
+    // 4b. Deliver owed A2A completion notifications (ADR 0003). Owed rows are
+    // derived from task state, so a restart needs no recovery beyond ticking.
+    // Like the reaper it is not restarted on reload; the batch window is fixed
+    // until restart.
+    if (this.ctx.a2aTaskMapper) {
+      this.a2aNotifier = new A2ACompletionNotifier({
+        taskRepo: this.ctx.repos.a2aTask,
+        threadRepo: this.ctx.repos.thread,
+        channelRepo: this.ctx.repos.channel,
+        personaRepo: this.ctx.repos.persona,
+        queueManager: this.ctx.queueManager,
+        logger: this.logger,
+        batchWindowSeconds: this.ctx.config.a2a.notifyBatchWindowSeconds,
+      });
+      this.a2aNotifier.start();
+    }
+
     // 5. Start queue processing.
     this.ctx.queueManager.startProcessing((item) => this.agentRunner!.run(item));
 
@@ -334,6 +353,10 @@ export class TalondDaemon {
     if (this.a2aReaperTimer !== null) {
       clearInterval(this.a2aReaperTimer);
       this.a2aReaperTimer = null;
+    }
+    if (this.a2aNotifier !== null) {
+      this.a2aNotifier.stop();
+      this.a2aNotifier = null;
     }
 
     if (this.watchdog !== null) {
@@ -663,6 +686,9 @@ export class TalondDaemon {
     }
     if (JSON.stringify(oldConfig.scheduler) !== JSON.stringify(newConfig.scheduler)) {
       this.logger.warn('daemon: reload — scheduler config changed; restart required to apply');
+    }
+    if (JSON.stringify(oldConfig.a2a) !== JSON.stringify(newConfig.a2a)) {
+      this.logger.warn('daemon: reload — a2a limits changed; restart required to apply');
     }
     if (
       JSON.stringify(oldConfig.subagentCli) !== JSON.stringify(newConfig.subagentCli) ||

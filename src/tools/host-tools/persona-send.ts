@@ -7,7 +7,7 @@
 import { err, ok, type Result } from 'neverthrow';
 import type pino from 'pino';
 import type { A2ATaskMapper } from '../../a2a/a2a-task-mapper.js';
-import type { A2ATaskRow, A2ATaskState } from '../../a2a/a2a-types.js';
+import type { A2ANotifyPolicy, A2ATaskRow, A2ATaskState } from '../../a2a/a2a-types.js';
 import type { A2ATaskRepository } from '../../core/database/repositories/a2a-task-repository.js';
 import type { PersonaRepository } from '../../core/database/repositories/persona-repository.js';
 import { ToolError } from '../../core/errors/error-types.js';
@@ -34,6 +34,8 @@ export interface PersonaSendArgs {
   await_reply?: boolean;
   timeout_ms?: number;
   cancel_on_timeout?: boolean;
+  /** 'wake' notifies the source thread when the task finishes. Default: 'wake' unless await_reply. */
+  notify?: A2ANotifyPolicy;
 }
 
 type PersonaSendState = A2ATaskState | 'timeout';
@@ -134,6 +136,7 @@ export class PersonaSendHandler {
       targetPersona: validatedArgs.value.target_persona,
       sourceThreadId: context.threadId,
       content: validatedArgs.value.message,
+      notify: validatedArgs.value.notify ?? (validatedArgs.value.await_reply ? 'none' : 'wake'),
       hopCount: (context.a2aHopCount ?? 0) + 1,
       ...(context.a2aTaskId ? { parentTaskId: context.a2aTaskId } : {}),
     });
@@ -181,6 +184,10 @@ export class PersonaSendHandler {
       return err(new ToolError('persona.send: await_reply must be a boolean'));
     }
 
+    if (args.notify !== undefined && args.notify !== 'wake' && args.notify !== 'none') {
+      return err(new ToolError("persona.send: notify must be 'wake' or 'none'"));
+    }
+
     if (args.cancel_on_timeout !== undefined && typeof args.cancel_on_timeout !== 'boolean') {
       return err(new ToolError('persona.send: cancel_on_timeout must be a boolean'));
     }
@@ -201,6 +208,7 @@ export class PersonaSendHandler {
       message: args.message.trim(),
       await_reply: args.await_reply ?? false,
       cancel_on_timeout: args.cancel_on_timeout ?? false,
+      ...(args.notify !== undefined ? { notify: args.notify } : {}),
       ...(args.timeout_ms !== undefined ? { timeout_ms: args.timeout_ms } : {}),
     });
   }
@@ -256,6 +264,21 @@ export class PersonaSendHandler {
       return this.cancelAfterTimeout(taskId);
     }
 
+    return this.timeoutResult(taskId);
+  }
+
+  /**
+   * An awaited call gave up without cancelling: switch the task to 'wake' so
+   * the late result still reaches the delegating persona (ADR 0003).
+   */
+  private timeoutResult(taskId: string): Result<PersonaSendOutput, ToolError> {
+    const switched = this.deps.taskRepo.setNotifyWake(taskId);
+    if (switched.isErr()) {
+      this.deps.logger.warn(
+        { taskId, err: switched.error.message },
+        'persona.send: failed to switch timed-out task to notify=wake',
+      );
+    }
     return ok({
       task_id: taskId,
       state: 'timeout',
@@ -267,6 +290,7 @@ export class PersonaSendHandler {
     const reason = 'await_reply timed out';
     const cancelResult = this.deps.taskMapper.cancelTask(taskId, reason);
     if (cancelResult.isErr()) {
+      this.timeoutResult(taskId);
       return ok({
         task_id: taskId,
         state: 'timeout',
@@ -293,7 +317,7 @@ export class PersonaSendHandler {
     if (TERMINAL_STATES.has(rowResult.value.state)) {
       return ok(this.toOutput(rowResult.value));
     }
-    return ok({ task_id: taskId, state: 'timeout', error: TIMEOUT_MESSAGE });
+    return this.timeoutResult(taskId);
   }
 
   private toOutput(row: A2ATaskRow): PersonaSendOutput {

@@ -21,6 +21,7 @@ import {
   type A2ATaskPayload,
   type A2ATaskStatus,
   type A2ATaskRow,
+  type A2ANotifyPolicy,
   type A2ALimits,
   defaultA2ALimits,
 } from './a2a-types.js';
@@ -44,6 +45,8 @@ export interface SubmitTaskInput {
   parentTaskId?: string;
   /** Trace ID for observability. */
   traceId?: string;
+  /** Completion notification policy (ADR 0003). Defaults to 'none'. */
+  notify?: A2ANotifyPolicy;
 }
 
 /** Grace period on updated_at before a task with a finished queue item is treated as orphaned. */
@@ -99,7 +102,7 @@ export class A2ATaskMapper {
    * @returns Ok(A2ATaskStatus) on success, Err(A2AError) on validation/persistence failure.
    */
   submitTask(input: SubmitTaskInput): Result<A2ATaskStatus, A2AError> {
-    const { sourcePersona, targetPersona, sourceThreadId, content, hopCount, parentTaskId, traceId } = input;
+    const { sourcePersona, targetPersona, sourceThreadId, content, hopCount, parentTaskId, traceId, notify } = input;
 
     // 1. Validate content
     if (!content.trim()) {
@@ -227,6 +230,7 @@ export class A2ATaskMapper {
           hop_count: hopCount,
           parent_task_id: parentTaskId ?? null,
           submitted_at: now,
+          notify: notify ?? 'none',
         });
         if (insertResult.isErr()) {
           txError = new A2AError(`Failed to persist A2A task: ${insertResult.error.message}`);
@@ -284,8 +288,12 @@ export class A2ATaskMapper {
    * Ok(false) if it was already terminal or unknown. On success the pending
    * queue item (if not yet claimed) is canceled best-effort and the abort hook
    * is invoked so an in-flight run stops.
+   *
+   * An explicit cancel (the caller, the operator CLI, an awaited call giving
+   * up) never wakes the delegating persona: whoever cancelled already knows.
+   * Only the reaper's TTL cancel passes `wakeCaller: true` (ADR 0003).
    */
-  cancelTask(taskId: string, reason: string): Result<boolean, A2AError> {
+  cancelTask(taskId: string, reason: string, options?: { wakeCaller?: boolean }): Result<boolean, A2AError> {
     const found = this.taskRepo.findById(taskId);
     if (found.isErr()) {
       return err(new A2AError(`Failed to load task ${taskId}: ${found.error.message}`));
@@ -293,7 +301,7 @@ export class A2ATaskMapper {
     const row = found.value;
     if (!row) return ok(false);
 
-    const result = this.taskRepo.markCanceled(taskId, reason);
+    const result = this.taskRepo.markCanceled(taskId, reason, { suppressNotify: !options?.wakeCaller });
     if (result.isErr()) {
       return err(new A2AError(`Failed to cancel task ${taskId}: ${result.error.message}`));
     }
@@ -361,7 +369,7 @@ export class A2ATaskMapper {
       }
 
       if (now - row.submitted_at >= ttlMs) {
-        const canceled = this.cancelTask(row.id, 'ttl expired');
+        const canceled = this.cancelTask(row.id, 'ttl expired', { wakeCaller: true });
         if (canceled.isOk() && canceled.value) {
           reaped.push(row.id);
           this.logger.warn({ taskId: row.id }, 'Reaped expired A2A task');

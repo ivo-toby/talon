@@ -86,6 +86,8 @@ function makeTaskRow(overrides: Partial<A2ATaskRow> = {}): A2ATaskRow {
     submitted_at: 1000,
     updated_at: 1000,
     completed_at: null,
+    notify: 'wake',
+    notified_at: null,
     ...overrides,
   };
 }
@@ -111,6 +113,7 @@ function makeTaskMapper(): A2ATaskMapper {
 function makeTaskRepo(): A2ATaskRepository {
   return {
     findById: vi.fn().mockReturnValue(ok(makeTaskRow())),
+    setNotifyWake: vi.fn().mockReturnValue(ok(true)),
   } as unknown as A2ATaskRepository;
 }
 
@@ -150,6 +153,7 @@ describe('PersonaSendHandler — success', () => {
       targetPersona: 'researcher',
       sourceThreadId: 'thread-001',
       content: 'Investigate this task',
+      notify: 'wake',
       hopCount: 1,
     });
     expect(taskRepo.findById).not.toHaveBeenCalled();
@@ -592,5 +596,101 @@ describe('PersonaSendHandler — persona.send scopes', () => {
 
     expect(result.status).toBe('error');
     expect(resolveCapabilities).toHaveBeenCalledWith('delegated-persona');
+  });
+});
+
+describe('PersonaSendHandler — notify policy (ADR 0003)', () => {
+  function build() {
+    const taskMapper = makeTaskMapper();
+    const taskRepo = makeTaskRepo();
+    const handler = new PersonaSendHandler({
+      resolveCapabilities: allCaps,
+      taskMapper,
+      taskRepo,
+      personaRepo: makePersonaRepo(),
+      logger: makeLogger(),
+      maxWaitMs: 100,
+      pollIntervalMs: 10,
+    });
+    return { taskMapper, taskRepo, handler };
+  }
+  const notifyOf = (m: A2ATaskMapper): unknown =>
+    (m.submitTask as unknown as ReturnType<typeof vi.fn>).mock.calls[0][0].notify;
+
+  it('defaults to wake without await_reply', async () => {
+    const { taskMapper, handler } = build();
+    await handler.execute(makeArgs(), makeContext());
+    expect(notifyOf(taskMapper)).toBe('wake');
+  });
+
+  it('defaults to none with await_reply', async () => {
+    const { taskMapper, taskRepo, handler } = build();
+    (taskRepo.findById as unknown as ReturnType<typeof vi.fn>).mockReturnValue(
+      ok(makeTaskRow({ state: 'completed' })),
+    );
+    await handler.execute(makeArgs({ await_reply: true }), makeContext());
+    expect(notifyOf(taskMapper)).toBe('none');
+  });
+
+  it('honours an explicit override in both directions', async () => {
+    const a = build();
+    await a.handler.execute(makeArgs({ notify: 'none' }), makeContext());
+    expect(notifyOf(a.taskMapper)).toBe('none');
+
+    const b = build();
+    (b.taskRepo.findById as unknown as ReturnType<typeof vi.fn>).mockReturnValue(
+      ok(makeTaskRow({ state: 'completed' })),
+    );
+    await b.handler.execute(makeArgs({ await_reply: true, notify: 'wake' }), makeContext());
+    expect(notifyOf(b.taskMapper)).toBe('wake');
+  });
+
+  it('rejects an invalid notify value before submitting', async () => {
+    const { taskMapper, handler } = build();
+    const result = await handler.execute(makeArgs({ notify: 'loud' as never }), makeContext());
+    expect(result.status).toBe('error');
+    expect(result.error).toMatch(/notify must be/);
+    expect(taskMapper.submitTask).not.toHaveBeenCalled();
+  });
+
+  it('switches the task to wake when an awaited call times out without cancel', async () => {
+    vi.useFakeTimers();
+    const { taskRepo, handler } = build();
+    (taskRepo.findById as unknown as ReturnType<typeof vi.fn>).mockReturnValue(
+      ok(makeTaskRow({ state: 'working' })),
+    );
+    const p = handler.execute(makeArgs({ await_reply: true }), makeContext());
+    await vi.advanceTimersByTimeAsync(100);
+    const result = await p;
+    expect((result.result as { state: string }).state).toBe('timeout');
+    expect(taskRepo.setNotifyWake).toHaveBeenCalledWith('task-123');
+  });
+
+  it('does not switch to wake when the call cancels on timeout', async () => {
+    vi.useFakeTimers();
+    const { taskRepo, handler } = build();
+    (taskRepo.findById as unknown as ReturnType<typeof vi.fn>).mockReturnValue(
+      ok(makeTaskRow({ state: 'working' })),
+    );
+    const p = handler.execute(makeArgs({ await_reply: true, cancel_on_timeout: true }), makeContext());
+    await vi.advanceTimersByTimeAsync(100);
+    await p;
+    expect(taskRepo.setNotifyWake).not.toHaveBeenCalled();
+  });
+
+  it('still reports the timeout when switching to wake fails', async () => {
+    vi.useFakeTimers();
+    const { taskRepo, handler } = build();
+    (taskRepo.findById as unknown as ReturnType<typeof vi.fn>).mockReturnValue(
+      ok(makeTaskRow({ state: 'working' })),
+    );
+    (taskRepo.setNotifyWake as unknown as ReturnType<typeof vi.fn>).mockReturnValue(
+      err(new Error('db down')),
+    );
+    const p = handler.execute(makeArgs({ await_reply: true }), makeContext());
+    await vi.advanceTimersByTimeAsync(100);
+    const result = await p;
+    expect(result.status).toBe('success');
+    expect((result.result as { state: string }).state).toBe('timeout');
   });
 });

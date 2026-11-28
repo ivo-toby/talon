@@ -422,6 +422,9 @@ const TOOLS = [
       + 'If the state is "timeout", the delegated task keeps running: fetch it later with persona_task_status, '
       + 'unless cancel_on_timeout was set, in which case it is canceled and the state is "canceled"; '
       + 'stop it yourself with persona_task_cancel. '
+      + 'Without await_reply you do not need to poll: when the task finishes (completed, failed or canceled by the system) '
+      + 'you are woken once with a message in this thread, batched with other tasks that finished around the same time, '
+      + 'and can fetch the full result with persona_task_status. Set notify to "none" to opt out. '
       + 'A "failed" state is final (no automatic retry); you decide whether to resend.',
     inputSchema: {
       type: 'object' as const,
@@ -447,6 +450,12 @@ const TOOLS = [
           type: 'boolean' as const,
           description:
             'With await_reply: cancel the delegated task if the wait times out. Default: false (task keeps running and can be fetched via persona_task_status).',
+        },
+        notify: {
+          type: 'string' as const,
+          enum: ['wake', 'none'],
+          description:
+            'Whether to wake you with a message in this thread when the task finishes. Default: "wake" without await_reply, "none" with await_reply (a timed-out wait switches to "wake").',
         },
       },
       required: ['target_persona', 'message'],

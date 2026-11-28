@@ -9,7 +9,7 @@ import type Database from 'better-sqlite3';
 import { ok, err, type Result } from 'neverthrow';
 import { DbError } from '../../errors/index.js';
 import { BaseRepository } from './base-repository.js';
-import type { A2ATaskRow } from '../../../a2a/a2a-types.js';
+import type { A2ANotifyPolicy, A2ATaskRow } from '../../../a2a/a2a-types.js';
 
 /** Fields required when inserting a new submitted task. */
 export interface InsertA2ATaskInput {
@@ -21,6 +21,8 @@ export interface InsertA2ATaskInput {
   hop_count: number;
   parent_task_id: string | null;
   submitted_at: number;
+  /** Completion notification policy; defaults to 'none'. */
+  notify?: A2ANotifyPolicy;
 }
 
 /** Repository for A2A task persistence and lifecycle management. */
@@ -42,6 +44,9 @@ export class A2ATaskRepository extends BaseRepository {
   private readonly findAllByStateStmt: Database.Statement;
   private readonly findAllByTargetStmt: Database.Statement;
   private readonly findAllByStateAndTargetStmt: Database.Statement;
+  private readonly findOwedNotificationsStmt: Database.Statement;
+  private readonly setNotifyWakeStmt: Database.Statement;
+  private readonly markNotifiedStmt: Database.Statement;
 
   constructor(db: Database.Database) {
     super(db);
@@ -65,10 +70,33 @@ export class A2ATaskRepository extends BaseRepository {
     this.insertStmt = db.prepare(`
       INSERT INTO a2a_tasks
         (id, source_persona, target_persona, thread_id, state,
-         request_payload, hop_count, parent_task_id, submitted_at, updated_at)
+         request_payload, hop_count, parent_task_id, submitted_at, updated_at, notify)
       VALUES
         (@id, @source_persona, @target_persona, @thread_id, 'submitted',
-         @request_payload, @hop_count, @parent_task_id, @submitted_at, @updated_at)
+         @request_payload, @hop_count, @parent_task_id, @submitted_at, @updated_at, @notify)
+    `);
+
+    // Owed completion notifications (ADR 0003): terminal, wake, not yet notified.
+    this.findOwedNotificationsStmt = db.prepare(`
+      SELECT * FROM a2a_tasks
+      WHERE state IN ('completed', 'failed', 'canceled')
+        AND notify = 'wake' AND notified_at IS NULL
+      ORDER BY completed_at ASC, rowid ASC
+    `);
+
+    // Never touches a terminal task that has already been notified.
+    this.setNotifyWakeStmt = db.prepare(`
+      UPDATE a2a_tasks
+      SET notify = 'wake'
+      WHERE id = @id AND notify != 'wake'
+        AND NOT (state IN ('completed', 'failed', 'canceled') AND notified_at IS NOT NULL)
+    `);
+
+    this.markNotifiedStmt = db.prepare(`
+      UPDATE a2a_tasks
+      SET notified_at = @now
+      WHERE id = @id AND notified_at IS NULL
+        AND notify = 'wake' AND state IN ('completed', 'failed', 'canceled')
     `);
 
     this.findByIdStmt = db.prepare(`
@@ -113,6 +141,7 @@ export class A2ATaskRepository extends BaseRepository {
       SET state = 'canceled',
           error_code = 'CANCELED',
           error_message = @reason,
+          notify = CASE WHEN @suppress_notify = 1 THEN 'none' ELSE notify END,
           completed_at = @now,
           updated_at = @now
       WHERE id = @id AND state IN ('submitted', 'working', 'input-required')
@@ -164,7 +193,7 @@ export class A2ATaskRepository extends BaseRepository {
    */
   insertSubmitted(input: InsertA2ATaskInput): Result<A2ATaskRow, DbError> {
     try {
-      this.insertStmt.run({ ...input, updated_at: this.now() });
+      this.insertStmt.run({ ...input, notify: input.notify ?? 'none', updated_at: this.now() });
       return this.findById(input.id).andThen((row) =>
         row ? ok(row) : err(new DbError('A2A task not found after insert')),
       );
@@ -249,9 +278,56 @@ export class A2ATaskRepository extends BaseRepository {
    * Transitions a non-terminal task to 'canceled', recording the reason as
    * error_code 'CANCELED' / error_message. Ok(false) if already terminal or unknown.
    */
-  markCanceled(taskId: string, reason: string): Result<boolean, DbError> {
+  markCanceled(
+    taskId: string,
+    reason: string,
+    options?: { suppressNotify?: boolean },
+  ): Result<boolean, DbError> {
     return this.guarded(`mark A2A task ${taskId} as canceled`, () =>
-      this.markCanceledStmt.run({ id: taskId, reason, now: this.now() }).changes > 0,
+      this.markCanceledStmt.run({
+        id: taskId,
+        reason,
+        now: this.now(),
+        suppress_notify: options?.suppressNotify ? 1 : 0,
+      }).changes > 0,
+    );
+  }
+
+  /**
+   * Returns every task whose completion notification is owed (terminal,
+   * notify = 'wake', notified_at IS NULL), oldest completion first.
+   */
+  findOwedNotifications(): Result<A2ATaskRow[], DbError> {
+    try {
+      return ok(this.findOwedNotificationsStmt.all() as A2ATaskRow[]);
+    } catch (cause) {
+      return err(
+        new DbError(
+          `Failed to list owed A2A notifications: ${String(cause)}`,
+          cause instanceof Error ? cause : undefined,
+        ),
+      );
+    }
+  }
+
+  /**
+   * Switches a task to notify = 'wake' (an awaited call timed out and the late
+   * result must still arrive). Ok(false) when nothing changed: unknown task,
+   * already 'wake', or terminal and already notified.
+   */
+  setNotifyWake(taskId: string): Result<boolean, DbError> {
+    return this.guarded(`switch A2A task ${taskId} to wake`, () =>
+      this.setNotifyWakeStmt.run({ id: taskId }).changes > 0,
+    );
+  }
+
+  /**
+   * Marks a task notified, only from NULL. Ok(false) if it was already
+   * notified, is not terminal or is not 'wake'. Safe inside a transaction.
+   */
+  markNotified(taskId: string): Result<boolean, DbError> {
+    return this.guarded(`mark A2A task ${taskId} as notified`, () =>
+      this.markNotifiedStmt.run({ id: taskId, now: this.now() }).changes > 0,
     );
   }
 

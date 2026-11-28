@@ -183,4 +183,109 @@ describe('A2ATaskRepository state guards and admission', () => {
       expect(rows[0]!.queue_status).toBeNull();
     });
   });
+  describe('completion notification (ADR 0003)', () => {
+    const insertWith = (notify?: 'wake' | 'none'): string => {
+      const id = uuid();
+      repo
+        .insertSubmitted({
+          id,
+          source_persona: 'src',
+          target_persona: 'worker',
+          thread_id: threadId,
+          request_payload: '{}',
+          hop_count: 0,
+          parent_task_id: null,
+          submitted_at: Date.now(),
+          ...(notify ? { notify } : {}),
+        })
+        ._unsafeUnwrap();
+      return id;
+    };
+    const row = (id: string) => repo.findById(id)._unsafeUnwrap()!;
+
+    it('persists notify at create and defaults to none', () => {
+      expect(row(insertWith()).notify).toBe('none');
+      expect(row(insertWith('wake')).notify).toBe('wake');
+      expect(row(insertWith('wake')).notified_at).toBeNull();
+    });
+
+    it('findOwedNotifications returns only terminal wake tasks not yet notified', () => {
+      const completed = insertWith('wake');
+      const failed = insertWith('wake');
+      const canceled = insertWith('wake');
+      const running = insertWith('wake');
+      const quiet = insertWith('none');
+      repo.markCompleted(completed, 'ok');
+      repo.markFailed(failed, 'X', 'boom');
+      repo.markCanceled(canceled, 'ttl expired');
+      repo.markWorking(running, null as unknown as string);
+      repo.markCompleted(quiet, 'ok');
+      const owed = repo.findOwedNotifications()._unsafeUnwrap().map((r) => r.id);
+      expect(owed.sort()).toEqual([completed, failed, canceled].sort());
+    });
+
+    it('markNotified sets notified_at only from NULL and removes the task from owed', () => {
+      const id = insertWith('wake');
+      expect(repo.markNotified(id)._unsafeUnwrap()).toBe(false); // not terminal yet
+      repo.markCompleted(id, 'ok');
+      expect(repo.markNotified(id)._unsafeUnwrap()).toBe(true);
+      const first = row(id).notified_at;
+      expect(first).not.toBeNull();
+      expect(repo.markNotified(id)._unsafeUnwrap()).toBe(false);
+      expect(row(id).notified_at).toBe(first);
+      expect(repo.findOwedNotifications()._unsafeUnwrap()).toEqual([]);
+    });
+
+    it('markNotified ignores none tasks and unknown ids', () => {
+      const id = insertWith('none');
+      repo.markCompleted(id, 'ok');
+      expect(repo.markNotified(id)._unsafeUnwrap()).toBe(false);
+      expect(repo.markNotified('missing')._unsafeUnwrap()).toBe(false);
+    });
+
+    it('markNotified participates in a caller transaction and rolls back with it', () => {
+      const id = insertWith('wake');
+      repo.markCompleted(id, 'ok');
+      expect(() =>
+        repo.transaction(() => {
+          repo.markNotified(id);
+          throw new Error('abort');
+        }),
+      ).toThrow('abort');
+      expect(row(id).notified_at).toBeNull();
+      expect(repo.findOwedNotifications()._unsafeUnwrap().map((r) => r.id)).toEqual([id]);
+    });
+
+    it('setNotifyWake switches a non-terminal or unnotified terminal none task', () => {
+      const running = insertWith('none');
+      expect(repo.setNotifyWake(running)._unsafeUnwrap()).toBe(true);
+      expect(row(running).notify).toBe('wake');
+      expect(repo.setNotifyWake(running)._unsafeUnwrap()).toBe(false); // already wake
+
+      const late = insertWith('none');
+      repo.markCompleted(late, 'ok');
+      expect(repo.setNotifyWake(late)._unsafeUnwrap()).toBe(true);
+      expect(repo.findOwedNotifications()._unsafeUnwrap().map((r) => r.id)).toContain(late);
+      expect(repo.setNotifyWake('missing')._unsafeUnwrap()).toBe(false);
+    });
+
+    it('setNotifyWake never touches a terminal task that was already notified', () => {
+      const id = insertWith('wake');
+      repo.markCompleted(id, 'ok');
+      repo.markNotified(id);
+      db.prepare("UPDATE a2a_tasks SET notify = 'none' WHERE id = ?").run(id);
+      expect(repo.setNotifyWake(id)._unsafeUnwrap()).toBe(false);
+      expect(row(id).notify).toBe('none');
+    });
+
+    it('markCanceled with suppressNotify flips the task to none', () => {
+      const a = insertWith('wake');
+      const b = insertWith('wake');
+      repo.markCanceled(a, 'by caller', { suppressNotify: true });
+      repo.markCanceled(b, 'ttl expired');
+      expect(row(a).notify).toBe('none');
+      expect(row(b).notify).toBe('wake');
+      expect(repo.findOwedNotifications()._unsafeUnwrap().map((r) => r.id)).toEqual([b]);
+    });
+  });
 });

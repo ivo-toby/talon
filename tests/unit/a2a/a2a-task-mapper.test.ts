@@ -467,6 +467,32 @@ describe('A2ATaskMapper', () => {
       expect(taskRepo.findById(task.taskId)._unsafeUnwrap()!.error_message).toBe('x');
     });
 
+    it('explicit cancel suppresses the caller wake; the TTL cancel keeps it', () => {
+      const mk = () =>
+        mapper
+          .submitTask({
+            sourcePersona: 'assistant',
+            targetPersona: 'software-engineer',
+            sourceThreadId: threadId,
+            content: 'x',
+            hopCount: 0,
+            notify: 'wake',
+          })
+          ._unsafeUnwrap();
+      const explicit = mk();
+      const ttl = mk();
+      expect(taskRepo.findById(explicit.taskId)._unsafeUnwrap()!.notify).toBe('wake');
+      mapper.cancelTask(explicit.taskId, 'user requested');
+      expect(taskRepo.findById(explicit.taskId)._unsafeUnwrap()!.notify).toBe('none');
+      mapper.cancelTask(ttl.taskId, 'by reaper', { wakeCaller: true });
+      expect(taskRepo.findOwedNotifications()._unsafeUnwrap().map((r) => r.id)).toEqual([ttl.taskId]);
+    });
+
+    it('submitTask defaults notify to none', () => {
+      const t = submitOne();
+      expect(taskRepo.findById(t.taskId)._unsafeUnwrap()!.notify).toBe('none');
+    });
+
     it('does not cancel a completed task', () => {
       const task = submitOne();
       taskRepo.markCompleted(task.taskId, 'ok');
@@ -517,6 +543,30 @@ describe('A2ATaskMapper', () => {
       queueRepo.markDeadLetter(t2.queueItemId!, 'dead');
       const reaped = mapper.reapStaleTasks(Date.now() + 61_000)._unsafeUnwrap();
       expect(reaped.sort()).toEqual([t1.taskId, t2.taskId].sort());
+    });
+
+    it('owes a wake notification for orphan-failed and TTL-canceled wake tasks', () => {
+      const mk = () =>
+        mapper
+          .submitTask({
+            sourcePersona: 'assistant',
+            targetPersona: 'software-engineer',
+            sourceThreadId: threadId,
+            content: 'x',
+            hopCount: 0,
+            notify: 'wake',
+          })
+          ._unsafeUnwrap();
+      const orphan = mk();
+      queueRepo.purge(['pending']);
+      mapper.reapStaleTasks(Date.now() + 61_000);
+      expect(taskRepo.findOwedNotifications()._unsafeUnwrap().map((r) => r.id)).toEqual([orphan.taskId]);
+
+      const expired = mk();
+      mapper.reapStaleTasks(Date.now() + 61 * 60_000);
+      const owed = taskRepo.findOwedNotifications()._unsafeUnwrap().map((r) => r.id);
+      expect(owed.sort()).toEqual([orphan.taskId, expired.taskId].sort());
+      expect(taskRepo.findById(expired.taskId)._unsafeUnwrap()!.state).toBe('canceled');
     });
 
     it('cancels tasks older than the TTL even with a live queue item', () => {

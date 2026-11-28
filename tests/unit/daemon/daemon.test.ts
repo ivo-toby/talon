@@ -98,6 +98,7 @@ function makeMockContext(overrides: Partial<DaemonContext> = {}): DaemonContext 
       ipc: { pollIntervalMs: 500, daemonSocketDir: 'data/ipc/daemon' },
       queue: { maxAttempts: 3, backoffBaseMs: 1000, backoffMaxMs: 60000, concurrencyLimit: 2 },
       scheduler: { tickIntervalMs: 5000 },
+      a2a: { notifyBatchWindowSeconds: 20 },
       sandbox: {
         runtime: 'docker',
         image: 'talon-sandbox:latest',
@@ -120,6 +121,7 @@ function makeMockContext(overrides: Partial<DaemonContext> = {}): DaemonContext 
     dataDir: '/tmp/test-data',
     repos: {
       queue: {} as any,
+      a2aTask: {} as any,
       thread: {} as any,
       channel: {} as any,
       persona: {} as any,
