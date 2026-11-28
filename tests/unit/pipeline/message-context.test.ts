@@ -5,6 +5,10 @@ import {
   prependReplyHeader,
   renderReactionContent,
   renderReplyHeader,
+  renderOutboundNotice,
+  renderOutboundNoticeHeader,
+  prependOutboundNotices,
+  OUTBOUND_NOTICES_END_LINE,
 } from '../../../src/pipeline/message-context.js';
 
 describe('excerptForContext', () => {
@@ -102,5 +106,38 @@ describe('renderReactionContent', () => {
     expect(renderReactionContent('🔥', { externalMessageId: '1' }).split('\n')[0]).toBe(
       '[Reaction: the user reacted with 🔥 to your message (id 1)]',
     );
+  });
+});
+
+describe('outbound notices', () => {
+  it('renders a header with source and ledger id, then the full body', () => {
+    expect(
+      renderOutboundNotice({
+        body: 'Line one\nLine two',
+        sentAt: '2026-11-28 08:00',
+        source: 'schedule',
+        externalMessageId: '4521',
+      }),
+    ).toBe(
+      '[You sent this message to this chat at 2026-11-28 08:00, from a scheduled task (id 4521)]\n' +
+        'Line one\nLine two',
+    );
+  });
+
+  it('omits the id when the ledger has none', () => {
+    expect(
+      renderOutboundNoticeHeader({ body: 'x', sentAt: '2026-11-28 08:00', source: 'other_conversation' }),
+    ).toBe('[You sent this message to this chat at 2026-11-28 08:00, from another conversation]');
+  });
+
+  it('prepends notices, an omitted count and an end line ahead of the content', () => {
+    expect(prependOutboundNotices(['[a]\nA', '[b]\nB'], 2, 'reply')).toBe(
+      '[2 earlier messages you sent to this chat are omitted]\n\n[a]\nA\n\n[b]\nB\n\n' +
+        `${OUTBOUND_NOTICES_END_LINE}\nreply`,
+    );
+  });
+
+  it('leaves content untouched when there is nothing to show', () => {
+    expect(prependOutboundNotices([], 0, 'reply')).toBe('reply');
   });
 });

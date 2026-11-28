@@ -316,6 +316,44 @@ export class RunRepository extends BaseRepository {
     }
   }
 
+  /**
+   * Returns the `created_at` of the latest completed, non-collaboration run
+   * on `threadId` created before `beforeCreatedAt`. With `sessionId`, only
+   * runs that recorded that provider session count, so runs that did not
+   * extend the session (voice calls, A2A delegations, other providers) never
+   * move the watermark. Null when no such run exists.
+   */
+  findCompletedRunWatermark(
+    threadId: string,
+    beforeCreatedAt: number,
+    sessionId?: string,
+  ): Result<number | null, DbError> {
+    try {
+      const sessionClause = sessionId !== undefined ? 'AND runs.session_id = ?' : '';
+      const params: Array<string | number> = [threadId, beforeCreatedAt];
+      if (sessionId !== undefined) params.push(sessionId);
+      const stmt = this.db.prepare(`
+        SELECT runs.created_at FROM runs
+        LEFT JOIN queue_items qi ON qi.id = runs.queue_item_id
+        WHERE runs.thread_id = ?
+          AND runs.status = 'completed'
+          AND runs.created_at < ?
+          AND (qi.type IS NULL OR qi.type != 'collaboration')
+          ${sessionClause}
+        ORDER BY runs.created_at DESC LIMIT 1
+      `);
+      const row = stmt.get(...params) as { created_at: number } | undefined;
+      return ok(row?.created_at ?? null);
+    } catch (cause) {
+      return err(
+        new DbError(
+          `Failed to find completed run watermark: ${String(cause)}`,
+          cause instanceof Error ? cause : undefined,
+        ),
+      );
+    }
+  }
+
   /** Returns the most recent provider_name for a thread. */
   getLatestProviderName(
     threadId: string,

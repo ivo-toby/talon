@@ -60,14 +60,6 @@ export class ChannelBroadcastHandler {
       channelRepository: Pick<ChannelRepository, 'findById'>;
       threadRepository: Pick<ThreadRepository, 'findById' | 'findByExternalId' | 'insert'>;
       messageRepository: Pick<MessageRepository, 'insert'>;
-      /**
-       * When provided, each recipient thread whose id differs from the
-       * current run's thread has its session force-rotated after the
-       * outbound is persisted. This ensures the next run on that thread
-       * starts fresh and ContextAssembler injects the broadcast into
-       * context. See channel.send for the full rationale.
-       */
-      sessionTracker?: { rotateSession: (threadId: string) => void };
       logger: pino.Logger;
     },
   ) {}
@@ -198,13 +190,10 @@ export class ChannelBroadcastHandler {
       return;
     }
 
-    // Cross-thread delivery: force-rotate the recipient's session so the
-    // next run there starts fresh and ContextAssembler injects this
-    // broadcast into context. See channel.send for the full rationale.
-    // Broadcast recipients are almost always cross-thread (the run is on
-    // the schedule thread, recipients are the persona's bound chats).
-    if (this.deps.sessionTracker && input.thread.id !== input.runThreadId) {
-      this.deps.sessionTracker.rotateSession(input.thread.id);
+    // Cross-thread delivery keeps the recipient's provider session; the next
+    // resumed run there is shown this broadcast in its live content. See
+    // channel.send and src/daemon/cross-thread-outbound.ts.
+    if (input.thread.id !== input.runThreadId) {
       this.deps.logger.info(
         {
           requestId: input.requestId,
@@ -213,7 +202,7 @@ export class ChannelBroadcastHandler {
           runThreadId: input.runThreadId,
           channelName: input.channel.name,
         },
-        'channel.broadcast: rotated recipient session after cross-thread outbound persistence',
+        'channel.broadcast: persisted cross-thread outbound; recipient session kept',
       );
     }
   }

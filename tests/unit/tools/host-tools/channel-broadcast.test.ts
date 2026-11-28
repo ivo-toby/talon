@@ -225,7 +225,7 @@ describe('ChannelBroadcastHandler', () => {
     expect(slackConnector.send).toHaveBeenCalled();
   });
 
-  it('force-rotates each recipient session when broadcasting from a different thread (scheduled-task case)', async () => {
+  it('persists each cross-thread broadcast with its run ID and keeps the recipient sessions (scheduled-task case)', async () => {
     const bindings = [
       { id: 'b1', channel_id: 'chan-001', thread_id: 'thread-a', persona_id: PERSONA_ID, is_default: 0, created_at: 0, updated_at: 0 },
       { id: 'b2', channel_id: 'chan-002', thread_id: 'thread-b', persona_id: PERSONA_ID, is_default: 0, created_at: 0, updated_at: 0 },
@@ -246,15 +246,15 @@ describe('ChannelBroadcastHandler', () => {
       ),
     } as any;
 
-    const sessionTracker = { rotateSession: vi.fn() };
+    const messageRepo = makeMessageRepo();
+    const logger = makeLogger();
     const handler = new ChannelBroadcastHandler({
       channelRegistry,
       bindingRepository: makeBindingRepo(bindings),
       channelRepository: makeChannelRepo(channels),
       threadRepository: makeThreadRepo(threads),
-      messageRepository: makeMessageRepo(),
-      sessionTracker,
-      logger: makeLogger(),
+      messageRepository: messageRepo,
+      logger,
     });
 
     const result = await handler.execute(
@@ -264,12 +264,19 @@ describe('ChannelBroadcastHandler', () => {
     );
 
     expect(result.status).toBe('success');
-    expect(sessionTracker.rotateSession).toHaveBeenCalledWith('thread-a');
-    expect(sessionTracker.rotateSession).toHaveBeenCalledWith('thread-b');
-    expect(sessionTracker.rotateSession).toHaveBeenCalledTimes(2);
+    for (const threadId of ['thread-a', 'thread-b']) {
+      expect(messageRepo.insert).toHaveBeenCalledWith(
+        expect.objectContaining({ thread_id: threadId, direction: 'outbound', run_id: RUN_ID }),
+      );
+      expect(logger.info).toHaveBeenCalledWith(
+        expect.objectContaining({ recipientThreadId: threadId, runThreadId: 'schedule-thread-001' }),
+        'channel.broadcast: persisted cross-thread outbound; recipient session kept',
+      );
+    }
+    expect(JSON.stringify(logger.info.mock.calls)).not.toContain('rotated');
   });
 
-  it('does NOT rotate a recipient whose thread is the same as the run thread', async () => {
+  it('does not report a cross-thread outbound for a recipient on the run thread', async () => {
     const bindings = [
       { id: 'b1', channel_id: 'chan-001', thread_id: 'thread-a', persona_id: PERSONA_ID, is_default: 0, created_at: 0, updated_at: 0 },
     ];
@@ -284,15 +291,14 @@ describe('ChannelBroadcastHandler', () => {
       get: vi.fn().mockReturnValue(connector),
     } as any;
 
-    const sessionTracker = { rotateSession: vi.fn() };
+    const logger = makeLogger();
     const handler = new ChannelBroadcastHandler({
       channelRegistry,
       bindingRepository: makeBindingRepo(bindings),
       channelRepository: makeChannelRepo(channels),
       threadRepository: makeThreadRepo(threads),
       messageRepository: makeMessageRepo(),
-      sessionTracker,
-      logger: makeLogger(),
+      logger,
     });
 
     const result = await handler.execute(
@@ -302,6 +308,9 @@ describe('ChannelBroadcastHandler', () => {
     );
 
     expect(result.status).toBe('success');
-    expect(sessionTracker.rotateSession).not.toHaveBeenCalled();
+    expect(logger.info).not.toHaveBeenCalledWith(
+      expect.anything(),
+      'channel.broadcast: persisted cross-thread outbound; recipient session kept',
+    );
   });
 });
