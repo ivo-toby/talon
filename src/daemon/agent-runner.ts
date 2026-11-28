@@ -38,6 +38,12 @@ import {
 import { getProviderAffinityResetAt } from '../threads/thread-metadata.js';
 import { resolveThreadRecipient } from './schedule-thread-utils.js';
 import { buildTimeContext } from '../core/time-context.js';
+import {
+  loadPendingCrossThreadOutbound,
+  NO_PENDING_CROSS_THREAD_OUTBOUND,
+  type PendingCrossThreadOutbound,
+} from './cross-thread-outbound.js';
+import { prependOutboundNotices } from '../pipeline/message-context.js';
 import { formatToolCall } from './tool-name-formatter.js';
 import { RunDelivery } from './run-delivery.js';
 import type {
@@ -140,6 +146,43 @@ export class AgentRunner {
     return this.imageContextSource === undefined
       ? undefined
       : { source: this.imageContextSource, imageLookupExposed };
+  }
+
+  /**
+   * Outbound messages persisted to `threadId` by runs on other threads that
+   * the resumed session has not been shown yet. A lookup failure only costs
+   * the notices: it is logged and the run continues on its session.
+   */
+  private resolvePendingCrossThreadOutbound(
+    threadId: string,
+    runId: string,
+    sessionId: string,
+    runCreatedAt: number,
+  ): PendingCrossThreadOutbound {
+    const result = loadPendingCrossThreadOutbound(
+      { messageRepository: this.ctx.repos.message, runRepository: this.ctx.repos.run },
+      { threadId, sessionId, currentRunCreatedAt: runCreatedAt },
+    );
+    if (result.isErr()) {
+      this.ctx.logger.warn(
+        { runId, threadId, err: result.error },
+        'agent-runner: failed to load cross-thread outbound notices',
+      );
+      return NO_PENDING_CROSS_THREAD_OUTBOUND;
+    }
+    if (result.value.rendered.length > 0 || result.value.omitted > 0) {
+      this.ctx.logger.info(
+        {
+          runId,
+          threadId,
+          shown: result.value.rendered.length,
+          omitted: result.value.omitted,
+          charCount: result.value.charCount,
+        },
+        'agent-runner: showing cross-thread outbound notices to resumed session',
+      );
+    }
+    return result.value;
   }
 
   /**
@@ -492,6 +535,22 @@ export class AgentRunner {
       }
       return err(new Error(`failed to create run record: ${runInsert.error.message}`));
     }
+
+    // Exclusive upper bound of the cross-thread outbound window: everything
+    // persisted from here on belongs to the next run on this thread.
+    const runCreatedAt = runInsert.value.created_at;
+    let pendingOutbound: PendingCrossThreadOutbound | undefined;
+    const getPendingOutbound = (resumeSessionId: string): PendingCrossThreadOutbound => {
+      if (pendingOutbound === undefined) {
+        pendingOutbound = this.resolvePendingCrossThreadOutbound(
+          item.threadId,
+          runId,
+          resumeSessionId,
+          runCreatedAt,
+        );
+      }
+      return pendingOutbound;
+    };
 
     if (isVoiceTask && voiceSink) {
       const startedResult = voiceSink.executionStarted(voiceRequest.delegationId, now);
@@ -958,10 +1017,25 @@ export class AgentRunner {
                 isA2ATask || isScheduleTask,
                 imageLookupExposed,
               );
+              // A resumed session never re-reads the database, so outbound
+              // messages another thread's run (a scheduled task, a
+              // broadcast, a background task) persisted here since this
+              // session's last run are shown ahead of the current message.
+              // Fresh attempts get them from ContextAssembler's Recent
+              // Messages instead, so they are never shown twice.
+              const outboundNotices =
+                resumeSessionId !== undefined && !isVoiceTask && !isA2ATask && !isScheduleTask
+                  ? getPendingOutbound(resumeSessionId)
+                  : NO_PENDING_CROSS_THREAD_OUTBOUND;
+              const liveContent = prependOutboundNotices(
+                outboundNotices.rendered,
+                outboundNotices.omitted,
+                content,
+              );
               const livePrompt =
                 liveImages !== undefined && liveImages.text.length > 0
-                  ? `${content}\n\n${liveImages.text}`
-                  : content;
+                  ? `${liveContent}\n\n${liveImages.text}`
+                  : liveContent;
 
               const toolInstructionsBlock = resolveToolInstructions(
                 this.ctx.toolInstructions,

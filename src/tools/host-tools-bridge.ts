@@ -136,7 +136,6 @@ export class HostToolsBridge {
       channelRepository: ctx.repos.channel,
       messageRepository: ctx.repos.message,
       bindingRepository: ctx.repos.binding,
-      sessionTracker: ctx.sessionTracker,
       ...(ctx.repos.messageRef ? { messageRefRepository: ctx.repos.messageRef } : {}),
       logger: handlerLogger,
     });
@@ -162,7 +161,6 @@ export class HostToolsBridge {
       channelRepository: ctx.repos.channel,
       threadRepository: ctx.repos.thread,
       messageRepository: ctx.repos.message,
-      sessionTracker: ctx.sessionTracker,
       logger: handlerLogger,
     });
 

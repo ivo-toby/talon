@@ -50,6 +50,7 @@ import type { DaemonContext } from '../../../src/daemon/daemon-context.js';
 import { type QueueItem, QueueItemStatus } from '../../../src/queue/queue-types.js';
 import { QueueDeferral } from '../../../src/queue/queue-processor.js';
 import { ProviderRegistry } from '../../../src/providers/provider-registry.js';
+import { DbError } from '../../../src/core/errors/index.js';
 import { ClaudeCodeProvider } from '../../../src/providers/claude-code-provider.js';
 import type {
   ObservationHandle,
@@ -188,9 +189,11 @@ function makeMockContext(): DaemonContext {
       audit: {} as any,
       message: {
         insert: vi.fn().mockReturnValue(ok({})),
+        findCrossThreadOutbound: vi.fn().mockReturnValue(ok({ total: 0, messages: [] })),
       } as any,
       run: {
         insert: vi.fn().mockReturnValue(ok({})),
+        findCompletedRunWatermark: vi.fn().mockReturnValue(ok(null)),
         updateStatus: vi.fn().mockReturnValue(ok({})),
         updateSessionId: vi.fn().mockReturnValue(ok({})),
         updateTokens: vi.fn().mockReturnValue(ok({})),
@@ -2875,6 +2878,131 @@ describe('AgentRunner', () => {
   // -------------------------------------------------------------------------
   // Session restore from DB (BUG-008)
   // -------------------------------------------------------------------------
+
+  describe('cross-thread outbound notices on resumed sessions', () => {
+    const scheduledOutbound = {
+      id: 'msg-sched-1',
+      thread_id: 'thread-001',
+      direction: 'outbound' as const,
+      content: JSON.stringify({ body: 'What is on your plate today?' }),
+      idempotency_key: 'channel-send:run-sched:tool-1',
+      provider_id: null,
+      run_id: 'run-sched',
+      created_at: new Date(2026, 10, 28, 8, 0).getTime(),
+      source_thread_id: 'schedule-thread-001',
+      source_thread_external_id: 'schedule:assistant:test-channel:ext-001',
+      source_queue_type: 'schedule',
+      external_message_id: '4521',
+    };
+
+    beforeEach(() => {
+      vi.mocked(ctx.repos.run.insert).mockImplementation((row: any) =>
+        ok({ ...row, created_at: 5_000 }),
+      );
+      vi.mocked(ctx.repos.run.findCompletedRunWatermark).mockReturnValue(ok(1_000));
+      vi.mocked(ctx.repos.message.findCrossThreadOutbound).mockReturnValue(
+        ok({ total: 1, messages: [scheduledOutbound] }),
+      );
+    });
+
+    it('resumes the session and prepends unseen outbound messages to the live prompt', async () => {
+      vi.mocked(ctx.sessionTracker.getSessionId).mockReturnValue('live-session');
+
+      const result = await runner.run(
+        makeQueueItem({ payload: { personaId: 'persona-001', content: 'Mostly meetings' } }),
+      );
+
+      expect(result.isOk()).toBe(true);
+      const call = mockQuery.mock.calls[0]![0] as { prompt: string; options: { resume?: string } };
+      expect(call.options.resume).toBe('live-session');
+      expect(call.prompt).toBe(
+        '[You sent this message to this chat at 2026-11-28 08:00, from a scheduled task (id 4521)]\n' +
+          'What is on your plate today?\n\n' +
+          '[New message in this chat]\n' +
+          'Mostly meetings',
+      );
+      expect(ctx.repos.run.findCompletedRunWatermark).toHaveBeenCalledWith(
+        'thread-001',
+        5_000,
+        'live-session',
+      );
+      expect(ctx.repos.message.findCrossThreadOutbound).toHaveBeenCalledWith('thread-001', {
+        fromInclusive: 1_000,
+        beforeExclusive: 5_000,
+        limit: 20,
+      });
+      expect(ctx.sessionTracker.rotateSession).not.toHaveBeenCalled();
+    });
+
+    it('shows nothing and does not query on a fresh session (Recent Messages already has it)', async () => {
+      vi.mocked(ctx.sessionTracker.getSessionId).mockReturnValue(undefined);
+      vi.mocked(ctx.repos.run.getLatestSessionId).mockReturnValue(ok(null));
+
+      await runner.run(
+        makeQueueItem({ payload: { personaId: 'persona-001', content: 'Mostly meetings' } }),
+      );
+
+      const call = mockQuery.mock.calls[0]![0] as { prompt: string; options: { resume?: string } };
+      expect(call.options.resume).toBeUndefined();
+      expect(call.prompt).toBe('Mostly meetings');
+      expect(ctx.repos.message.findCrossThreadOutbound).not.toHaveBeenCalled();
+    });
+
+    it('drops the notices on the fresh retry after a resumed session fails', async () => {
+      vi.mocked(ctx.sessionTracker.getSessionId).mockReturnValue('stale-session');
+      mockQuery
+        .mockImplementationOnce(() => {
+          throw new Error('Session not found');
+        })
+        .mockReturnValueOnce(makeAgentStream());
+
+      await runner.run(
+        makeQueueItem({ payload: { personaId: 'persona-001', content: 'Mostly meetings' } }),
+      );
+
+      const first = mockQuery.mock.calls[0]![0] as { prompt: string };
+      const second = mockQuery.mock.calls[1]![0] as { prompt: string; options: { resume?: string } };
+      expect(first.prompt).toContain('What is on your plate today?');
+      expect(second.options.resume).toBeUndefined();
+      expect(second.prompt).toBe('Mostly meetings');
+    });
+
+    it('keeps schedule runs isolated: no resume, no notices', async () => {
+      vi.mocked(ctx.sessionTracker.getSessionId).mockReturnValue('live-session');
+
+      await runner.run(
+        makeQueueItem({
+          type: 'schedule',
+          payload: { personaId: 'persona-001', content: 'Run the morning check' },
+        }),
+      );
+
+      const call = mockQuery.mock.calls[0]![0] as { prompt: string; options: { resume?: string } };
+      expect(call.options.resume).toBeUndefined();
+      expect(call.prompt).not.toContain('You sent this message');
+      expect(ctx.repos.message.findCrossThreadOutbound).not.toHaveBeenCalled();
+    });
+
+    it('continues on the resumed session without notices when the lookup fails', async () => {
+      vi.mocked(ctx.sessionTracker.getSessionId).mockReturnValue('live-session');
+      vi.mocked(ctx.repos.message.findCrossThreadOutbound).mockReturnValue(
+        err(new DbError('boom')) as any,
+      );
+
+      const result = await runner.run(
+        makeQueueItem({ payload: { personaId: 'persona-001', content: 'Mostly meetings' } }),
+      );
+
+      expect(result.isOk()).toBe(true);
+      const call = mockQuery.mock.calls[0]![0] as { prompt: string; options: { resume?: string } };
+      expect(call.options.resume).toBe('live-session');
+      expect(call.prompt).toBe('Mostly meetings');
+      expect(ctx.logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ threadId: 'thread-001' }),
+        'agent-runner: failed to load cross-thread outbound notices',
+      );
+    });
+  });
 
   describe('session restore from DB on restart', () => {
     it('falls back to DB session when in-memory tracker has none', async () => {
