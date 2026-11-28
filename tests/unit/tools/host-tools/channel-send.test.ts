@@ -997,7 +997,7 @@ describe('ChannelSendHandler — binding-gated persistence', () => {
   });
 });
 
-describe('ChannelSendHandler — cross-thread session rotation', () => {
+describe('ChannelSendHandler — cross-thread outbound keeps the recipient session', () => {
   function makeBindingRepo(opts: { scoped?: any | null; default?: any | null }) {
     return {
       findByChannelAndThread: vi.fn().mockReturnValue(ok(opts.scoped ?? null)),
@@ -1039,20 +1039,21 @@ describe('ChannelSendHandler — cross-thread session rotation', () => {
     updated_at: 0,
   };
 
-  it('force-rotates the recipient session when the run is on a different thread (scheduled-task case)', async () => {
-    const messageRepo = makeMessageRepo();
-    const connector = makeConnector(ok(undefined));
-    const registry = makeRegistry(connector);
-    const sessionTracker = { rotateSession: vi.fn() };
-    const handler = new ChannelSendHandler({
-      channelRegistry: registry,
+  function makeHandler(messageRepo: any, logger = makeLogger()) {
+    return new ChannelSendHandler({
+      channelRegistry: makeRegistry(makeConnector(ok(undefined))),
       threadRepository: makeThreadRepoWithExternal(liveThread),
       channelRepository: makeChannelRepo(),
       messageRepository: messageRepo,
       bindingRepository: makeBindingRepo({ scoped: scopedBinding }),
-      sessionTracker,
-      logger: makeLogger(),
+      logger,
     });
+  }
+
+  it('persists a cross-thread outbound with its run ID and keeps the recipient session (scheduled-task case)', async () => {
+    const messageRepo = makeMessageRepo();
+    const logger = makeLogger();
+    const handler = makeHandler(messageRepo, logger);
 
     const result = await handler.execute(
       makeArgs({ content: 'What is on your plate today?' }),
@@ -1060,32 +1061,29 @@ describe('ChannelSendHandler — cross-thread session rotation', () => {
     );
 
     expect(result.status).toBe('success');
+    // The run ID on the recipient thread is what lets the next resumed run
+    // there find this message as cross-thread (src/daemon/cross-thread-outbound.ts).
     expect(messageRepo.insert).toHaveBeenCalledWith(
-      expect.objectContaining({ thread_id: 'live-thread-001', direction: 'outbound' }),
+      expect.objectContaining({
+        thread_id: 'live-thread-001',
+        direction: 'outbound',
+        run_id: 'run-001',
+      }),
     );
-    // Recipient thread's session is rotated so the next run there starts
-    // fresh and ContextAssembler injects the scheduled outbound.
-    expect(sessionTracker.rotateSession).toHaveBeenCalledWith('live-thread-001');
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        recipientThreadId: 'live-thread-001',
+        runThreadId: 'schedule-thread-001',
+      }),
+      'channel.send: persisted cross-thread outbound; recipient session kept',
+    );
+    expect(JSON.stringify(logger.info.mock.calls)).not.toContain('rotated');
   });
 
-  it('does NOT rotate when the recipient thread is the same as the run thread (inline reply)', async () => {
-    // Same-thread delivery: the outbound is part of the current run's own
-    // conversation. The codex session for this thread already includes it
-    // (the agent just generated it). Rotating would needlessly destroy
-    // the session and force a cache miss on the next run.
+  it('does not report a cross-thread outbound for an inline reply on the same thread', async () => {
     const messageRepo = makeMessageRepo();
-    const connector = makeConnector(ok(undefined));
-    const registry = makeRegistry(connector);
-    const sessionTracker = { rotateSession: vi.fn() };
-    const handler = new ChannelSendHandler({
-      channelRegistry: registry,
-      threadRepository: makeThreadRepoWithExternal(liveThread),
-      channelRepository: makeChannelRepo(),
-      messageRepository: messageRepo,
-      bindingRepository: makeBindingRepo({ scoped: scopedBinding }),
-      sessionTracker,
-      logger: makeLogger(),
-    });
+    const logger = makeLogger();
+    const handler = makeHandler(messageRepo, logger);
 
     const result = await handler.execute(
       makeArgs({ content: 'inline reply' }),
@@ -1094,24 +1092,17 @@ describe('ChannelSendHandler — cross-thread session rotation', () => {
 
     expect(result.status).toBe('success');
     expect(messageRepo.insert).toHaveBeenCalled();
-    expect(sessionTracker.rotateSession).not.toHaveBeenCalled();
+    expect(logger.info).not.toHaveBeenCalledWith(
+      expect.anything(),
+      'channel.send: persisted cross-thread outbound; recipient session kept',
+    );
   });
 
-  it('does NOT rotate when persistence fails (message not in DB, rotation would not help)', async () => {
+  it('does not report a cross-thread outbound when persistence fails', async () => {
     const messageRepo = makeMessageRepo();
     (messageRepo.insert as any).mockReturnValue(err(new Error('disk full')));
-    const connector = makeConnector(ok(undefined));
-    const registry = makeRegistry(connector);
-    const sessionTracker = { rotateSession: vi.fn() };
-    const handler = new ChannelSendHandler({
-      channelRegistry: registry,
-      threadRepository: makeThreadRepoWithExternal(liveThread),
-      channelRepository: makeChannelRepo(),
-      messageRepository: messageRepo,
-      bindingRepository: makeBindingRepo({ scoped: scopedBinding }),
-      sessionTracker,
-      logger: makeLogger(),
-    });
+    const logger = makeLogger();
+    const handler = makeHandler(messageRepo, logger);
 
     const result = await handler.execute(
       makeArgs({ content: 'hi' }),
@@ -1119,29 +1110,10 @@ describe('ChannelSendHandler — cross-thread session rotation', () => {
     );
 
     expect(result.status).toBe('success');
-    expect(sessionTracker.rotateSession).not.toHaveBeenCalled();
-  });
-
-  it('works without a sessionTracker (no rotation, no error)', async () => {
-    const messageRepo = makeMessageRepo();
-    const connector = makeConnector(ok(undefined));
-    const registry = makeRegistry(connector);
-    const handler = new ChannelSendHandler({
-      channelRegistry: registry,
-      threadRepository: makeThreadRepoWithExternal(liveThread),
-      channelRepository: makeChannelRepo(),
-      messageRepository: messageRepo,
-      bindingRepository: makeBindingRepo({ scoped: scopedBinding }),
-      logger: makeLogger(),
-    });
-
-    const result = await handler.execute(
-      makeArgs({ content: 'hi' }),
-      makeContext({ runId: 'run-001', requestId: 'tool-001', threadId: 'schedule-thread-001' }),
+    expect(logger.info).not.toHaveBeenCalledWith(
+      expect.anything(),
+      'channel.send: persisted cross-thread outbound; recipient session kept',
     );
-
-    expect(result.status).toBe('success');
-    expect(messageRepo.insert).toHaveBeenCalled();
   });
 });
 

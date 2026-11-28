@@ -1796,6 +1796,17 @@ Agent run completes → selected trigger metric exceeds threshold?
 - **Awaited, not fire-and-forget** — rotation completes before the next queue item is processed, preventing race conditions.
 - **Prompt injection mitigation** — injected historical content is framed as "prior-conversation state" and replayed turns use bracketed state tags (`[previous turn, user]: …`) rather than `User:` / `Assistant:` role markers, so the main agent doesn't mistake historical context for live instructions. Recent Messages is scoped to turns AFTER the most recent rotation via `metadata.rotatedThroughTs`; pre-rotation turns are already compressed in the summary/observation.
 - **Bounded observation replay** — for the observational-memory path, the ContextAssembler replays observations up to a character budget (~20K) rather than concatenating the full log. This keeps prompt size flat over the thread's lifetime while preserving the newest state snapshot plus recent consolidated history.
+- **Scheduled messages keep the session** — when a scheduled task (or another conversation, or a background task) sends into a chat with `channel.send` or `channel.broadcast`, the chat's provider session is kept. The next resumed run in that chat is shown every message it missed, oldest first, ahead of the user's message:
+
+  ```
+  [You sent this message to this chat at 2026-11-28 08:00, from a scheduled task (id 4521)]
+  What's on your plate today?
+
+  [New message in this chat]
+  Mostly meetings
+  ```
+
+  "Missed" is worked out from the database (outbound rows from other threads' runs since the session's last completed run), so a daemon restart between the send and the reply loses nothing, and each message is shown once. A run that fails shows them again on the retry. At most 20 messages and 16,000 characters are shown; older ones are counted in an `[N earlier messages … are omitted]` line. Fresh sessions get the messages from Recent Messages instead. Voice, A2A and schedule runs never resume a session, so they are unaffected.
 - **Durable completion state** — each observation persists `taskComplete` in metadata. When the observer flags the prior turn as complete, the assembler suppresses "Current task:" / "Next step:" hints so stale task pointers don't survive rotation and cause the agent to re-enter old work.
 
 **Files:** `src/daemon/context-roller.ts`, `src/daemon/context-assembler.ts`

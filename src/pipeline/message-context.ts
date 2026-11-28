@@ -92,3 +92,76 @@ export function renderReactionContent(emoji: string, target: ResolvedMessageRefe
     `If no reply is needed, respond with exactly ${NO_REPLY_SENTINEL}.)`
   );
 }
+
+/** Where a cross-thread outbound came from, as far as the ledger can tell. */
+export type OutboundNoticeSource = 'schedule' | 'other_conversation' | 'background_task';
+
+/** One outbound message the resumed session has not seen yet. */
+export interface OutboundNotice {
+  /** Full stored body of the message. */
+  body: string;
+  /** Local `YYYY-MM-DD HH:MM` the message was stored. */
+  sentAt: string;
+  source: OutboundNoticeSource;
+  /** Provider message ID, when the ledger recorded one. */
+  externalMessageId?: string;
+}
+
+const OUTBOUND_SOURCE_LABEL: Record<OutboundNoticeSource, string> = {
+  schedule: 'from a scheduled task',
+  other_conversation: 'from another conversation',
+  background_task: 'from a background task',
+};
+
+/**
+ * Header line for an outbound message sent to this conversation outside its
+ * own turns, e.g.
+ * `[You sent this message to this chat at 2026-11-28 08:00, from a scheduled task (id 4521)]`.
+ */
+export function renderOutboundNoticeHeader(notice: OutboundNotice): string {
+  const id =
+    notice.externalMessageId !== undefined && notice.externalMessageId !== ''
+      ? ` (id ${notice.externalMessageId})`
+      : '';
+  return (
+    `[You sent this message to this chat at ${notice.sentAt}, ` +
+    `${OUTBOUND_SOURCE_LABEL[notice.source]}${id}]`
+  );
+}
+
+/** Header line followed by the message body. */
+export function renderOutboundNotice(notice: OutboundNotice): string {
+  return notice.body === ''
+    ? renderOutboundNoticeHeader(notice)
+    : `${renderOutboundNoticeHeader(notice)}\n${notice.body}`;
+}
+
+/** Line stating how many older outbound notices did not fit. */
+export function renderOmittedOutboundLine(omitted: number): string {
+  return omitted === 1
+    ? '[1 earlier message you sent to this chat is omitted]'
+    : `[${omitted} earlier messages you sent to this chat are omitted]`;
+}
+
+/** Line separating the outbound notices from the message being answered. */
+export const OUTBOUND_NOTICES_END_LINE = '[New message in this chat]';
+
+/**
+ * Prefixes `content` with rendered outbound notices (chronological, already
+ * budgeted) and an optional omitted-count line. Returns `content` unchanged
+ * when there is nothing to show.
+ */
+export function prependOutboundNotices(
+  rendered: string[],
+  omitted: number,
+  content: string,
+): string {
+  if (rendered.length === 0 && omitted === 0) return content;
+  const parts = [
+    ...(omitted > 0 ? [renderOmittedOutboundLine(omitted)] : []),
+    ...rendered,
+    OUTBOUND_NOTICES_END_LINE,
+  ];
+  const block = parts.join('\n\n');
+  return content === '' ? block : `${block}\n${content}`;
+}

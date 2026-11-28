@@ -140,19 +140,6 @@ export class ChannelSendHandler {
         'findByChannelAndThread' | 'findDefaultForChannel'
       >;
       /**
-       * When provided, the recipient thread's session is force-rotated
-       * whenever an outbound message is persisted to a thread other than
-       * the current run's thread (the scheduled-task cross-thread case).
-       * Without this, the next run on the recipient thread resumes its
-       * codex session and ContextAssembler is skipped (agent-runner.ts),
-       * so the agent never sees the scheduled outbound in context — even
-       * though it's in the DB. Rotating forces a fresh session and lets
-       * ContextAssembler inject the recent messages including the
-       * scheduled outbound. The cost is one cache miss per cross-thread
-       * delivery; acceptable for scheduled tasks (few per hour).
-       */
-      sessionTracker?: { rotateSession: (threadId: string) => void };
-      /**
        * Message ledger. When provided, a `replyTo` target is completed from
        * it (author and text, which some providers need to build a quote) and
        * the sent message's provider ID is recorded on the recipient thread so
@@ -431,9 +418,9 @@ export class ChannelSendHandler {
     /**
      * The thread the current run is executing on. When the resolved
      * recipient thread differs from this (cross-thread delivery — the
-     * scheduled-task case), the recipient's session is force-rotated so
-     * the next run there starts fresh and ContextAssembler injects this
-     * outbound into context.
+     * scheduled-task case), the recipient keeps its provider session: the
+     * next resumed run there is shown this outbound in its live content
+     * (`src/daemon/cross-thread-outbound.ts`).
      */
     runThreadId: string;
     voiceObservation?: VoiceObservationContext;
@@ -517,30 +504,23 @@ export class ChannelSendHandler {
       }
     }
 
-    // Cross-thread delivery: the outbound was persisted to a thread other
-    // than the current run's thread (scheduled-task case). Force-rotate
-    // the recipient's session so the next run there starts fresh —
-    // ContextAssembler will inject this outbound into context. Without
-    // this, a resumed codex session on the recipient thread would skip
-    // ContextAssembler (agent-runner.ts) and never see the scheduled
-    // message, even though it's in the DB. Observed in production: agent
-    // asked "what's on your plate today?" via scheduled task, user
-    // replied, agent had no context for the reply.
-    if (
-      this.deps.sessionTracker &&
-      targetThread.id !== input.runThreadId
-    ) {
-      this.deps.sessionTracker.rotateSession(targetThread.id);
+    // Cross-thread delivery (scheduled-task case) deliberately leaves the
+    // recipient's provider session alone. Discarding it lost the whole
+    // conversation without a summary; instead the next resumed run on the
+    // recipient thread derives the outbounds it has not seen from the
+    // database and shows them in its live content
+    // (src/daemon/cross-thread-outbound.ts).
+    if (targetThread.id !== input.runThreadId) {
       this.deps.logger.info(
         input.voiceObservation
-          ? voiceDiagnosticFields(input.voiceObservation, { event: 'recipient_session_rotated' })
+          ? voiceDiagnosticFields(input.voiceObservation, { event: 'cross_thread_outbound_persisted' })
           : {
               requestId: input.requestId,
               runId: input.runId,
               recipientThreadId: targetThread.id,
               runThreadId: input.runThreadId,
             },
-        'channel.send: rotated recipient session after cross-thread outbound persistence',
+        'channel.send: persisted cross-thread outbound; recipient session kept',
       );
     }
   }

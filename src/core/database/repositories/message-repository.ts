@@ -26,6 +26,30 @@ export interface MessageRow {
 /** Fields accepted when inserting a new message. `created_at` is set automatically. */
 export type InsertMessageInput = Omit<MessageRow, 'created_at'>;
 
+/**
+ * An outbound message persisted to a thread by a run on another thread (or by
+ * a background task, whose ID has no `runs` row), with the context needed to
+ * render it to the recipient thread's resumed session.
+ */
+export interface CrossThreadOutboundRow extends MessageRow {
+  /** Thread of the run that sent it; null when the sender has no `runs` row. */
+  source_thread_id: string | null;
+  /** External ID of that thread (`schedule:…` for a dedicated schedule thread). */
+  source_thread_external_id: string | null;
+  /** Queue item type of the sending run (`schedule`, `message`, …), when still known. */
+  source_queue_type: string | null;
+  /** Latest provider message ID recorded for it in the ledger, if any. */
+  external_message_id: string | null;
+}
+
+/** Result of {@link MessageRepository.findCrossThreadOutbound}. */
+export interface CrossThreadOutboundPage {
+  /** Total number of matching messages in the window. */
+  total: number;
+  /** The newest `limit` matches, in chronological order. */
+  messages: CrossThreadOutboundRow[];
+}
+
 /** Repository for reading and writing message records. */
 export class MessageRepository extends BaseRepository {
   private readonly insertStmt: Database.Statement;
@@ -37,6 +61,7 @@ export class MessageRepository extends BaseRepository {
   private readonly findLatestByThreadSincePageStmt: Database.Statement;
   private readonly findByIdempotencyKeyStmt: Database.Statement;
   private readonly updateVoiceTranscriptStmt: Database.Statement;
+  private crossThreadOutboundStmts?: { count: Database.Statement; page: Database.Statement };
 
   constructor(db: Database.Database) {
     super(db);
@@ -193,6 +218,87 @@ export class MessageRepository extends BaseRepository {
       return err(
         new DbError(
           `Failed to find messages by thread: ${String(cause)}`,
+          cause instanceof Error ? cause : undefined,
+        ),
+      );
+    }
+  }
+
+  /**
+   * Prepared on first use: the query joins `runs`, `threads`, `queue_items`
+   * and `message_refs`, which partial test schemas may not have.
+   */
+  private getCrossThreadOutboundStmts(): { count: Database.Statement; page: Database.Statement } {
+    if (!this.crossThreadOutboundStmts) {
+      // Outbound rows on a thread whose producing run lives on a different
+      // thread. `run_id` without a `runs` row (background tasks) counts as
+      // cross-thread too: the thread's own session never produced it.
+      const crossThreadWhere = `
+        FROM messages m
+        LEFT JOIN runs r ON r.id = m.run_id
+        WHERE m.thread_id = @thread_id
+          AND m.direction = 'outbound'
+          AND m.run_id IS NOT NULL
+          AND (r.thread_id IS NULL OR r.thread_id != @thread_id)
+          AND m.created_at >= @from_inclusive
+          AND m.created_at < @before_exclusive
+      `;
+      const count = this.db.prepare(
+        `SELECT COUNT(*) AS total ${crossThreadWhere}`,
+      );
+      const page = this.db.prepare(`
+        SELECT * FROM (
+          SELECT m.*, m.rowid AS row_order, r.thread_id AS source_thread_id,
+            (SELECT st.external_id FROM threads st WHERE st.id = r.thread_id)
+              AS source_thread_external_id,
+            (SELECT sq.type FROM queue_items sq WHERE sq.id = r.queue_item_id)
+              AS source_queue_type,
+            (SELECT mr.external_id FROM message_refs mr
+              WHERE mr.thread_id = m.thread_id AND mr.message_id = m.id
+              ORDER BY mr.created_at DESC LIMIT 1) AS external_message_id
+          ${crossThreadWhere}
+          ORDER BY m.created_at DESC, m.rowid DESC
+          LIMIT @limit
+        ) sub ORDER BY created_at ASC, row_order ASC
+      `);
+      this.crossThreadOutboundStmts = { count, page };
+    }
+    return this.crossThreadOutboundStmts;
+  }
+
+  /**
+   * Returns the outbound messages persisted to `threadId` by runs on other
+   * threads within `[fromInclusive, beforeExclusive)` of `created_at`, newest
+   * `limit` in chronological order, plus the total count in the window.
+   *
+   * The half-open window lets consecutive runs partition the timeline without
+   * gaps or overlaps: a row is created with the current clock, so a row
+   * inserted after a run's row can never fall before that run's `created_at`.
+   */
+  findCrossThreadOutbound(
+    threadId: string,
+    window: { fromInclusive: number; beforeExclusive: number; limit: number },
+  ): Result<CrossThreadOutboundPage, DbError> {
+    try {
+      const params = {
+        thread_id: threadId,
+        from_inclusive: window.fromInclusive,
+        before_exclusive: window.beforeExclusive,
+      };
+      const stmts = this.getCrossThreadOutboundStmts();
+      const countRow = stmts.count.get(params) as { total: number };
+      if (countRow.total === 0 || window.limit <= 0) {
+        return ok({ total: countRow.total, messages: [] });
+      }
+      const rows = stmts.page.all({ ...params, limit: window.limit }) as Array<
+        CrossThreadOutboundRow & { row_order?: number }
+      >;
+      const messages = rows.map(({ row_order: _rowOrder, ...row }) => row);
+      return ok({ total: countRow.total, messages });
+    } catch (cause) {
+      return err(
+        new DbError(
+          `Failed to find cross-thread outbound messages: ${String(cause)}`,
           cause instanceof Error ? cause : undefined,
         ),
       );
