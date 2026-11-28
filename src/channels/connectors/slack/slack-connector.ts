@@ -12,7 +12,15 @@
 
 import type pino from 'pino';
 import WebSocket from 'ws';
-import type { ChannelConnector, InboundEvent, AgentOutput } from '../../channel-types.js';
+import type {
+  ChannelConnector,
+  InboundEvent,
+  AgentOutput,
+  AttachmentDeliveryReceipt,
+  OutboundAttachmentSupport,
+  SendReceipt,
+} from '../../channel-types.js';
+import { SLACK_OUTBOUND_ATTACHMENTS, uploadSlackAttachment } from './slack-outbound-media.js';
 import type { Result } from '../../../core/types/result.js';
 import { ok, err } from '../../../core/types/result.js';
 import { ChannelError } from '../../../core/errors/error-types.js';
@@ -59,6 +67,8 @@ const MENTION_RE = /<@(U[A-Z0-9]+)>/g;
  * 4. Call `stop()` to disconnect gracefully.
  */
 export class SlackConnector implements ChannelConnector {
+  /** Uploads via files.getUploadURLExternal / completeUploadExternal (`files:write`). */
+  readonly outboundAttachments: OutboundAttachmentSupport = SLACK_OUTBOUND_ATTACHMENTS;
   readonly type = 'slack';
   readonly name: string;
 
@@ -222,9 +232,55 @@ export class SlackConnector implements ChannelConnector {
    * @param externalThreadId - Encoded as `<channelId>` or `<channelId>:<thread_ts>`.
    * @param output            - Agent output to deliver.
    */
-  async send(externalThreadId: string, output: AgentOutput): Promise<Result<void, ChannelError>> {
-    const text = this.format(output.body);
+  async send(
+    externalThreadId: string,
+    output: AgentOutput,
+  ): Promise<Result<SendReceipt | void, ChannelError>> {
+    const { channelId, threadTs } = this.resolveTarget(externalThreadId);
+    const attachments = output.attachments ?? [];
+    if (attachments.length === 0) {
+      const sent = await this.postText(channelId, threadTs, output.body);
+      return sent.map(() => undefined);
+    }
 
+    // Text first, then one upload per attachment into the same channel or
+    // thread, with its caption as the upload's comment. A failed text fails
+    // before any upload; failed uploads are reported per item.
+    let receiptId: string | undefined;
+    if (output.body.trim() !== '') {
+      const text = await this.postText(channelId, threadTs, output.body);
+      if (text.isErr()) return err(text.error);
+      receiptId = text.value;
+    }
+    const delivered: AttachmentDeliveryReceipt[] = [];
+    for (const [index, attachment] of attachments.entries()) {
+      const sent = await uploadSlackAttachment(this.config.botToken, attachment, {
+        channelId,
+        ...(threadTs ? { threadTs } : {}),
+      });
+      if (sent.isErr()) {
+        this.logger.warn(
+          { channelName: this.name, index, mimeType: attachment.mimeType, size: attachment.size, err: sent.error.message },
+          'slack: attachment upload failed',
+        );
+        delivered.push({ index, status: 'failed', error: sent.error.message });
+        continue;
+      }
+      receiptId ??= sent.value;
+      delivered.push({
+        index,
+        status: 'sent',
+        ...(sent.value !== undefined ? { externalMessageId: sent.value } : {}),
+      });
+    }
+    return ok({
+      ...(receiptId !== undefined ? { externalMessageId: receiptId } : {}),
+      attachments: delivered,
+    });
+  }
+
+  /** Decodes the thread ID, falling back to `defaultChannel` for non-Slack IDs. */
+  private resolveTarget(externalThreadId: string): { channelId: string; threadTs: string | undefined } {
     // Decode the compound thread ID.
     let { channelId, threadTs } = decodeThreadId(externalThreadId);
 
@@ -240,7 +296,16 @@ export class SlackConnector implements ChannelConnector {
         threadTs = undefined;
       }
     }
+    return { channelId, threadTs };
+  }
 
+  /** Posts one text message and returns its `ts`. */
+  private async postText(
+    channelId: string,
+    threadTs: string | undefined,
+    body: string,
+  ): Promise<Result<string | undefined, ChannelError>> {
+    const text = this.format(body);
     const payload: Record<string, unknown> = {
       channel: channelId,
       text,
@@ -283,7 +348,7 @@ export class SlackConnector implements ChannelConnector {
       return err(new ChannelError(`Slack chat.postMessage failed: ${errorCode}`));
     }
 
-    return ok(undefined);
+    return ok(data.ts);
   }
 
   /**

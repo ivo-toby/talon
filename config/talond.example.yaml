@@ -631,7 +631,8 @@ images:
 # symlink resolution), the built-in denylist (system dirs, .ssh/.aws/.git,
 # .env, *.pem, id_* …, plus Talon's data dir and this config file), the size
 # caps and the MIME type sniffed from the bytes. Any refusal sends nothing.
-# Supported today on Telegram; other channels refuse with channel_unsupported.
+# Supported on Telegram, Slack (needs the files:write scope) and Discord (needs
+# Attach Files; 20 MB per file); other channels refuse with channel_unsupported.
 #
 attachments:
   outbound:

@@ -8,7 +8,15 @@
  */
 
 import type pino from 'pino';
-import type { ChannelConnector, InboundEvent, AgentOutput } from '../../channel-types.js';
+import type {
+  ChannelConnector,
+  InboundEvent,
+  AgentOutput,
+  AttachmentDeliveryReceipt,
+  OutboundAttachment,
+  OutboundAttachmentSupport,
+  SendReceipt,
+} from '../../channel-types.js';
 import type { Result } from '../../../core/types/result.js';
 import { ok, err } from '../../../core/types/result.js';
 import { ChannelError } from '../../../core/errors/error-types.js';
@@ -37,6 +45,24 @@ const GATEWAY_OP_DISPATCH = 0;
 
 /** Maximum number of retry attempts on a rate-limited request. */
 const MAX_RATE_LIMIT_RETRIES = 3;
+
+/**
+ * Outbound attachment limits. Discord's default upload limit for bots and
+ * non-Nitro users is 20 MB per file (servers with boosts allow more, which
+ * Talon does not assume); one attachment travels per message.
+ */
+export const DISCORD_OUTBOUND_ATTACHMENTS: OutboundAttachmentSupport = {
+  maxBytes: 20 * 1024 * 1024,
+  maxFiles: 10,
+};
+
+/** Longest message content Discord accepts. */
+const DISCORD_MAX_CONTENT_LENGTH = 2000;
+
+/** A request body for Create Message: JSON, or multipart with files. */
+type DiscordRequestBody =
+  | { kind: 'json'; body: DiscordSendMessageBody }
+  | { kind: 'multipart'; build: () => FormData };
 
 // ---------------------------------------------------------------------------
 // Thread ID encoding
@@ -98,6 +124,8 @@ export function decodeThreadId(externalThreadId: string): {
  * 5. Call `stop()` to mark the connector as inactive.
  */
 export class DiscordConnector implements ChannelConnector {
+  /** One file per message, up to Discord's default 20 MB. */
+  readonly outboundAttachments: OutboundAttachmentSupport = DISCORD_OUTBOUND_ATTACHMENTS;
   readonly type = 'discord';
   readonly name: string;
 
@@ -184,16 +212,76 @@ export class DiscordConnector implements ChannelConnector {
    * @param output            - Agent output to deliver.
    * @returns Ok on success, Err(ChannelError) on failure.
    */
-  async send(externalThreadId: string, output: AgentOutput): Promise<Result<void, ChannelError>> {
+  async send(
+    externalThreadId: string,
+    output: AgentOutput,
+  ): Promise<Result<SendReceipt | void, ChannelError>> {
     const { channelId, messageId } = decodeThreadId(externalThreadId);
-    const content = this.format(output.body);
+    const attachments = output.attachments ?? [];
 
-    const body: DiscordSendMessageBody = { content };
-    if (messageId) {
-      body.message_reference = { message_id: messageId };
+    const reference = messageId ? { message_id: messageId } : undefined;
+    if (attachments.length === 0) {
+      const sent = await this.sendWithRateLimitRetry(
+        channelId,
+        { kind: 'json', body: this.textBody(output.body, reference) },
+        0,
+      );
+      return sent.map(() => undefined);
     }
 
-    return this.sendWithRateLimitRetry(channelId, body, 0);
+    // Text first (carrying the reply), then one message per attachment with
+    // its caption as content. A failed text fails before any upload.
+    let receiptId: string | undefined;
+    let pendingReference = reference;
+    if (output.body.trim() !== '') {
+      const text = await this.sendWithRateLimitRetry(
+        channelId,
+        { kind: 'json', body: this.textBody(output.body, pendingReference) },
+        0,
+      );
+      if (text.isErr()) return err(text.error);
+      receiptId = text.value;
+      pendingReference = undefined;
+    }
+
+    const delivered: AttachmentDeliveryReceipt[] = [];
+    for (const [index, attachment] of attachments.entries()) {
+      const sent = await this.sendWithRateLimitRetry(
+        channelId,
+        { kind: 'multipart', build: () => attachmentForm(attachment, pendingReference) },
+        0,
+      );
+      if (sent.isErr()) {
+        this.logger.warn(
+          { channelName: this.name, index, mimeType: attachment.mimeType, size: attachment.size, err: sent.error.message },
+          'discord: attachment send failed',
+        );
+        delivered.push({ index, status: 'failed', error: sent.error.message });
+        continue;
+      }
+      pendingReference = undefined;
+      receiptId ??= sent.value;
+      delivered.push({
+        index,
+        status: 'sent',
+        ...(sent.value !== undefined ? { externalMessageId: sent.value } : {}),
+      });
+    }
+    return ok({
+      ...(receiptId !== undefined ? { externalMessageId: receiptId } : {}),
+      attachments: delivered,
+    });
+  }
+
+  private textBody(
+    markdown: string,
+    reference: { message_id: string } | undefined,
+  ): DiscordSendMessageBody {
+    const body: DiscordSendMessageBody = { content: this.format(markdown) };
+    if (reference) {
+      body.message_reference = reference;
+    }
+    return body;
   }
 
   /**
@@ -310,20 +398,21 @@ export class DiscordConnector implements ChannelConnector {
    */
   private async sendWithRateLimitRetry(
     channelId: string,
-    body: DiscordSendMessageBody,
+    body: DiscordRequestBody,
     retryCount: number,
-  ): Promise<Result<void, ChannelError>> {
+  ): Promise<Result<string | undefined, ChannelError>> {
     const url = `${DISCORD_API_BASE}/channels/${channelId}/messages`;
 
     let response: Response;
     try {
       response = await fetch(url, {
         method: 'POST',
+        // Multipart: fetch sets the boundary Content-Type itself.
         headers: {
-          'Content-Type': 'application/json',
+          ...(body.kind === 'json' ? { 'Content-Type': 'application/json' } : {}),
           Authorization: `Bot ${this.config.botToken}`,
         },
-        body: JSON.stringify(body),
+        body: body.kind === 'json' ? JSON.stringify(body.body) : body.build(),
       });
     } catch (fetchErr) {
       const cause = fetchErr instanceof Error ? fetchErr : undefined;
@@ -359,18 +448,18 @@ export class DiscordConnector implements ChannelConnector {
       return err(new ChannelError(errorMessage));
     }
 
-    // Parse the response to confirm success (and log the message ID).
+    // Parse the response to confirm success and report the message ID.
     try {
       const result = (await response.json()) as DiscordSendMessageResult;
       this.logger.debug(
         { channelName: this.name, channelId, messageId: result.id },
         'discord message sent',
       );
+      return ok(typeof result.id === 'string' ? result.id : undefined);
     } catch {
       // Non-fatal — the send succeeded (2xx status).
+      return ok(undefined);
     }
-
-    return ok(undefined);
   }
 
   /**
@@ -406,4 +495,28 @@ export class DiscordConnector implements ChannelConnector {
   private sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
+}
+
+/**
+ * Builds a Create Message multipart body carrying one file, with the caption
+ * as plain content (cut to Discord's 2000-character limit) and the filename
+ * declared in `attachments` so Discord shows it as given.
+ */
+function attachmentForm(
+  attachment: OutboundAttachment,
+  reference: { message_id: string } | undefined,
+): FormData {
+  const form = new FormData();
+  const payload = {
+    content: (attachment.caption ?? '').slice(0, DISCORD_MAX_CONTENT_LENGTH),
+    attachments: [{ id: 0, filename: attachment.filename }],
+    ...(reference ? { message_reference: reference } : {}),
+  };
+  form.append('payload_json', JSON.stringify(payload));
+  form.append(
+    'files[0]',
+    new Blob([new Uint8Array(attachment.data)], { type: attachment.mimeType }),
+    attachment.filename,
+  );
+  return form;
 }

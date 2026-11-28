@@ -72,7 +72,7 @@ These are the built-in host-tool labels exposed by the CLI today:
 | `net.http:egress` | `net_http` |
 | `channel.send:*` or `channel.send:<channel>` | `channel_send` |
 | `channel.react:*` | `channel_react`: emoji reactions on messages in the current conversation (Telegram, WhatsApp). Not implied by `channel.send` |
-| `channel.attach` | No tool of its own: lets `channel_send` attach files from `attachments.outbound` roots (Telegram today). Needs `channel.send` too |
+| `channel.attach` | No tool of its own: lets `channel_send` attach files from `attachments.outbound` roots (Telegram, Slack, Discord). Needs `channel.send` too |
 | `schedule.manage:own` | `schedule_manage` |
 | `db.query:own` | `db_query` |
 | `subagent.invoke` | `subagent_invoke` |

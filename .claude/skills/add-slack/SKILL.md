@@ -65,6 +65,7 @@ If no, walk them through it:
 >    - `channels:read` (list channels)
 >    - `groups:read` (list private channels)
 >    - `users:read` (resolve user names)
+>    - `files:write` (optional: lets personas with `channel.attach` send files)
 >
 > ### Install to Workspace
 >

@@ -51,6 +51,7 @@ If no, walk them through it:
 >    - Send Messages
 >    - Read Message History
 >    - View Channels
+>    - Attach Files (optional: lets personas with `channel.attach` send files)
 > 4. Copy the generated URL and open it in your browser
 > 5. Select your server and authorize
 

@@ -62,7 +62,7 @@ Sends a Markdown message to another Talon channel.
 | `content` | string | Required Markdown body |
 | `replyTo` | string | Optional message ID to send this as a native reply to: the `(id …)` value from a `[Replying to …]` or `[Reaction: …]` header. Ignored on channels without native replies |
 | `externalChatId` | string | Optional explicit recipient chat on the target channel |
-| `attachments` | array | Optional files to attach, each `{ path, filename?, mimeType?, caption? }`. Needs the `channel.attach` capability. `path` must be absolute and inside the run's thread `artifacts/` directory or an `attachments.outbound.allowedRoots` entry. When given, `content` may be empty. Telegram only for now |
+| `attachments` | array | Optional files to attach, each `{ path, filename?, mimeType?, caption? }`. Needs the `channel.attach` capability. `path` must be absolute and inside the run's thread `artifacts/` directory or an `attachments.outbound.allowedRoots` entry. When given, `content` may be empty. Telegram, Slack and Discord |
 
 Notes:
 

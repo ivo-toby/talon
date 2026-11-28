@@ -68,6 +68,21 @@ adopted).
 ## Not yet decided / follow-ups
 
 - A run's final reply (`RunDelivery`) carrying attachments without a tool call.
-- Connectors beyond Telegram (Slack, Discord, WhatsApp Baileys and Business,
-  email); each declares `outboundAttachments` when implemented.
+- WhatsApp Baileys and Business, and email; each declares
+  `outboundAttachments` when implemented.
+
+## Connector notes
+
+- **Telegram:** `sendPhoto` for images up to 10 MB, otherwise (or when the
+  photo is rejected) `sendDocument`; 50 MB, 10 files.
+- **Slack:** `files.getUploadURLExternal` → presigned upload →
+  `files.completeUploadExternal` with `channel_id`, `thread_ts` and the caption
+  as `initial_comment` (the legacy `files.upload` is retired). Needs
+  `files:write`. The bot token is never sent to the upload URL, which must be
+  `https://` on a `slack.com` host. Slack shares files asynchronously, so the
+  file message's `ts` is often not reported and then has no ledger row; Talon
+  has no Slack replies or reactions that would need it.
+- **Discord:** one multipart Create Message per file (`payload_json` +
+  `files[0]`) with the caption as content, reusing the 429 retry. 20 MB per
+  file (the non-boosted default); a larger server limit is not assumed.
 - Reading an agent's own outbound artifacts back (an `artifacts` table).

@@ -694,7 +694,7 @@ To acknowledge without sending text, the agent reacts and then makes its whole r
 - Removing a reaction is ignored.
 - Each forwarded reaction is one agent run, with the usual model cost.
 
-**Sending files.** With the `channel.attach` capability (in addition to `channel.send`), `channel_send` takes `attachments: [{ path, filename?, mimeType?, caption? }]`, so an agent can send a screenshot, chart, log or report as a native attachment. Today only **Telegram** supports it (photos via `sendPhoto`, other files via `sendDocument`, topics and replies included). Other channels refuse with `channel_unsupported`, and the agent falls back to describing the file.
+**Sending files.** With the `channel.attach` capability (in addition to `channel.send`), `channel_send` takes `attachments: [{ path, filename?, mimeType?, caption? }]`, so an agent can send a screenshot, chart, log or report as a native attachment. Supported on **Telegram** (photos via `sendPhoto`, other files via `sendDocument`, topics and replies included), **Slack** (Slack's external upload API into the channel or thread; the app needs the `files:write` scope) and **Discord** (one message per file with the caption as text; the bot needs the Attach Files permission; 20 MB per file). Other channels refuse with `channel_unsupported`, and the agent falls back to describing the file.
 
 ```yaml
 personas:
@@ -1165,7 +1165,7 @@ prompt a user or block execution.
 | ------------------------ | --------------------------------------------------------------------------- |
 | `channel.send:<channel>` | Send messages to a specific channel                                         |
 | `channel.react:*`        | React with an emoji to messages in the current conversation (Telegram, WhatsApp) |
-| `channel.attach`         | Attach files from `attachments.outbound` roots to `channel_send` (Telegram today); needs `channel.send` too |
+| `channel.attach`         | Attach files from `attachments.outbound` roots to `channel_send` (Telegram, Slack, Discord); needs `channel.send` too |
 | `persona.send:*`         | Delegate to any persona, list personas, and fetch or cancel delegated tasks |
 | `persona.send:<persona>` | Delegate only to that persona (repeat the label for several); same list/status/cancel tools |
 | `schedule.manage`        | Create/modify/delete scheduled tasks                                        |
