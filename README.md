@@ -895,7 +895,28 @@ Set `selfChat: true` to use your personal WhatsApp number. The bot only listens 
 
 `triggerWords` filters messages so only those starting with a listed word are processed. The trigger word is stripped before the message reaches the agent — e.g. `@Talon what's the weather?` becomes `what's the weather?`. Case-insensitive.
 
-Useful in self-chat mode (so not every note-to-self triggers the bot) or with a dedicated number in group-like scenarios. When omitted or empty, all messages pass through.
+Useful in self-chat mode (so not every note-to-self triggers the bot) or with a dedicated number in group-like scenarios. When omitted or empty, all direct and self-chat messages pass through.
+
+#### Group Chats
+
+Off by default. With `allowGroupChats: true` (dedicated number only) the bot answers a group message that:
+
+- @mentions the bot's account (the `@<number>` token is stripped before the message reaches the agent),
+- starts with one of the `triggerWords` (stripped), or
+- quotes a message sent from the bot's account, so a conversation can continue without addressing the bot again.
+
+Add `requireMention: false` to answer every message in the groups the bot is in. Combine it with `allowedSenders`, or the bot answers anyone in any group it is added to. Direct chats are not affected by `requireMention`.
+
+```yaml
+config:
+  authDir: './baileys-auth'
+  allowGroupChats: true
+  # requireMention: false   # answer every group message (default: true)
+  allowedSenders:
+    - '96490886312027'
+```
+
+A reply counts as addressing the bot when it quotes any message from the bot's account, including one the account's owner typed by hand. Whether the quoted message was really Talon's is still decided by the message ledger when the reply is rendered for the agent.
 
 #### Access Control
 
@@ -926,6 +947,7 @@ Once authenticated, the daemon uses the saved credentials — no QR code display
 
 - **Access control**: Optional `allowedSenders` allowlist (dedicated-number mode) or `selfChat: true` (personal number)
 - **Trigger words**: Optional `triggerWords` filter — trigger is stripped before reaching the agent
+- **Group chats**: opt-in with `allowGroupChats`; answers an @mention of the bot's account, a trigger word, or a quoted reply to the bot (`requireMention: false` answers every message). See [Group Chats](#group-chats)
 - **Inbound**: WhatsApp Web socket via Baileys, text messages from individual chats only (group and media messages logged and skipped in v1)
 - **Outbound**: Send via Baileys socket using WhatsApp JID (e.g. `447700900000@s.whatsapp.net`)
 - **Idempotency key**: Baileys message ID

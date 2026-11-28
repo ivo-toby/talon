@@ -56,6 +56,8 @@ channels:
   #     authDir: './baileys-auth'
   #     allowedSenders:                  # Restrict who can message the bot (recommended)
   #       - '96490886312027'            # Use sender ID from logs (phone number or LID)
+  #     # allowGroupChats: true          # answer @mentions, trigger words and replies to the bot in groups
+  #     # requireMention: false          # answer every group message (default: true)
   #
   # Self-chat (personal number):
   # - type: whatsappBaileys

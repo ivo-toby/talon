@@ -162,13 +162,16 @@ channels:
 | `allowedSenders` | Optional allow-list of bare sender IDs |
 | `selfChat` | Optional self-chat mode. Default: `false` |
 | `triggerWords` | Optional case-insensitive prefixes that must start the message |
+| `allowGroupChats` | Answer in group chats (dedicated number only). Default: `false` |
+| `requireMention` | Whether a group message must address the bot (an @mention of its account, a trigger word, or a reply to one of its messages). Default: `true`. Set `false` to answer every message in its groups |
 | `replyToTrigger` | When an answer quotes the message that triggered it: `groups` (default), `always`, or `never` |
 | `inboundReactions` | Forward user reactions on Talon's messages to the agent. Default: `true` |
 
 Notes:
 
 - quoted replies and emoji reactions work in both directions; see [Replies, threads and reactions](#replies-threads-and-reactions)
-- in normal mode, group messages are ignored
+- in normal mode, group messages are ignored unless `allowGroupChats` is true; the bot then answers an @mention of its account, a trigger word, or a quoted reply to one of its messages, and with `requireMention: false` every message
+- set `allowedSenders` with `requireMention: false`, or the bot answers anyone in any group it is added to
 - in self-chat mode, Talon accepts only your own "Message Yourself" thread and only `fromMe` messages
 - trigger words are stripped before the prompt reaches the agent
 

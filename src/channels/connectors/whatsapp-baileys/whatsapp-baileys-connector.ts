@@ -69,6 +69,7 @@ import {
   extractReaction,
 } from './whatsapp-baileys-replies.js';
 import { isBaileysInternalRejection } from './whatsapp-baileys-rejection-matcher.js';
+import { extractMentionedJids, resolveGroupContent } from './whatsapp-baileys-addressing.js';
 
 /**
  * Baileys socket type. Type-only import: erased at compile time, so Baileys
@@ -167,6 +168,17 @@ export class WhatsAppBaileysConnector implements ChannelConnector {
     // Register the rejection shield once per instance. Reconnects re-enter
     // start() but the guard inside registerRejectionShield keeps it idempotent.
     this.registerRejectionShield();
+
+    if (
+      this.config.allowGroupChats === true &&
+      this.config.requireMention === false &&
+      (this.config.allowedSenders === undefined || this.config.allowedSenders.length === 0)
+    ) {
+      this.logger.warn(
+        { channelName: this.name },
+        'whatsapp-baileys requireMention is false without allowedSenders: the bot answers every message from anyone in every group it is in',
+      );
+    }
 
     try {
       const baileys = await import('@whiskeysockets/baileys').catch(() => {
@@ -601,16 +613,9 @@ export class WhatsAppBaileysConnector implements ChannelConnector {
           );
           return;
         }
-        // Require at least one triggerWord for groups — without one every group
-        // message would reach the agent.
-        const triggerWords = this.config.triggerWords;
-        if (!triggerWords || triggerWords.length === 0) {
-          this.logger.warn(
-            { channelName: this.name, jid },
-            'whatsapp-baileys: group message dropped — allowGroupChats is true but no triggerWords are configured',
-          );
-          return;
-        }
+        // Whether the message addresses Talon (@mention, trigger word, reply
+        // to Talon's account, or requireMention: false) is decided below,
+        // after the sender checks and before any media download.
         // Require a valid participant JID so senderId is always a real sender.
         if (!msg.key.participant) {
           this.logger.warn(
@@ -619,7 +624,7 @@ export class WhatsAppBaileysConnector implements ChannelConnector {
           );
           return;
         }
-        // Group messages fall through to the triggerWords filter below.
+        // Group messages fall through to the group addressing check below.
       }
 
       // Enforce allowedSenders restriction if configured.
@@ -671,9 +676,34 @@ export class WhatsAppBaileysConnector implements ChannelConnector {
       maxPerMessage: this.imageMedia.maxPerMessage,
     });
 
-    // ── Trigger word filter (applies to media captions too) ───────────
+    // ── Group addressing (applies to media captions too) ──────────────
+    // A group message must address Talon, as on Telegram: an @mention of
+    // Talon's account, a leading trigger word, or a quoted reply to a message
+    // from Talon's account — unless requireMention is false. Self-chat
+    // threads are never groups, so they keep the trigger-word filter below.
     const triggerWords = this.config.triggerWords;
-    if (triggerWords && triggerWords.length > 0) {
+    if (!selfChat && jid.endsWith('@g.us')) {
+      const content = resolveGroupContent({
+        text,
+        mentionedJids: extractMentionedJids(unwrapped),
+        ...(replyTo?.senderId !== undefined ? { quotedSenderId: replyTo.senderId } : {}),
+        selfIds: this.selfIds,
+        triggerWords: triggerWords ?? [],
+        requireMention: this.config.requireMention !== false,
+      });
+      if (content === null) {
+        this.logger.debug(
+          { channelName: this.name, jid },
+          'whatsapp-baileys: group message has no @mention, trigger word, or reply to Talon, dropping',
+        );
+        // Authorization failed BEFORE any media request: no download happens.
+        return;
+      }
+      text = content;
+      // Mention/trigger only and no media slot: nothing to deliver.
+      if (!text && selection.images.length === 0) return;
+    } else if (triggerWords && triggerWords.length > 0) {
+      // ── Trigger word filter (direct and self-chat) ──────────────────
       const lower = text.toLowerCase();
       const matched = triggerWords.find((tw) => lower.startsWith(tw.toLowerCase()));
       if (!matched) {
