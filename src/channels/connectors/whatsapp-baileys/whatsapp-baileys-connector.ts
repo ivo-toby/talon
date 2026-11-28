@@ -20,6 +20,13 @@
  * - `send()` accepts a standard WhatsApp JID, e.g. `447700900000@s.whatsapp.net`
  *   for individual chats or `<groupId>@g.us` for groups.
  *
+ * Replies and reactions:
+ * - An inbound quoted reply carries its target as `replyTo`; an inbound emoji
+ *   reaction is forwarded as a reaction event (`inboundReactions`).
+ * - `send()` quotes its reply target per `replyToTrigger`, and `react()`
+ *   places or clears a reaction. Both rebuild the WhatsApp message key from
+ *   the message ledger (see `whatsapp-baileys-replies.ts`).
+ *
  * Reconnection:
  * - On `connectionUpdate` with `DisconnectReason.loggedOut`, the session is
  *   cleared and the connector stops (re-authenticate required).
@@ -27,18 +34,47 @@
  */
 
 import type pino from 'pino';
-import type { ChannelConnector, InboundEvent, AgentOutput } from '../../channel-types.js';
+import type { WASocket } from '@whiskeysockets/baileys';
+import type {
+  ChannelConnector,
+  InboundEvent,
+  AgentOutput,
+  InboundAttachment,
+  InboundReaction,
+  MessageTarget,
+  SendReceipt,
+} from '../../channel-types.js';
+import { resolveReplyToTriggerMode, shouldSendAsReply } from '../../channel-types.js';
 import type { Result } from '../../../core/types/result.js';
 import { ok, err } from '../../../core/types/result.js';
 import { ChannelError } from '../../../core/errors/error-types.js';
 import { markdownToWhatsApp } from '../whatsapp-business/whatsapp-format.js';
 import { registerSafeRejectionMatcher } from '../../../daemon/unhandled-rejection-shield.js';
+import { selectImages } from '../../../images/image-selection.js';
+import { KeyedSerialQueue } from '../../keyed-serial-queue.js';
+import {
+  resolveBaileysImageSettings,
+  unwrapMessageContent,
+  extractTextAndMediaCandidates,
+  fetchSelectedImageAttachments,
+  createBaileysMediaTransfer,
+  type BaileysImageIngestOptions,
+  type ResolvedBaileysImageSettings,
+} from './whatsapp-baileys-images.js';
 import type { WhatsAppBaileysConfig } from './whatsapp-baileys-types.js';
+import {
+  buildMessageKey,
+  buildQuotedMessage,
+  extractQuotedContext,
+  extractReaction,
+} from './whatsapp-baileys-replies.js';
 import { isBaileysInternalRejection } from './whatsapp-baileys-rejection-matcher.js';
 
-/** Baileys socket type — intentionally loose to keep Baileys as an optional dependency. */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type BaileysSocket = any;
+/**
+ * Baileys socket type. Type-only import: erased at compile time, so Baileys
+ * stays an optional runtime dependency (loaded via dynamic import in start()).
+ */
+type BaileysSocket = WASocket;
 
 /** Loose representation of a Baileys WAMessage for the inbound handler. */
 interface InboundWAMessage {
@@ -58,6 +94,15 @@ export class WhatsAppBaileysConnector implements ChannelConnector {
   readonly name: string;
 
   private handler?: (event: InboundEvent) => void | Promise<void>;
+  /** Per-chat ordering for concurrently fired upsert handlers. */
+  private readonly chatQueue = new KeyedSerialQueue();
+  /**
+   * Resolved bounded image-ingestion settings (TASK-007). The channel
+   * factory will pass the global `images` config block here; until then the
+   * documented schema defaults apply. `openMedia` defaults to the Baileys
+   * stream-mode download below.
+   */
+  private readonly imageMedia: ResolvedBaileysImageSettings;
   private running = false;
   private sock: BaileysSocket | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -98,8 +143,12 @@ export class WhatsAppBaileysConnector implements ChannelConnector {
     private readonly config: WhatsAppBaileysConfig,
     private readonly channelName: string,
     private readonly logger: pino.Logger,
+    imageMedia?: BaileysImageIngestOptions,
   ) {
     this.name = channelName;
+    this.imageMedia = resolveBaileysImageSettings(imageMedia, (message, signal) =>
+      this.openMediaWithBaileys(message, signal),
+    );
   }
 
   async start(): Promise<void> {
@@ -155,9 +204,7 @@ export class WhatsAppBaileysConnector implements ChannelConnector {
         auth: state,
         version,
         browser: this.config.browser ?? Browsers.appropriate('Talon'),
-        logger: this.logger.child({ component: 'baileys' }) as unknown as ReturnType<
-          typeof pino
-        >,
+        logger: this.logger.child({ component: 'baileys' }),
         markOnlineOnConnect: this.config.markOnlineOnConnect ?? false,
       });
 
@@ -166,16 +213,20 @@ export class WhatsAppBaileysConnector implements ChannelConnector {
       // If stop() interleaved between makeWASocket and now, tear the socket
       // down and bail before wiring up handlers that would keep it alive.
       if (this.stopRequested) {
-        try {
-          sock.end(undefined);
-        } catch {
-          // ignore
-        }
+        this.endSocket(sock);
         this.sock = null;
         return;
       }
 
-      sock.ev.on('creds.update', saveCreds);
+      sock.ev.on('creds.update', () => {
+        // saveCreds is async; a failed write must not become an unhandled rejection.
+        Promise.resolve(saveCreds()).catch((saveErr: unknown) => {
+          this.logger.warn(
+            { channelName: this.name, err: saveErr },
+            'whatsapp-baileys: failed to save credentials',
+          );
+        });
+      });
 
       return await new Promise<void>((resolve, reject) => {
         let settled = false;
@@ -198,8 +249,7 @@ export class WhatsAppBaileysConnector implements ChannelConnector {
             // Self-chat messages may arrive under either format, so store both.
             this.selfIds.clear();
             const userPn = sock.user?.id;
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            const userLid = (sock.user as any)?.lid as string | undefined;
+            const userLid = sock.user?.lid;
             if (userPn) this.selfIds.add(userPn.replace(/@.*$/, '').replace(/:\d+$/, ''));
             if (userLid) this.selfIds.add(userLid.replace(/@.*$/, '').replace(/:\d+$/, ''));
             const allowedSenders = this.config.allowedSenders;
@@ -261,7 +311,12 @@ export class WhatsAppBaileysConnector implements ChannelConnector {
         sock.ev.on('messages.upsert', ({ messages, type }) => {
           if (type !== 'notify') return;
           for (const msg of messages) {
-            this.handleInboundMessage(msg as unknown as InboundWAMessage).catch(
+            const inbound = msg as unknown as InboundWAMessage;
+            // Serialize per chat: a text sent after a photo must not reach the
+            // pipeline while the photo is still downloading/normalizing.
+            this.chatQueue
+              .run(inbound.key.remoteJid ?? '', () => this.handleInboundMessage(inbound))
+              .catch(
               (handlerErr: unknown) => {
                 this.logger.error(
                   { err: handlerErr, channelName: this.name },
@@ -287,6 +342,7 @@ export class WhatsAppBaileysConnector implements ChannelConnector {
     }
   }
 
+  // eslint-disable-next-line @typescript-eslint/require-await -- shutdown deliberately does not wait on Baileys' async end()
   async stop(): Promise<void> {
     if (this.stopRequested) {
       // Already stopped. The grace timer scheduled by the original stop()
@@ -305,11 +361,7 @@ export class WhatsAppBaileysConnector implements ChannelConnector {
 
     this.running = false;
     if (this.sock) {
-      try {
-        this.sock.end(undefined);
-      } catch {
-        // ignore errors during shutdown
-      }
+      this.endSocket(this.sock);
       this.sock = null;
     }
 
@@ -322,6 +374,21 @@ export class WhatsAppBaileysConnector implements ChannelConnector {
     this.logger.info({ channelName: this.name }, 'whatsapp-baileys connector stopped');
   }
 
+  /**
+   * Tear a socket down without blocking on it. `end()` is async in current
+   * Baileys; sync throws and rejections during shutdown are ignored (late
+   * rejections are covered by the rejection shield).
+   */
+  private endSocket(sock: BaileysSocket): void {
+    try {
+      Promise.resolve(sock.end(undefined)).catch(() => {
+        // ignore errors during shutdown
+      });
+    } catch {
+      // ignore errors during shutdown
+    }
+  }
+
   onMessage(handler: (event: InboundEvent) => void | Promise<void>): void {
     this.handler = handler;
   }
@@ -329,18 +396,62 @@ export class WhatsAppBaileysConnector implements ChannelConnector {
   async send(
     externalThreadId: string,
     output: AgentOutput,
-  ): Promise<Result<void, ChannelError>> {
+  ): Promise<Result<SendReceipt | void, ChannelError>> {
     if (!this.running || !this.sock) {
       return err(new ChannelError('whatsapp-baileys connector is not running'));
     }
     const text = this.format(output.body);
+    const mode = resolveReplyToTriggerMode(this.config.replyToTrigger);
+    const quoteTarget = shouldSendAsReply(
+      output.replyTo,
+      mode,
+      externalThreadId.endsWith('@g.us'),
+    )
+      ? output.replyTo
+      : undefined;
     try {
-      await this.sock.sendMessage(externalThreadId, { text });
-      return ok(undefined);
+      const sent =
+        quoteTarget !== undefined
+          ? await this.sock.sendMessage(
+              externalThreadId,
+              { text },
+              { quoted: buildQuotedMessage(externalThreadId, quoteTarget) },
+            )
+          : await this.sock.sendMessage(externalThreadId, { text });
+      const sentId = sent?.key?.id;
+      return typeof sentId === 'string' && sentId !== ''
+        ? ok({ externalMessageId: sentId })
+        : ok(undefined);
     } catch (sendErr) {
       const cause = sendErr instanceof Error ? sendErr : undefined;
       return err(
         new ChannelError(`whatsapp-baileys send failed: ${String(sendErr)}`, cause),
+      );
+    }
+  }
+
+  /**
+   * Place an emoji reaction on a message, or clear this account's reaction
+   * when `emoji` is empty (WhatsApp removes a reaction by sending an empty
+   * one for the same message key).
+   */
+  async react(
+    externalThreadId: string,
+    target: MessageTarget,
+    emoji: string,
+  ): Promise<Result<void, ChannelError>> {
+    if (!this.running || !this.sock) {
+      return err(new ChannelError('whatsapp-baileys connector is not running'));
+    }
+    try {
+      await this.sock.sendMessage(externalThreadId, {
+        react: { text: emoji, key: buildMessageKey(externalThreadId, target) },
+      });
+      return ok(undefined);
+    } catch (reactErr) {
+      const cause = reactErr instanceof Error ? reactErr : undefined;
+      return err(
+        new ChannelError(`whatsapp-baileys reaction failed: ${String(reactErr)}`, cause),
       );
     }
   }
@@ -364,6 +475,83 @@ export class WhatsAppBaileysConnector implements ChannelConnector {
 
   setSiblingBotIds(_ids: Set<string>): void {
     // No-op: WhatsApp Baileys uses JID-based self-filtering via selfIds set.
+  }
+
+  // ---------------------------------------------------------------------------
+  // Media download (TASK-007)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Default media opener: Baileys `downloadMediaMessage` in STREAM mode run
+   * inside a {@link createBaileysMediaTransfer}, pinned to the 7.0.0-rc.9
+   * source contract (inventory E4):
+   *
+   * - `type` is `'stream'` — the returned `Transform` is fed to the shared
+   *   bounded consumer, which destroys it on byte/deadline overflow. Buffer
+   *   mode is never used: it concatenates all chunks and cannot cap bytes
+   *   during consumption.
+   * - Cancellation is NOT threaded through Baileys' options: rc.9's
+   *   `getHttpStream` calls `fetch(url, { dispatcher, method, headers })`
+   *   and silently drops `options.signal` (messages-media.js:296–300). The
+   *   transfer adapter owns the real fetch instead: the shared message-
+   *   budget signal aborts the in-flight request (including any retry the
+   *   optional reupload ctx starts), and mid-body upstream failures are
+   *   consumed by the transfer and surfaced by destroying the returned
+   *   Transform — Baileys' own `fetched.pipe(output)` would otherwise emit
+   *   them as unconsumed `'error'` events (Node ≥ 24 pipe semantics).
+   * - `ctx.reuploadRequest` is wired to the socket's actual rc.9 member,
+   *   `updateMediaMessage` (messages-send.js:840) — `reuploadRequest` is
+   *   only the ctx FIELD name (messages.d.ts:79), never a socket member.
+   *   It is probed, not assumed; without it expired-media errors surface as
+   *   the closed `download_failed` transport reason. Note the retry branch
+   *   in `downloadMediaMessage` (messages.js:793–803) matches on
+   *   `error.status`, which `@hapi/boom` never sets (only
+   *   `output.statusCode`) — so with this pinned version the reupload retry
+   *   is unreachable and exists purely as forward-compatibility wiring; a
+   *   real-path test pins that behaviour.
+   *
+   * The Baileys module is imported lazily so the optional-dependency posture
+   * and the existing start() import path stay unchanged; an import failure
+   * rejects inside the opener and maps to `download_failed`.
+   */
+  private async openMediaWithBaileys(
+    message: unknown,
+    signal: AbortSignal,
+  ): Promise<import('node:stream').Readable> {
+    const baileys = await import('@whiskeysockets/baileys');
+    type DownloadArgs = Parameters<typeof baileys.downloadMediaMessage>;
+    type MediaContext = NonNullable<DownloadArgs[3]>;
+    type ReuploadRequest = MediaContext['reuploadRequest'];
+    // Loose structural view of the live socket: probe the REAL member
+    // `updateMediaMessage` — never a fabricated `reuploadRequest` socket
+    // property — before offering a reupload context.
+    const socket = this.sock as
+      | {
+          updateMediaMessage?: (
+            m: Parameters<ReuploadRequest>[0],
+          ) => ReturnType<ReuploadRequest>;
+        }
+      | null;
+    const updateMediaMessage = socket?.updateMediaMessage;
+    const ctx =
+      typeof updateMediaMessage === 'function'
+        ? ({
+            logger: this.logger,
+            reuploadRequest: (m: Parameters<ReuploadRequest>[0]) =>
+              updateMediaMessage.call(socket as object, m),
+          } as unknown as MediaContext)
+        : undefined;
+    // The message object is the opaque media handle: its mediaKey/url are
+    // never logged or echoed by this path.
+    const transfer = createBaileysMediaTransfer({
+      signal,
+      ...(this.imageMedia.fetch !== undefined ? { fetchImpl: this.imageMedia.fetch } : {}),
+    });
+    const stream = await transfer.run(() =>
+      baileys.downloadMediaMessage(message as DownloadArgs[0], 'stream', {}, ctx),
+    );
+    transfer.bindDownstream(stream);
+    return stream;
   }
 
   // ---------------------------------------------------------------------------
@@ -454,20 +642,36 @@ export class WhatsAppBaileysConnector implements ChannelConnector {
       }
     }
 
-    // ── Extract text content ──────────────────────────────────────────
-    let text =
-      (msg.message['conversation'] as string | undefined) ??
-      (msg.message['extendedTextMessage'] as { text?: string } | undefined)?.text;
+    // ── Extract text + media candidates ──────────────────────────────
+    // Runs AFTER every authorization check above (self/group/trigger rules
+    // come before any media download — TASK-007). Unwrapping mirrors the
+    // pinned Baileys normalize contract (see whatsapp-baileys-images.ts).
+    const unwrapped = unwrapMessageContent(msg.message);
 
-    if (!text) {
-      this.logger.debug(
-        { channelName: this.name, jid, messageType: Object.keys(msg.message)[0] },
-        'whatsapp-baileys: skipping non-text message',
-      );
+    // ── Reactions ─────────────────────────────────────────────────────
+    // A reaction is not a message: it has no text and no trigger word, and it
+    // passed the same sender/group authorization as a message above. The
+    // pipeline forwards it only when it targets a message Talon sent.
+    const reaction = extractReaction(unwrapped);
+    if (reaction !== undefined) {
+      await this.handleInboundReaction(msg, jid, reaction);
       return;
     }
 
-    // ── Trigger word filter ───────────────────────────────────────────
+    const replyTo = extractQuotedContext(unwrapped);
+    const { text: extractedText, candidates } = extractTextAndMediaCandidates(unwrapped);
+    let text = extractedText;
+
+    // Selection is a pure decision (no downloads): stickers, non-image and
+    // absent-MIME documents are excluded here, before any trigger check can
+    // be followed by a media request, and overflow/declared-size rejections
+    // are decided without fetching.
+    const selection = selectImages(candidates, {
+      maxInputBytes: this.imageMedia.maxInputBytes,
+      maxPerMessage: this.imageMedia.maxPerMessage,
+    });
+
+    // ── Trigger word filter (applies to media captions too) ───────────
     const triggerWords = this.config.triggerWords;
     if (triggerWords && triggerWords.length > 0) {
       const lower = text.toLowerCase();
@@ -477,22 +681,33 @@ export class WhatsAppBaileysConnector implements ChannelConnector {
           { channelName: this.name, jid },
           'whatsapp-baileys: no trigger word matched, dropping',
         );
+        // Authorization failed BEFORE any media request: no download happens.
         return;
       }
       // Strip the trigger word and any leading whitespace after it.
       text = text.slice(matched.length).trimStart();
-      if (!text) return; // trigger word only, no actual message
+      // Trigger word only and no media slot: nothing to deliver. A media
+      // message whose caption was trigger-only still proceeds as image-only.
+      if (!text && selection.images.length === 0) return;
+    } else if (text === '' && selection.images.length === 0) {
+      // No caption and no media content type: keep the legacy behavior for
+      // video/audio/location/etc. (dropped, logged, never downloaded).
+      this.logger.debug(
+        { channelName: this.name, jid, messageType: Object.keys(msg.message)[0] },
+        'whatsapp-baileys: skipping non-text message',
+      );
+      return;
     }
 
-    const rawTimestamp = msg.messageTimestamp;
-    let epochSeconds = 0;
-    if (typeof rawTimestamp === 'number') {
-      epochSeconds = rawTimestamp;
-    } else if (typeof rawTimestamp === 'object' && rawTimestamp !== null && 'low' in rawTimestamp) {
-      // Baileys/Protobuf Long-like object with {low, high, unsigned} fields.
-      epochSeconds = (rawTimestamp.high >>> 0) * 0x100000000 + (rawTimestamp.low >>> 0);
+    // ── Bounded media fetch (only once every check above passed) ──────
+    // Silent exclusions (sticker-only, non-image-document-only) leave no
+    // slot: the message stays a plain text event with no Attachments.
+    let attachments: InboundAttachment[] | undefined;
+    if (selection.images.length > 0) {
+      attachments = await fetchSelectedImageAttachments(msg, selection.images, this.imageMedia);
     }
-    const epochMs = epochSeconds * 1000;
+
+    const epochMs = messageEpochMs(msg.messageTimestamp);
 
     // For group messages the individual sender is in key.participant; jid is the group.
     // Participant is guaranteed non-null here — groups without a participant are dropped above.
@@ -505,6 +720,9 @@ export class WhatsAppBaileysConnector implements ChannelConnector {
       senderId,
       idempotencyKey: msg.key.id,
       content: text,
+      externalMessageId: msg.key.id,
+      ...(replyTo !== undefined ? { replyTo } : {}),
+      ...(attachments !== undefined ? { attachments } : {}),
       timestamp: epochMs,
       raw: msg,
     };
@@ -517,6 +735,44 @@ export class WhatsAppBaileysConnector implements ChannelConnector {
       return;
     }
 
+    try {
+      await this.handler(event);
+    } catch (handlerErr) {
+      this.logger.error(
+        { channelName: this.name, err: handlerErr },
+        'whatsapp-baileys: message handler threw',
+      );
+    }
+  }
+
+  /**
+   * Forwards an authorized inbound reaction as a reaction event. Removed
+   * reactions (empty emoji) are dropped here; the pipeline decides whether
+   * the target is one of Talon's messages.
+   */
+  private async handleInboundReaction(
+    msg: InboundWAMessage,
+    jid: string,
+    reaction: InboundReaction,
+  ): Promise<void> {
+    if (this.config.inboundReactions === false || reaction.emoji === '' || !msg.key.id) {
+      return;
+    }
+    if (!this.handler) {
+      this.logger.warn({ channelName: this.name }, 'whatsapp-baileys: no handler registered');
+      return;
+    }
+    const event: InboundEvent = {
+      channelType: this.type,
+      channelName: this.name,
+      externalThreadId: jid,
+      senderId: jid.endsWith('@g.us') ? (msg.key.participant ?? jid) : jid,
+      idempotencyKey: msg.key.id,
+      content: '',
+      reaction,
+      timestamp: messageEpochMs(msg.messageTimestamp),
+      raw: msg,
+    };
     try {
       await this.handler(event);
     } catch (handlerErr) {
@@ -583,4 +839,18 @@ export class WhatsAppBaileysConnector implements ChannelConnector {
     }, this.shieldTeardownGraceMs);
     if (typeof timer.unref === 'function') timer.unref();
   }
+}
+
+/**
+ * Converts a Baileys message timestamp (seconds, as a number or a protobuf
+ * Long-like `{low, high, unsigned}` object) to epoch milliseconds.
+ */
+function messageEpochMs(rawTimestamp: InboundWAMessage['messageTimestamp']): number {
+  let epochSeconds = 0;
+  if (typeof rawTimestamp === 'number') {
+    epochSeconds = rawTimestamp;
+  } else if (typeof rawTimestamp === 'object' && rawTimestamp !== null && 'low' in rawTimestamp) {
+    epochSeconds = (rawTimestamp.high >>> 0) * 0x100000000 + (rawTimestamp.low >>> 0);
+  }
+  return epochSeconds * 1000;
 }

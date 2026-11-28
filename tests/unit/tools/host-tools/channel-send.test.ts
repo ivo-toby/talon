@@ -149,7 +149,114 @@ describe('ChannelSendHandler — success', () => {
     expect(connector.send).toHaveBeenCalledWith('ext-001', expect.objectContaining({ body: 'Hello from persona!' }));
   });
 
-  it('passes replyTo in the output metadata', async () => {
+  it('uses one stable messageId for connector delivery and outbound persistence', async () => {
+    const messageRepo = makeMessageRepo();
+    const connector = makeConnector(ok(undefined));
+    const registry = makeRegistry(connector);
+    const handler = new ChannelSendHandler({
+      channelRegistry: registry,
+      threadRepository: {
+        findById: vi.fn().mockReturnValue(ok({
+          id: 'thread-001',
+          external_id: 'ext-001',
+          channel_id: 'chan-001',
+          metadata: '{}',
+        })),
+        findByExternalId: vi.fn().mockReturnValue(ok({
+          id: 'thread-001',
+          external_id: 'ext-001',
+          channel_id: 'chan-001',
+          metadata: '{}',
+          created_at: 0,
+          updated_at: 0,
+        })),
+      } as any,
+      channelRepository: makeChannelRepo(),
+      messageRepository: messageRepo,
+      logger: makeLogger(),
+    });
+
+    const result = await handler.execute(makeArgs(), makeContext());
+
+    expect(result.status).toBe('success');
+    const connectorOutput = vi.mocked(connector.send).mock.calls[0]?.[1] as { messageId?: string };
+    const persistedMessage = vi.mocked(messageRepo.insert).mock.calls[0]?.[0] as { id?: string };
+    expect(connectorOutput.messageId).toBeDefined();
+    expect(connectorOutput.messageId).toBe(persistedMessage.id);
+  });
+
+  it('uses the trusted context runId for sourceRunId', async () => {
+    const connector = makeConnector(ok(undefined));
+    const registry = makeRegistry(connector);
+    const handler = new ChannelSendHandler({
+      channelRegistry: registry,
+      threadRepository: makeThreadRepo(),
+      logger: makeLogger(),
+    });
+    const args = {
+      ...makeArgs(),
+      sourceRunId: 'attacker-supplied-source-run-id',
+      runId: 'attacker-supplied-run-id',
+    } as ChannelSendArgs;
+
+    await handler.execute(args, makeContext({ runId: 'trusted-context-run-id' }));
+
+    const output = vi.mocked(connector.send).mock.calls[0]?.[1] as {
+      messageId?: string;
+      sourceRunId?: string;
+      runId?: string;
+    };
+    expect(output.sourceRunId).toBe('trusted-context-run-id');
+    expect(output.sourceRunId).not.toBe('attacker-supplied-source-run-id');
+    expect(output.runId).toBeUndefined();
+    expect(output.messageId).toBeDefined();
+  });
+
+  it('keeps same-text deliveries distinct', async () => {
+    const messageRepo = makeMessageRepo();
+    const connector = makeConnector(ok(undefined));
+    const registry = makeRegistry(connector);
+    const threadRepository = {
+      findById: vi.fn().mockReturnValue(ok({
+        id: 'thread-001',
+        external_id: 'ext-001',
+        channel_id: 'chan-001',
+        metadata: '{}',
+      })),
+      findByExternalId: vi.fn().mockReturnValue(ok({
+        id: 'thread-001',
+        external_id: 'ext-001',
+        channel_id: 'chan-001',
+        metadata: '{}',
+        created_at: 0,
+        updated_at: 0,
+      })),
+    } as any;
+    const handler = new ChannelSendHandler({
+      channelRegistry: registry,
+      threadRepository,
+      channelRepository: makeChannelRepo(),
+      messageRepository: messageRepo,
+      logger: makeLogger(),
+    });
+
+    await handler.execute(makeArgs({ content: 'same text' }), makeContext({ requestId: 'req-001' }));
+    await handler.execute(makeArgs({ content: 'same text' }), makeContext({ requestId: 'req-002' }));
+
+    const firstId = vi.mocked(messageRepo.insert).mock.calls[0]?.[0].id;
+    const secondId = vi.mocked(messageRepo.insert).mock.calls[1]?.[0].id;
+    expect(firstId).toBeDefined();
+    expect(secondId).toBeDefined();
+    expect(secondId).not.toBe(firstId);
+    expect(vi.mocked(connector.send).mock.calls[0]?.[1]).toEqual(
+      expect.objectContaining({ messageId: firstId }),
+    );
+    expect(vi.mocked(connector.send).mock.calls[1]?.[1]).toEqual(
+      expect.objectContaining({ messageId: secondId }),
+    );
+  });
+
+  it('passes replyTo to the connector as an explicit reply target', async () => {
     const connector = makeConnector(ok(undefined));
     const registry = makeRegistry(connector);
     const handler = new ChannelSendHandler({ channelRegistry: registry, threadRepository: makeThreadRepo(), logger: makeLogger() });
@@ -158,8 +265,119 @@ describe('ChannelSendHandler — success', () => {
 
     expect(connector.send).toHaveBeenCalledWith(
       'ext-001',
-      expect.objectContaining({ metadata: { replyTo: 'msg-123' } }),
+      expect.objectContaining({ replyTo: { externalMessageId: 'msg-123' } }),
     );
+  });
+
+  it('sends no reply target when replyTo is absent or blank', async () => {
+    const connector = makeConnector(ok(undefined));
+    const handler = new ChannelSendHandler({ channelRegistry: makeRegistry(connector), threadRepository: makeThreadRepo(), logger: makeLogger() });
+
+    await handler.execute(makeArgs(), makeContext());
+    await handler.execute(makeArgs({ replyTo: '   ' }), makeContext());
+
+    for (const call of vi.mocked(connector.send).mock.calls) {
+      expect(call[1]).not.toHaveProperty('replyTo');
+    }
+  });
+
+  it('completes the reply target from the ledger of the recipient thread', async () => {
+    const connector = makeConnector(ok(undefined));
+    const threadRepository = {
+      findById: vi.fn().mockReturnValue(ok({ id: 'thread-001', external_id: 'ext-001', channel_id: 'chan-001' })),
+      findByExternalId: vi.fn().mockReturnValue(ok({ id: 'thread-001', external_id: 'ext-001', channel_id: 'chan-001' })),
+    } as any;
+    const messageRefRepository = {
+      find: vi.fn().mockReturnValue(ok({
+        thread_id: 'thread-001',
+        external_id: 'msg-123',
+        direction: 'inbound',
+        message_id: 'm1',
+        sender_id: 'alice@s.whatsapp.net',
+        excerpt: 'can you check this?',
+        created_at: 1,
+      })),
+      record: vi.fn().mockReturnValue(ok(undefined)),
+    };
+    const handler = new ChannelSendHandler({
+      channelRegistry: makeRegistry(connector),
+      threadRepository,
+      channelRepository: makeChannelRepo(),
+      messageRefRepository,
+      logger: makeLogger(),
+    });
+
+    await handler.execute(makeArgs({ replyTo: 'msg-123' }), makeContext());
+
+    expect(messageRefRepository.find).toHaveBeenCalledWith('thread-001', 'msg-123');
+    expect(connector.send).toHaveBeenCalledWith(
+      'ext-001',
+      expect.objectContaining({
+        replyTo: {
+          externalMessageId: 'msg-123',
+          fromSelf: false,
+          author: 'alice@s.whatsapp.net',
+          text: 'can you check this?',
+        },
+      }),
+    );
+  });
+
+  it('records the sent message in the ledger of the thread it was persisted to', async () => {
+    const connector = makeConnector(ok({ externalMessageId: 'tg-555' }));
+    const threadRepository = {
+      findById: vi.fn().mockReturnValue(ok({ id: 'thread-001', external_id: 'ext-001', channel_id: 'chan-001' })),
+      findByExternalId: vi.fn().mockReturnValue(ok({ id: 'thread-001', external_id: 'ext-001', channel_id: 'chan-001' })),
+    } as any;
+    const messageRepository = makeMessageRepo();
+    const messageRefRepository = {
+      find: vi.fn().mockReturnValue(ok(null)),
+      record: vi.fn().mockReturnValue(ok(undefined)),
+    };
+    const handler = new ChannelSendHandler({
+      channelRegistry: makeRegistry(connector),
+      threadRepository,
+      channelRepository: makeChannelRepo(),
+      messageRepository,
+      messageRefRepository,
+      logger: makeLogger(),
+    });
+
+    const result = await handler.execute(makeArgs(), makeContext());
+
+    expect(result.status).toBe('success');
+    const persisted = vi.mocked(messageRepository.insert).mock.calls[0][0] as { id: string };
+    expect(messageRefRepository.record).toHaveBeenCalledWith({
+      thread_id: 'thread-001',
+      external_id: 'tg-555',
+      direction: 'outbound',
+      message_id: persisted.id,
+      text: 'Hello from persona!',
+    });
+  });
+
+  it('records no ledger ref when the connector returns no receipt', async () => {
+    const connector = makeConnector(ok(undefined));
+    const threadRepository = {
+      findById: vi.fn().mockReturnValue(ok({ id: 'thread-001', external_id: 'ext-001', channel_id: 'chan-001' })),
+      findByExternalId: vi.fn().mockReturnValue(ok({ id: 'thread-001', external_id: 'ext-001', channel_id: 'chan-001' })),
+    } as any;
+    const messageRefRepository = {
+      find: vi.fn().mockReturnValue(ok(null)),
+      record: vi.fn().mockReturnValue(ok(undefined)),
+    };
+    const handler = new ChannelSendHandler({
+      channelRegistry: makeRegistry(connector),
+      threadRepository,
+      channelRepository: makeChannelRepo(),
+      messageRepository: makeMessageRepo(),
+      messageRefRepository,
+      logger: makeLogger(),
+    });
+
+    await handler.execute(makeArgs(), makeContext());
+
+    expect(messageRefRepository.record).not.toHaveBeenCalled();
   });
 
   it('uses unknown as requestId when context.requestId is not provided', async () => {

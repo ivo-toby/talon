@@ -261,17 +261,45 @@ describe('WhatsAppConnector', () => {
       expect(received[1].content).toBe('second');
     });
 
-    it('skips non-text message types (image, document, audio)', async () => {
+    it('skips messages that carry no text/caption and no ingested image media', async () => {
       const received: InboundEvent[] = [];
       connector.onMessage(async (event) => {
         received.push(event);
       });
 
-      await connector.feedWebhook(makeMediaWebhookPayload('447700900000', 'wamid.IMG1', 'image'));
+      // A document with no declared MIME is EXCLUDED before any slot (a
+      // filename or type alone never establishes MIME), audio/video carry no
+      // candidate, and a sticker is excluded before slots — so none of these
+      // messages admit an event on their own.
       await connector.feedWebhook(makeMediaWebhookPayload('447700900000', 'wamid.DOC1', 'document'));
       await connector.feedWebhook(makeMediaWebhookPayload('447700900000', 'wamid.AUD1', 'audio'));
+      await connector.feedWebhook(makeMediaWebhookPayload('447700900000', 'wamid.VID1', 'video'));
+      await connector.feedWebhook(makeMediaWebhookPayload('447700900000', 'wamid.STK1', 'sticker'));
 
       expect(received).toHaveLength(0);
+    });
+
+    it('makes NO Graph API request for messages admitted without image media', async () => {
+      const fetchMock = vi.fn();
+      vi.stubGlobal('fetch', fetchMock);
+
+      const received: InboundEvent[] = [];
+      connector.onMessage(async (event) => {
+        received.push(event);
+      });
+
+      // A captioned sticker is admitted for its caption but its media is
+      // excluded: the admission must not trigger a media lookup or download.
+      const payload = makeMediaWebhookPayload('447700900000', 'wamid.STK1', 'sticker');
+      const message = payload.entry[0].changes[0].value.messages[0];
+      (message.sticker as { caption?: string }).caption = 'sticker caption';
+
+      await connector.feedWebhook(payload);
+
+      expect(received).toHaveLength(1);
+      expect(received[0].content).toBe('sticker caption');
+      expect(received[0].attachments).toBeUndefined();
+      expect(fetchMock).toHaveBeenCalledTimes(0);
     });
 
     it('ignores payloads that are not whatsapp_business_account', async () => {

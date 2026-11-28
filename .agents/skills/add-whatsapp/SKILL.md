@@ -161,6 +161,47 @@ npx talonctl env-check
 npx talonctl doctor
 ```
 
+## Images (optional)
+
+WhatsApp images and image-MIME documents are ingested automatically, under the
+same sender and access rules as text. To let the bound persona answer what a
+picture shows it needs exactly two things — existing personas gain neither on
+upgrade:
+
+```bash
+npx talonctl set-capabilities --persona <persona> --add subagent.invoke:*
+```
+
+plus `vision` in that persona's `subagents` list in `talond.yaml`. The shipped
+`vision` manifest declares `requiredCapabilities: []`, so no image capability is
+part of an Inspection. Pixels go only to the `vision` sub-agent; the persona stays
+text-only.
+
+Separately, `image.read:thread` is an **independent** model-free lookup grant for
+the thread's Images and saved Findings (`image_lookup`) — recommended, not required
+for Inspections.
+
+WhatsApp-specific behaviour worth warning the user about:
+
+- **Photos lose EXIF.** WhatsApp recompresses photos, so GPS and capture time are
+  typically gone. When metadata matters, ask the user to send the **document**
+  (uncompressed) variant — this helps but cannot guarantee preservation.
+- **Supported formats are JPEG, static PNG, and static WebP.** A GIF or HEIC
+  attachment is rejected `unsupported_mime`; an animated WebP or APNG is rejected
+  `animated`. Platform stickers are excluded silently and use no upload slot.
+- **Up to 5 images per message** by default (`images.maxPerMessage`); overflow is
+  rejected `count_limit` without a download.
+- **Media handling is awaited per message** — a fixed 60-second fetch budget plus
+  a separate 60-second normalization deadline, at most 3 attempts per Image, not
+  reset by restart.
+- **Messages in one chat are handled in order.** A text sent right after a photo
+  waits until the photo is processed, so the agent sees the image first. Other
+  chats are not held up.
+- Changing the `images` block needs a daemon restart; `talonctl reload` keeps
+  the running values.
+- Normalized files are deleted after `images.retentionHours` (default 24h).
+  Image records, GPS/EXIF and saved Findings persist beyond that.
+
 ## Troubleshooting
 
 | Problem | Fix |
@@ -188,4 +229,12 @@ channels:
       triggerWords: ['@Talon']                   # Optional — require trigger word to activate
       allowedSenders:                            # Optional — restrict who can message the bot
         - '96490886312027'
+      replyToTrigger: groups                     # Optional — never | groups (default) | always
+      inboundReactions: true                     # Optional (default: true)
 ```
+
+### Replies and reactions
+
+- **Replies**: when a user quotes a message, the agent sees which one. `replyToTrigger` decides whether the bot's answer quotes the message that triggered it: in group chats only (`groups`, the default), everywhere (`always`), or not at all (`never`).
+- **Reactions from the bot**: add the `channel.react:*` capability to the persona (`npx talonctl set-capabilities --persona <name> --add "channel.react:*"`). The agent can then react with 👍 instead of writing "understood".
+- **Reactions from users**: a reaction on one of the bot's messages starts an agent run. It passes the same sender checks as a message but needs no trigger word. Set `inboundReactions: false` to turn this off.

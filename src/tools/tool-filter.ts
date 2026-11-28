@@ -11,7 +11,9 @@
  * The mapping uses the domain + action portion of the capability label to
  * match against known host tool names. The scope portion (after `:`) is
  * ignored for tool-level filtering — it is used for finer-grained access
- * control within handlers (e.g., which channels can be sent to).
+ * control within handlers (e.g., which channels can be sent to). An unscoped
+ * label grants the tool exactly like `:*` does. The one scope enforced today is
+ * `persona.send:<persona-name>` (see `personas/persona-delegation.ts`).
  */
 
 import type { ResolvedCapabilities } from '../personas/persona-types.js';
@@ -41,8 +43,12 @@ export const HOST_TOOL_REGISTRY: ReadonlyArray<{
   { capabilityPrefix: 'channel.send', internalName: 'channel.send', mcpName: 'channel_send' },
   { capabilityPrefix: 'channel.send', internalName: 'channel.list', mcpName: 'channel_list' },
   { capabilityPrefix: 'channel.send', internalName: 'channel.broadcast', mcpName: 'channel_broadcast' },
+  // Emoji reactions in the run's own conversation. A separate capability from
+  // channel.send: reacting never delivers text and never leaves the chat.
+  { capabilityPrefix: 'channel.react', internalName: 'channel.react', mcpName: 'channel_react' },
   { capabilityPrefix: 'persona.send', internalName: 'persona.send', mcpName: 'persona_send' },
   { capabilityPrefix: 'persona.send', internalName: 'persona.task_status', mcpName: 'persona_task_status' },
+  { capabilityPrefix: 'persona.send', internalName: 'persona.task_cancel', mcpName: 'persona_task_cancel' },
   { capabilityPrefix: 'persona.send', internalName: 'persona.list', mcpName: 'persona_list' },
   { capabilityPrefix: 'memory.access', internalName: 'memory.access', mcpName: 'memory_access' },
   { capabilityPrefix: 'net.http', internalName: 'net.http', mcpName: 'net_http' },
@@ -50,6 +56,10 @@ export const HOST_TOOL_REGISTRY: ReadonlyArray<{
   { capabilityPrefix: 'execution.env', internalName: 'execution.env', mcpName: 'execution_env' },
   { capabilityPrefix: 'subagent.invoke', internalName: 'subagent.invoke', mcpName: 'subagent_invoke' },
   { capabilityPrefix: 'subagent.background', internalName: 'subagent.background', mcpName: 'background_agent' },
+  // Text-only Image/Finding discovery. The capability prefix gates the tool;
+  // the handler re-checks `image.read:thread` and the thread itself, so this
+  // entry is exposure, not authorization.
+  { capabilityPrefix: 'image.read', internalName: 'image.lookup', mcpName: 'image_lookup' },
 ];
 
 /** Derived lookup: MCP tool name → internal tool name. Used by bridge and MCP server. */
@@ -105,10 +115,18 @@ export const CAPABILITY_DESCRIPTIONS: ReadonlyArray<{
     ],
   },
   {
+    toolPrefix: 'channel.react',
+    mcpName: 'channel_react',
+    labels: [
+      { label: 'channel.react:*', description: 'Place or remove emoji reactions on messages in the current conversation (Telegram, WhatsApp)' },
+    ],
+  },
+  {
     toolPrefix: 'persona.send',
     mcpName: 'persona_send',
     labels: [
-      { label: 'persona.send:*', description: 'Send tasks to any persona and discover available personas for delegation' },
+      { label: 'persona.send:*', description: 'Send tasks to any persona, discover available personas for delegation, and follow or cancel your delegated tasks (persona_task_status, persona_task_cancel)' },
+      { label: 'persona.send:<persona-name>', description: 'Restrict delegation to that one persona (e.g. persona.send:researcher); list several to allow several. persona_send and persona_list only offer the allowed personas; the task status/cancel tools stay available' },
     ],
   },
   {
@@ -144,6 +162,17 @@ export const CAPABILITY_DESCRIPTIONS: ReadonlyArray<{
     mcpName: 'background_agent',
     labels: [
       { label: 'subagent.background', description: 'Launch background agent tasks' },
+    ],
+  },
+  {
+    toolPrefix: 'image.read',
+    mcpName: 'image_lookup',
+    labels: [
+      {
+        label: 'image.read:thread',
+        description:
+          'List the current thread\'s Images and read their saved Findings (text only: no pixels, paths, model calls, or downloads)',
+      },
     ],
   },
 ];
@@ -211,6 +240,46 @@ export function filterAllowedMcpTools(capabilities: ResolvedCapabilities): strin
   }
 
   return [...allowedMcpNames];
+}
+
+export interface VoiceMcpToolAccess {
+  /** Host tools that can be exposed to the voice provider without approval. */
+  readonly allowedMcpTools: string[];
+  /** Host tools that remain persona-authorized but require approval. */
+  readonly deniedMcpTools: string[];
+}
+
+/**
+ * Resolves the voice-safe subset of host tools.
+ *
+ * Normal provider execution intentionally keeps the existing union semantics
+ * in {@link filterAllowedMcpTools}. Voice has no interactive approval channel,
+ * so approval-gated capability families are omitted and denied again at the
+ * bridge using trusted run metadata.
+ */
+export function filterVoiceMcpTools(capabilities: ResolvedCapabilities): VoiceMcpToolAccess {
+  const approvalPrefixes = new Set(
+    capabilities.requireApproval
+      .map(extractCapabilityPrefix)
+      .filter((prefix): prefix is string => prefix !== null),
+  );
+  const allowedPrefixes = new Set(
+    capabilities.allow
+      .map(extractCapabilityPrefix)
+      .filter((prefix): prefix is string => prefix !== null && !approvalPrefixes.has(prefix)),
+  );
+
+  const allowedMcpTools: string[] = [];
+  const deniedMcpTools: string[] = [];
+  for (const entry of HOST_TOOL_REGISTRY) {
+    if (approvalPrefixes.has(entry.capabilityPrefix)) {
+      deniedMcpTools.push(entry.mcpName);
+    } else if (allowedPrefixes.has(entry.capabilityPrefix)) {
+      allowedMcpTools.push(entry.mcpName);
+    }
+  }
+
+  return { allowedMcpTools, deniedMcpTools };
 }
 
 /**

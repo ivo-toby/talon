@@ -10,7 +10,7 @@
  *
  * Adds a persona entry to the `personas` array in talond.yaml with:
  *   - name
- *   - model (default: claude-sonnet-4-6)
+ *   - model (default: claude-sonnet-5-5)
  *   - systemPromptFile pointing to the created system.md
  *   - empty skills list
  *   - sensible default capabilities (memory.access:thread, net.http:egress, schedule.manage:own)
@@ -32,7 +32,7 @@ import {
 // ---------------------------------------------------------------------------
 
 /** Default model for newly created personas. */
-const DEFAULT_MODEL = 'claude-sonnet-4-6';
+const DEFAULT_MODEL = 'claude-sonnet-5-5';
 
 // ---------------------------------------------------------------------------
 // Types

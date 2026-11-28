@@ -1,0 +1,50 @@
+{
+  "branching": {
+    "basePattern": "wdd/{scope-slug}",
+    "targetBranch": "main",
+    "taskPattern": "task/{task-id}"
+  },
+  "concurrency": {
+    "maxConcurrent": 3
+  },
+  "kind": "wdd_config",
+  "merge": {
+    "mode": "controller",
+    "reconcileEveryNMerges": 3,
+    "surface": "pr"
+  },
+  "models": {
+    "implementation": {
+      "default": "gpt-5.6-luna max",
+      "highRisk": "gpt-6.1-sol high"
+    },
+    "planning": null,
+    "review": "gpt-6.1-sol xhigh",
+    "specReview": "gpt-6.1-sol xhigh"
+  },
+  "openQuestions": [],
+  "review": {
+    "blockingSeverities": [
+      "P1",
+      "P2"
+    ],
+    "policy": "always"
+  },
+  "riskRules": [],
+  "runners": {},
+  "schemaVersion": 1,
+  "taskProvider": {
+    "type": "local"
+  },
+  "verification": {
+    "commands": [
+      "npm run build",
+      "node dist/cli/index.js --help",
+      "bash .agents/skills/run-talon-smoke/scripts/run-talon-smoke.sh fake --no-build"
+    ],
+    "unavailableJustification": null
+  },
+  "worktrees": {
+    "root": "../talon.feat-image-processing.wdd-worktrees"
+  }
+}

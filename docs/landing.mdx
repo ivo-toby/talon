@@ -40,6 +40,9 @@ One daemon handles Telegram, Slack, Discord, WhatsApp, email, and terminal simul
 **Persona-per-channel**
 Assign a distinct AI identity to each channel. Each persona has its own system prompt, model selection, tool access, and capability policy.
 
+**Replies, reactions and topic workspaces**
+On Telegram and WhatsApp the agent sees which message you replied to, can answer as a native reply, and can react with an emoji instead of writing. A Telegram forum group becomes a workspace: every topic is its own conversation, with its own memory and optionally its own persona or bot.
+
 **Durable message queue**
 Messages survive crashes. SQLite-backed FIFO queue per conversation thread, with configurable retry, backoff, and dead-letter handling.
 

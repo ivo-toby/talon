@@ -5,15 +5,19 @@
  *
  *   talonctl a2a list [--status <state>] [--target <persona>] [--limit <n>]
  *   talonctl a2a send <target-persona> <message> [--source <persona>]
+ *   talonctl a2a cancel <taskId> [--reason <text>]
  *
- * The pure functions (`listA2ATasks`, `sendA2ATask`) can be called
+ * The pure functions (`listA2ATasks`, `sendA2ATask`, `cancelA2ATask`) can be called
  * programmatically. The `a2aCommand()` wrapper handles config loading,
  * DB lifecycle, console output, and process.exit.
  */
 
 import type Database from 'better-sqlite3';
+import { randomUUID } from 'node:crypto';
 import { v4 as uuidv4 } from 'uuid';
 import pino from 'pino';
+import fs from 'node:fs/promises';
+import path from 'node:path';
 
 import { A2ATaskRepository } from '../../core/database/repositories/a2a-task-repository.js';
 import { PersonaRepository } from '../../core/database/repositories/persona-repository.js';
@@ -21,6 +25,7 @@ import { ChannelRepository } from '../../core/database/repositories/channel-repo
 import { ThreadRepository } from '../../core/database/repositories/thread-repository.js';
 import { QueueRepository } from '../../core/database/repositories/queue-repository.js';
 import { A2ATaskMapper } from '../../a2a/a2a-task-mapper.js';
+import { DaemonIpcClient } from '../../ipc/daemon-ipc-client.js';
 import type { A2AAgentCard, A2ATaskState, A2ALimits } from '../../a2a/a2a-types.js';
 
 // ---------------------------------------------------------------------------
@@ -227,6 +232,165 @@ export function sendA2ATask(options: SendA2ATaskOptions): SendA2ATaskResult {
 }
 
 // ---------------------------------------------------------------------------
+// cancelA2ATask — pure core logic (direct DB)
+// ---------------------------------------------------------------------------
+
+export interface CancelA2ATaskOptions {
+  db: Database.Database;
+  taskId: string;
+  reason?: string;
+  limits?: A2ALimits;
+}
+
+export interface CancelA2ATaskResult {
+  taskId: string;
+  /** false when no task with this ID exists. */
+  found: boolean;
+  /** true only when this call moved the task to `canceled`. */
+  canceled: boolean;
+  /** Final state after the call (absent when not found). */
+  state?: A2ATaskState;
+}
+
+const DEFAULT_CANCEL_REASON = 'canceled via talonctl';
+
+/**
+ * Cancels an A2A task directly in the database through an A2ATaskMapper.
+ *
+ * This marks the task canceled and drops its pending queue item, but cannot
+ * stop a run that is already in flight inside a running daemon (the abort hook
+ * lives in the daemon process). Use {@link cancelA2ATaskViaDaemonOrDb} to
+ * prefer the daemon.
+ *
+ * @throws Error on database failure.
+ */
+export function cancelA2ATask(options: CancelA2ATaskOptions): CancelA2ATaskResult {
+  const { db, taskId, limits } = options;
+  const reason = options.reason?.trim() || DEFAULT_CANCEL_REASON;
+
+  const mapper = new A2ATaskMapper(
+    new A2ATaskRepository(db),
+    new QueueRepository(db),
+    new ThreadRepository(db),
+    new PersonaRepository(db),
+    new Map<string, A2AAgentCard>(),
+    pino({ level: 'silent' }),
+    limits,
+  );
+
+  const before = mapper.getTaskStatus(taskId);
+  if (before.isErr()) throw new Error(before.error.message);
+  if (before.value === null) return { taskId, found: false, canceled: false };
+
+  const result = mapper.cancelTask(taskId, reason);
+  if (result.isErr()) throw new Error(result.error.message);
+
+  const after = mapper.getTaskStatus(taskId);
+  const state = after.isOk() && after.value ? after.value.state : before.value.state;
+  return { taskId, found: true, canceled: result.value, state };
+}
+
+export interface CancelViaDaemonOptions {
+  taskId: string;
+  reason?: string;
+  /** Daemon IPC base directory. Default: data/ipc/daemon. */
+  ipcDir?: string;
+  /** How long to wait for the daemon before falling back to the DB. Default: 5000. */
+  timeoutMs?: number;
+  /** Opens the DB for the fallback path (only called when the daemon does not answer). */
+  openDatabase: () => Promise<OpenedDb> | OpenedDb;
+}
+
+export interface CancelViaDaemonResult extends CancelA2ATaskResult {
+  /** `daemon`: handled in the daemon (in-flight run aborted). `database`: direct DB fallback. */
+  via: 'daemon' | 'database';
+}
+
+const DEFAULT_IPC_DIR = 'data/ipc/daemon';
+const DEFAULT_IPC_TIMEOUT_MS = 5_000;
+
+/**
+ * Cancels a task through the running daemon (IPC `a2a-cancel`) so an in-flight
+ * run is aborted; when the daemon does not answer, falls back to a direct DB
+ * cancel (no run can be in flight then).
+ *
+ * @throws Error when the daemon answers with a failure or the DB cancel fails.
+ */
+export async function cancelA2ATaskViaDaemonOrDb(
+  options: CancelViaDaemonOptions,
+): Promise<CancelViaDaemonResult> {
+  const ipcDir = options.ipcDir ?? DEFAULT_IPC_DIR;
+  const inputDir = path.join(ipcDir, 'input');
+  const client = new DaemonIpcClient({
+    inputDir,
+    outputDir: path.join(ipcDir, 'output'),
+    timeoutMs: options.timeoutMs ?? DEFAULT_IPC_TIMEOUT_MS,
+  });
+
+  const commandId = randomUUID();
+  let response: Awaited<ReturnType<DaemonIpcClient['send']>> = null;
+  try {
+    response = await client.send({
+      id: commandId,
+      command: 'a2a-cancel',
+      payload: {
+        taskId: options.taskId,
+        ...(options.reason ? { reason: options.reason } : {}),
+      },
+    });
+  } catch {
+    // Could not even write the command (no IPC dir): treat as daemon not running.
+  }
+
+  if (response !== null) {
+    if (!response.success) {
+      throw new Error(response.error ?? 'Unknown daemon error');
+    }
+    const data = (response.data ?? {}) as {
+      found?: boolean;
+      canceled?: boolean;
+      state?: A2ATaskState;
+    };
+    return {
+      taskId: options.taskId,
+      found: data.found === true,
+      canceled: data.canceled === true,
+      ...(data.state !== undefined ? { state: data.state } : {}),
+      via: 'daemon',
+    };
+  }
+
+  // No answer: remove our unprocessed command so a daemon that starts later
+  // does not replay it, then cancel directly in the DB.
+  await removeUnprocessedCommand(inputDir, commandId);
+  const { db, a2aLimits } = await options.openDatabase();
+  try {
+    const result = cancelA2ATask({
+      db,
+      taskId: options.taskId,
+      reason: options.reason,
+      limits: a2aLimits,
+    });
+    return { ...result, via: 'database' };
+  } finally {
+    db.close();
+  }
+}
+
+async function removeUnprocessedCommand(inputDir: string, commandId: string): Promise<void> {
+  const cleanId = commandId.replace(/-/g, '');
+  try {
+    for (const entry of await fs.readdir(inputDir)) {
+      if (entry.includes(cleanId)) {
+        await fs.unlink(path.join(inputDir, entry)).catch(() => undefined);
+      }
+    }
+  } catch {
+    // Directory missing or unreadable: nothing to clean up.
+  }
+}
+
+// ---------------------------------------------------------------------------
 // CLI wrappers
 // ---------------------------------------------------------------------------
 
@@ -347,5 +511,48 @@ export async function a2aSendCommand(options: {
     process.exit(1);
   } finally {
     db.close();
+  }
+}
+
+/**
+ * CLI entrypoint for `talonctl a2a cancel`.
+ *
+ * Tries the running daemon first (aborts an in-flight run); falls back to a
+ * direct DB cancel when the daemon is not running. Exits 1 when the task does
+ * not exist or on error; an already-finished task is reported with exit 0.
+ */
+export async function a2aCancelCommand(options: {
+  configPath?: string;
+  taskId: string;
+  reason?: string;
+  ipcDir?: string;
+  timeoutMs?: number;
+}): Promise<void> {
+  try {
+    const result = await cancelA2ATaskViaDaemonOrDb({
+      taskId: options.taskId,
+      reason: options.reason,
+      ipcDir: options.ipcDir,
+      timeoutMs: options.timeoutMs,
+      openDatabase: () => openDb(options.configPath ?? 'talond.yaml'),
+    });
+
+    if (!result.found) {
+      console.error(`Error: A2A task not found: ${result.taskId}`);
+      process.exit(1);
+      return;
+    }
+
+    if (result.canceled) {
+      console.log(`Task ${result.taskId} canceled.`);
+      if (result.via === 'database') {
+        console.log('  Note: talond is not running; canceled in the database only.');
+      }
+    } else {
+      console.log(`Task ${result.taskId} was not canceled: already ${result.state ?? 'finished'}.`);
+    }
+  } catch (error) {
+    console.error(`Error: ${(error as Error).message}`);
+    process.exit(1);
   }
 }

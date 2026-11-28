@@ -83,6 +83,8 @@ integration, or automation is safe without your configuration and review.
 - **Discord** — Gateway events with REST API, rate limit handling _(inbound not yet implemented)_
 - **WhatsApp** — WhatsApp Web bridge via Baileys, supports dedicated number or self-chat mode
 - **Email** — IMAP polling + SMTP send (imapflow / nodemailer), thread tracking via References / In-Reply-To headers _(IMAP polling verified against a live KPN mailbox; SMTP send not yet verified live)_
+- **Browser voice** — Opt-in authenticated WebRTC sessions at `/voice/`, backed by the durable queue and configured persona policy
+- **Replies, threads and reactions** — On Telegram and WhatsApp the agent sees which message a user replied to, can answer as a native reply, can react with an emoji instead of writing (👍 for "understood"), and is told when a user reacts to one of its messages. Telegram forum topics are separate conversations. See [Replies, Threads and Reactions](#replies-threads-and-reactions)
 
 ### Agent System
 
@@ -91,6 +93,7 @@ integration, or automation is safe without your configuration and review.
 - **Per-thread memory** — Each conversation thread gets its own workspace with transcript, working memory, and artifacts
 - **Skills** — Modular prompt and tool bundles with lazy loading (metadata-only in system prompt, full content on demand)
 - **MCP integration** — Connect external MCP tool servers via stdio, HTTP, or SSE; Talon applies persona policy to its own host-tools bridge
+- **Image understanding** — Upload photos on Telegram, WhatsApp, or email; a configurable vision sub-agent answers questions about them and saves textual Findings. The main agent stays text-only. See [Images](#images)
 
 ### Provider choice
 
@@ -332,6 +335,8 @@ For the full deployment walkthrough, see the [setup guide](docs/setup-guide.md).
 - **Claude Code** (default provider), and optionally **Gemini CLI** and/or **Codex CLI** installed and authenticated
 - **SQLite** (ships with better-sqlite3, no separate install)
 
+For **Codex CLI**, Talon looks for operator credentials (`auth.json`) in `CODEX_HOME` if set, otherwise in `~/.codex`. Each invocation uses a separate temporary Codex home seeded with those credentials. In Home Assistant, `CODEX_HOME` can point to persistent add-on storage such as `/data/talon/codex-home`.
+
 ### Install
 
 ```bash
@@ -397,7 +402,7 @@ backgroundAgent:
 
 personas:
   - name: assistant
-    model: claude-sonnet-4-6
+    model: claude-sonnet-5-5
     systemPromptFile: personas/assistant/system.md
     skills: []
     subagents:
@@ -481,6 +486,7 @@ dataDir: data
 | `schedules`            | Agent-managed schedule entries (cron, interval, one-shot)                     |
 | `scheduler`            | Scheduler tick interval                                                       |
 | `auth`                 | `subscription` or `api_key` authentication mode                               |
+| `voice`                | Optional browser voice listener, authentication, live model, and lifecycle limits |
 | `subagentCli`          | Opt-in direct Claude Code adapter for bounded sub-agent generations             |
 | `langfuse`             | Langfuse observability: API keys, base URL, environment, flush settings       |
 | `sprites`              | Sprites.dev execution environments: token, resource limits, defaults          |
@@ -559,7 +565,7 @@ personas:
     model: qwen3-coder:30b
     provider: openai-compatible # foreground stays on Ollama
     backgroundProvider: claude-code # background runs on Claude Code
-    backgroundModel: claude-sonnet-4-6
+    backgroundModel: claude-sonnet-5-5
   - name: work-context-manager
     model: qwen3-coder:30b
     provider: openai-compatible
@@ -640,6 +646,109 @@ channels:
       appToken: ${SLACK_APP_TOKEN}
 ```
 
+#### Replies, Threads and Reactions
+
+Telegram, WhatsApp Baileys and WhatsApp Business support native replies and emoji reactions in both directions. The other connectors ignore these features and behave as before.
+
+**What the agent sees.** A reply or a reaction arrives as one bracketed line at the top of the message, so every provider and every stored transcript reads it the same way:
+
+```text
+[Replying to your message (id 4521): "Shall I book the 14:00 slot?"]
+yes please
+
+[Reaction: the user reacted with 👍 to your message (id 4521): "Shall I book the 14:00 slot?"]
+```
+
+The `(id …)` is the channel's own message ID. The agent passes it to `channel_react` or to `channel_send`'s `replyTo` to address that exact message.
+
+**Replies from users.** The replied-to message is resolved from Talon's message ledger (the `message_refs` table), which records the provider ID of every message Talon receives and sends. A reply to a message from before the ledger existed is shown as "an earlier message" with whatever text the channel delivered.
+
+**Replies from Talon.** `replyToTrigger` in the connector `config` controls whether an answer is sent as a native reply to the message that triggered it:
+
+| `replyToTrigger`   | Behaviour                                                                              |
+| ------------------ | -------------------------------------------------------------------------------------- |
+| `groups` (default) | Quote the triggering message in group chats only, where it shows who is being answered |
+| `always`           | Quote the triggering message in every chat                                             |
+| `never`            | Never quote automatically                                                              |
+
+Only the first message of an answer quotes; later messages of the same run are plain. A reply the agent asks for explicitly (`channel_send` with `replyTo`) is always sent as a native reply, whatever the setting.
+
+**Reactions from Talon.** The `channel_react` tool places an emoji on a message, by default the one the agent is answering. It needs the `channel.react` capability, which is separate from `channel.send`:
+
+```yaml
+personas:
+  - name: assistant
+    capabilities:
+      allow:
+        - channel.react:*
+```
+
+With no `messageId` the tool reacts to the message that started the run. For any other message the agent passes an ID from a header, or asks the tool for the conversation's recent messages with `list: true`. An ID the message ledger does not know is refused with that same listing instead of being sent to the channel, so a number read from the database (on Telegram the stored key is an `update_id`, not a message ID) cannot end in a provider error.
+
+To acknowledge without sending text, the agent reacts and then makes its whole response `NO_REPLY`. A response that is only that word is never delivered to the chat. Telegram accepts only its standard reaction set (👍 👎 ❤ 🔥 🎉 🙏 👌 🤔 👀 and about sixty more); anything else returns an error listing the alternatives, so the agent can pick one.
+
+**Reactions from users.** A reaction a user places on one of Talon's messages starts an agent run on that conversation, with the reaction as the message. The agent can answer, react back, or stay silent with `NO_REPLY`. This is how a 👍 on "Shall I book it?" becomes a yes. Set `inboundReactions: false` in the connector `config` to turn it off. Three limits apply:
+
+- Only reactions on messages Talon sent are forwarded. Reactions on other people's messages, and on messages sent before the ledger existed, are ignored.
+- Removing a reaction is ignored.
+- Each forwarded reaction is one agent run, with the usual model cost.
+
+**Telegram topics.** A message inside a topic (a forum supergroup topic, or a topic in a private chat with the bot) belongs to its own Talon thread, `<chat_id>:<topic_id>`. Each topic has its own conversation, session and memory, and answers go back into the topic. Messages outside a topic keep using the plain `chat_id` thread.
+
+> **Upgrading:** topic messages previously shared the chat's single thread and were answered in the General topic. After this change each topic starts a fresh conversation; the old shared thread keeps serving messages outside topics.
+
+#### Telegram Topic Workspaces
+
+One forum group can serve as a workspace of separate conversations: a "Groceries" topic, a "Calendar" topic, each with its own history and optionally its own persona. The full walkthrough is in [docs/guides/telegram-topics.mdx](docs/guides/telegram-topics.mdx); the short version:
+
+1. Create a group, turn on **Topics**, add the bot and make it an **administrator**.
+2. Send `/chatid@YourBotName` in the group. The bot answers with the chat ID (and, inside a topic, the topic ID and the `Talon thread` key). The command is answered by the connector, never reaches the agent, and works before the group is configured. With `allowedChatIds` set, only a listed sender gets an answer.
+3. Configure the group:
+
+```yaml
+channels:
+  - name: my-telegram
+    type: telegram
+    config:
+      botToken: ${TELEGRAM_BOT_TOKEN}
+      allowGroupChats: true
+      allowedChatIds:
+        - '123456789' # your private chat
+        - '-1004452318413' # the forum group
+      chats:
+        '-1004452318413':
+          requireMention: false # answer every message, no @mention
+          replyToTrigger: never # plain answers, no quoting
+```
+
+`chats` holds per-chat overrides of `requireMention` and `replyToTrigger`, so a topic workspace and an ordinary multi-person group can behave differently on the same bot. A key can also be one topic, `'<chat_id>:<topic_id>'`, which wins over the chat's entry. That lets several bots share a group, each answering unprompted in its own topic: give each bot's channel a `chats` entry for its topic only, and do not set `requireMention: false` on the chat ID itself. A bot that answers every message still leaves a message alone when it @mentions, commands or replies to a different bot. Listing a chat there does not admit it; `allowGroupChats` and `allowedChatIds` still decide that.
+
+4. Optionally give a topic its own persona with a thread-scoped binding:
+
+```bash
+npx talonctl bind --persona groceries --channel my-telegram --thread '-1004452318413:42'
+```
+
+```yaml
+bindings:
+  - persona: assistant
+    channel: my-telegram
+    isDefault: true
+  - persona: groceries
+    channel: my-telegram
+    thread: '-1004452318413:42'
+```
+
+A thread-scoped binding wins over the channel default. Unbound topics and General use the default persona. All personas speak through the same bot account. Bindings are applied at startup; removing the entry returns the topic to the default.
+
+To bring an existing conversation into a topic, so the agent there does not start from nothing, use [`talonctl move-context`](#thread-and-provider-affinity):
+
+```bash
+npx talonctl move-context --channel my-telegram --from 123456789 --to '-1004452318413:42'
+```
+
+A reminder or schedule created inside a topic is delivered into that topic, unless the scheduled run passes an explicit `externalChatId`. The `channel.send: message sent successfully` log line names the `recipient` and the `recipientSource` (`schedule origin`, `externalChatId argument` or `current thread`).
+
 ### Telegram
 
 Long-polling connector using the Telegram Bot API.
@@ -654,12 +763,23 @@ channels:
       pollingTimeoutSec: 30
       allowedChatIds:
         - 123456789
+      allowGroupChats: false # default: false — answer in group chats
+      requireMention: true # default: true — see "Group chats" below
+      # chats: per-chat overrides of requireMention / replyToTrigger,
+      #        see "Telegram Topic Workspaces"
+      replyToTrigger: groups # never | groups (default) | always
+      inboundReactions: true # default: true
 ```
 
-- **Inbound**: Long polling via `getUpdates`
-- **Outbound**: `sendMessage` with MarkdownV2 parse mode
+- **Inbound**: Long polling via `getUpdates`, subscribed to `message` and (unless `inboundReactions: false`) `message_reaction`
+- **Outbound**: `sendMessage` with MarkdownV2 parse mode; native replies via `reply_parameters`; reactions via `setMessageReaction`
 - **Idempotency key**: `update_id`
-- **Thread mapping**: `chat_id`
+- **Thread mapping**: `chat_id`, or `chat_id:message_thread_id` for a message inside a topic
+- **Group chats**: off by default. With `allowGroupChats: true` the bot answers an @mention, a trigger word, or a native reply to one of its own messages. Add `requireMention: false` to answer every message in the group, which suits a forum group where each topic is a conversation with the bot. Three things to know:
+  - Telegram only delivers every group message when the bot is a group administrator or has Group Privacy turned off in BotFather.
+  - Set `allowedChatIds` alongside it. Without an allow-list the bot answers everything in any group it is added to, and logs a warning at startup.
+  - Every member of an allowed group can talk to the bot, and each message is one agent run.
+- **Reactions**: Telegram delivers user reactions in private chats and in groups where the bot is an administrator. See [Replies, Threads and Reactions](#replies-threads-and-reactions)
 
 ### Slack
 
@@ -723,12 +843,15 @@ channels:
       webhookPort: 3000 # default: 3000
       webhookHost: '0.0.0.0' # default: 0.0.0.0
       webhookPath: '/webhook' # default: /webhook
+      replyToTrigger: groups # never | groups (default) | always
+      inboundReactions: true # default: true
 ```
 
 - **Inbound**: Embedded HTTP server handles Meta webhook verification (GET) and signed event delivery (POST with HMAC-SHA256 validation). Requires a public URL — use a reverse proxy (nginx, Caddy) or ngrok for local dev.
 - **Outbound**: REST API `POST /v21.0/{phoneNumberId}/messages`
 - **Idempotency key**: WhatsApp message ID
 - **Thread mapping**: Sender phone number
+- **Replies and reactions**: contextual replies (`context.message_id`) and `type: reaction` messages in both directions. The Cloud API has no group chats, so the default `replyToTrigger: groups` never quotes automatically; set `always` to quote every answer. See [Replies, Threads and Reactions](#replies-threads-and-reactions)
 
 ### WhatsApp Baileys
 
@@ -807,6 +930,7 @@ Once authenticated, the daemon uses the saved credentials — no QR code display
 - **Outbound**: Send via Baileys socket using WhatsApp JID (e.g. `447700900000@s.whatsapp.net`)
 - **Idempotency key**: Baileys message ID
 - **Thread mapping**: Sender JID
+- **Replies and reactions**: quoted replies and emoji reactions in both directions (`replyToTrigger`, `inboundReactions`). A reaction passes the same `allowedSenders` / self-chat / group checks as a message but needs no trigger word. See [Replies, Threads and Reactions](#replies-threads-and-reactions)
 - **Reconnection**: Automatic on disconnect; logged-out sessions require re-authentication (delete `authDir` and re-run `talonctl whatsapp-auth`)
 
 ### Email
@@ -970,7 +1094,7 @@ A persona defines an AI agent's identity, capabilities, and channel bindings. Bi
 personas:
   - name: alfred
     description: Personal assistant
-    model: claude-sonnet-4-6
+    model: claude-sonnet-5-5
     provider: claude-code
     # Optional for Codex CLI and OpenAI-compatible Responses personas.
     # OpenAI Responses: none, minimal, low, medium, high, xhigh, max, ultra.
@@ -1017,7 +1141,9 @@ prompt a user or block execution.
 | Capability               | Description                                                                 |
 | ------------------------ | --------------------------------------------------------------------------- |
 | `channel.send:<channel>` | Send messages to a specific channel                                         |
-| `persona.send:*`         | Delegate to another persona, list personas, and fetch delegated task status |
+| `channel.react:*`        | React with an emoji to messages in the current conversation (Telegram, WhatsApp) |
+| `persona.send:*`         | Delegate to any persona, list personas, and fetch or cancel delegated tasks |
+| `persona.send:<persona>` | Delegate only to that persona (repeat the label for several); same list/status/cancel tools |
 | `schedule.manage`        | Create/modify/delete scheduled tasks                                        |
 | `memory.access`          | Read/write per-thread structured memory                                     |
 | `net.http`               | Fetch external URLs                                                         |
@@ -1282,7 +1408,7 @@ subagents:
         # maxTokens: 4096     # optional — falls back to subagent.yaml default
         # timeoutMs: 120000   # optional per-model wall-clock timeout (min 1000)
       - provider: anthropic
-        name: claude-haiku-4-5-20251001
+        name: claude-haiku-5-5
   session-summarizer:
     model:
       - provider: openai
@@ -1336,13 +1462,13 @@ subagents:
   session-summarizer:
     model:
       - provider: claude-code
-        name: claude-sonnet-4-6
+        name: claude-sonnet-5-5
         timeoutMs: 60000
       - provider: codex-sandbox
         name: gpt-5.6-terra
         timeoutMs: 60000
       - provider: anthropic # ordinary API fallback, if configured
-        name: claude-haiku-4-5-20251001
+        name: claude-haiku-5-5
 ```
 
 Each attempt is a single isolated generation, not an agent run: no Talon host
@@ -1462,7 +1588,7 @@ subagents:
           chat_template_kwargs:
             enable_thinking: false
       - provider: anthropic
-        name: claude-sonnet-4-6
+        name: claude-sonnet-5-5
         timeoutMs: 60000
         # no providerOptions on the fallback — Claude would drop them anyway
 ```
@@ -1473,13 +1599,14 @@ The runner wraps `providerOptions` under the active model entry's provider name 
 
 | Name                 | Default model               | Description                                                   |
 | -------------------- | --------------------------- | ------------------------------------------------------------- |
-| `file-searcher`      | `claude-haiku-4-5-20251001` | Search files by content, return ranked results with snippets  |
-| `memory-retriever`   | `claude-haiku-4-5-20251001` | Find relevant memories via keyword pre-filter + LLM rerank    |
-| `memory-groomer`     | `claude-haiku-4-5-20251001` | Prune stale, consolidate duplicate memory items               |
-| `session-summarizer` | `claude-sonnet-4-6`         | Compress transcripts for rolling context window (legacy)      |
-| `session-observer`   | `claude-sonnet-4-6`         | Generate dated, prioritized observations for long-term memory |
-| `session-reflector`  | `claude-sonnet-4-6`         | Consolidate observations when log grows too large             |
+| `file-searcher`      | `claude-haiku-5-5`          | Search files by content, return ranked results with snippets  |
+| `memory-retriever`   | `claude-haiku-5-5`          | Find relevant memories via keyword pre-filter + LLM rerank    |
+| `memory-groomer`     | `claude-haiku-5-5`          | Prune stale, consolidate duplicate memory items               |
+| `session-summarizer` | `claude-sonnet-5-5`         | Compress transcripts for rolling context window (legacy)      |
+| `session-observer`   | `claude-sonnet-5-5`         | Generate dated, prioritized observations for long-term memory |
+| `session-reflector`  | `claude-sonnet-5-5`         | Consolidate observations when log grows too large             |
 | `spark-coder`        | `gpt-5.4-spark`             | Fast single-shot code generation (requires `OPENAI_API_KEY`)  |
+| `vision`             | `claude-haiku-5-5`          | One-shot multimodal Inspection of thread Images (see [Images](#images)) |
 
 Sub-agents are loaded from three locations at startup (later overrides earlier):
 
@@ -1538,7 +1665,7 @@ All five built-in sub-agents forward both fields. Copy the pattern above when au
 
 |                           |                                                                           |
 | ------------------------- | ------------------------------------------------------------------------- |
-| **Model**                 | Haiku 4.5                                                                 |
+| **Model**                 | Haiku 5.5                                                                 |
 | **Required capabilities** | `fs.read:*`                                                               |
 | **Timeout**               | 30s                                                                       |
 | **Input**                 | `{ query, rootPaths?, extensions?, maxFileSize?, maxResultsWithoutLlm? }` |
@@ -1554,7 +1681,7 @@ The search cascade tries `rg --json` first (fastest, with `--ignore-case`, `--ma
 
 |                           |                                                           |
 | ------------------------- | --------------------------------------------------------- |
-| **Model**                 | Haiku 4.5                                                 |
+| **Model**                 | Haiku 5.5                                                 |
 | **Required capabilities** | `memory.access:*`                                         |
 | **Timeout**               | 30s                                                       |
 | **Input**                 | `{ query, topK?, threshold? }`                            |
@@ -1570,7 +1697,7 @@ If fewer than 10 keyword matches are found, they're returned directly without LL
 
 |                           |                                                                 |
 | ------------------------- | --------------------------------------------------------------- |
-| **Model**                 | Haiku 4.5                                                       |
+| **Model**                 | Haiku 5.5                                                       |
 | **Required capabilities** | `memory.access:*`                                               |
 | **Timeout**               | 30s                                                             |
 | **Input**                 | `{ periodMs?, protectedKeyPrefixes? }` (optional: only groom items from the last N ms; skip keys starting with any given prefix) |
@@ -1588,7 +1715,7 @@ Uses `generateObject` with a Zod discriminated union schema to ensure the LLM re
 
 |                           |                                                                  |
 | ------------------------- | ---------------------------------------------------------------- |
-| **Model**                 | Haiku 4.5                                                        |
+| **Model**                 | Sonnet 5.5                                                        |
 | **Required capabilities** | none                                                             |
 | **Timeout**               | 30s                                                              |
 | **Input**                 | `{ transcript }`                                                 |
@@ -1612,6 +1739,27 @@ This sub-agent is called automatically by the **rolling context window** (see be
 | **Output**                | `{ files: [{ path, content, action }], explanation }` |
 
 This sub-agent is only loaded when `OPENAI_API_KEY` is set in the environment. Pairs well with the `execution_env` host tool for a generate → test → fix loop where the parent agent orchestrates between spark-coder (fast generation) and Sprites (sandboxed execution).
+
+#### `vision`
+
+**Problem:** Personas often use text-only models, and providers retain prior inputs in a session. Sending every uploaded picture into the main agent's history is expensive, and it does not work at all for text-only personas.
+
+**Solution:** Pixels go only to this dedicated sub-agent, in a single multimodal request. The main agent receives Image metadata and textual Findings instead. Every persona gets the same Inspection interface regardless of its own vision support, and image-token history never enters the main agent's session ([ADR-0001](docs/adr/0001-vision-subagent.md)).
+
+|                           |                                                                                                    |
+| ------------------------- | ---------------------------------------------------------------------------------------------------- |
+| **Model**                 | Claude Haiku 5.5 (Anthropic) — override under `subagents.vision.model`                             |
+| **Required capabilities** | none (gated by persona assignment + `subagent.invoke`)                                             |
+| **Timeout**               | 60s                                                                                                  |
+| **Input**                 | `{ imageIds: string[], question: string }`                                                          |
+| **Output**                | `{ findingId, imageIds, answer, extractedText, uncertainty, model, usage }`                         |
+
+Two rules distinguish it from the other sub-agents:
+
+- **Vision-capable chain only.** Every entry in the chain must be `anthropic`, `openai`, `google`, or `ollama`. Config load rejects a text-only override (`claude-code`, `codex-sandbox`) rather than skipping it, and startup revalidates the entire effective chain — including the built-in manifest fallback — before any channel work. Missing credentials stay an explicit invocation error; an Inspection is never rerouted to the foreground model.
+- **All-or-nothing input validation.** A nonempty `question` plus 1 to `images.maxPerInspection` distinct, current-thread, successfully-processed Image IDs. Unknown, cross-thread, duplicate, still-processing, Rejected or Unavailable IDs, and too many IDs, fail the **whole** call before any model request. Paths and URLs are never accepted, and the list is never truncated.
+
+Failover keeps every image part: each retry is an independent request carrying the question and all images, rechecking availability and honouring timeouts. If the chain is exhausted, no Finding is created — Talon never drops pixels to manufacture an answer. See [Images](#images).
 
 ### Rolling Context Window
 
@@ -1728,7 +1876,7 @@ Personas must declare which sub-agents they can invoke and have the `subagent.in
 ```yaml
 personas:
   - name: assistant
-    model: claude-sonnet-4-6
+    model: claude-sonnet-5-5
     subagents:
       - session-summarizer
       - memory-groomer
@@ -1767,6 +1915,266 @@ npx talonctl run-subagent --name session-summarizer --input '{"transcript": "Use
 6. Test with `talonctl run-subagent --name your-agent --input '{}'`
 
 Custom sub-agents override built-in ones if they share the same name (dataDir takes precedence over cwd, which takes precedence over built-in).
+
+---
+
+## Images
+
+You can send Talon pictures and ask about them. Talon stores an **Image** record
+for each accepted upload, normalizes it to a bounded JPEG, and answers questions
+about it through the **vision** sub-agent, which saves a textual **Finding**.
+
+The important design point: **the main agent never sees pixels.** Pixels go only
+to the vision sub-agent. The main agent gets text — Image descriptors (ID,
+dimensions, filename, receipt and expiry, state, selected EXIF) and saved
+Findings — so image support works identically for text-only personas and keeps
+image-token history out of the main session
+([ADR-0001](docs/adr/0001-vision-subagent.md)). Pixel bytes, base64 payloads and
+download credentials never enter main-agent prompts, stored messages, queue
+content, summaries, or logs.
+
+### Enabling it
+
+Running an **Inspection** takes exactly two things: the `vision` assignment on the
+persona plus the existing `subagent.invoke` capability. The vision manifest
+declares `requiredCapabilities: []`, so an Inspection needs no image capability of
+its own. `image.read:thread` is a **separate, independent** grant for model-free
+text lookup — recommended, not part of Inspection. **Existing personas do not gain
+image ability automatically** when you upgrade; each grant is explicit.
+
+```yaml
+personas:
+  - name: assistant
+    subagents:
+      - vision            # 1. assignment: allows Inspections
+    capabilities:
+      allow:
+        - subagent.invoke:*   # 2. the tool call itself
+        - image.read:thread   # separate grant: text lookup of Images/Findings
+```
+
+- **`vision` in `subagents`** — without it, `subagent_invoke` with `name:
+  vision` is denied.
+- **`subagent.invoke:*`** — the existing permission for the invoke tool.
+- **`image.read:thread`** — exposes `image_lookup`: model-free, text-only
+discovery of this thread's Images and Findings. It needs no vision assignment, no
+invoke permission, no credential, and never calls a model or downloads anything,
+so it is safe to grant where you would not grant vision. Grant it together with
+vision so the persona can re-read an existing Finding instead of paying for a
+repeat Inspection.
+
+Uploading still works with none of the above — images are ingested, described,
+and stored — but the persona cannot ask what they show.
+
+### What is accepted
+
+Supported input formats: **JPEG, static PNG, static WebP** (the non-standard `image/jpg` and `image/pjpeg` labels count as JPEG). Anything animated is
+rejected explicitly, including WebP frame information and PNG/APNG
+animation-control data, even when the decoder could read a single frame.
+
+| Delivered item                                            | Outcome                          | Uses a slot |
+| --------------------------------------------------------- | -------------------------------- | ----------- |
+| Photo, ordinary image message, image-MIME document/email   | Evaluated as an Image            | Yes         |
+| Unsupported image MIME, including HEIC and SVG             | Rejected / `unsupported_mime`    | Yes         |
+| Document or email part with absent or non-image MIME       | Excluded silently                | No          |
+| Email CID part embedded in the HTML body, or inline part with no filename | Excluded silently | No |
+| Platform sticker, including a static WebP sticker          | Excluded silently                | No          |
+| Another size/thumbnail of the same photo                   | Not another Image                | No          |
+
+Ordinary WebP **documents** are eligible; Talon does not guess whether they were
+stickers. Telegram album members stay separate messages. A document's filename
+never establishes its MIME type.
+
+**Channels:** Telegram photos and image-MIME documents, WhatsApp Business and
+Baileys images and documents, and email image attachments. Existing sender, chat,
+bot, group and trigger policies are unchanged; an eligible image-only message can
+start a run, and captions and text are preserved. Email attachments are parsed
+before sender/DMARC authorization, but only authorized parts are normalized.
+
+### Settings
+
+```
+images:
+  maxInputBytes: 10485760   # 10 MiB per Image
+  maxPerMessage: 5          # upload slots per message
+  maxPerInspection: 5       # Image IDs per Inspection
+  maxEdge: 4096             # longest normalized edge, pixels
+  jpegQuality: 85           # 1-100
+  maxInputPixels: 100000000 # decoded source pixels (decompression-bomb guard)
+  maxNormalizedBytes: 3750000 # normalized JPEG bytes; fits Anthropic's 5 MB base64 limit
+  retentionHours: 24        # normalized FILE retention only
+```
+
+Changing any `images` setting needs a daemon restart; `talonctl reload` keeps the
+running values and logs a warning. Lower `maxNormalizedBytes` if your vision
+provider accepts smaller images than Anthropic's 5 MB.
+
+`maxPerMessage` and `maxPerInspection` are independent — raising one does not
+raise the other. Declared sizes are never trusted alone: actual bytes are checked
+during download and again before staging or conversion.
+
+**Email has a lower practical limit.** Email's unchanged 10 MiB whole-message cap
+covers encoding, headers, body and every part combined, so base64 leaves roughly
+**7.5 MiB or less** for a single decoded image once other overhead is counted.
+Oversized whole emails keep the existing pre-ingestion skipping behaviour. When a
+large photo must arrive, send it as its own email, or use Telegram/WhatsApp.
+
+### Normalization
+
+Accepted input is converted to **metadata-free JPEG**: EXIF is read first,
+orientation applied, the image scaled to fit inside `maxEdge` preserving aspect
+ratio (never cropped, never upscaled), alpha flattened onto white, then encoded
+at `jpegQuality`. A source over `maxInputPixels` (width × height, read from the
+header before decoding) is Rejected / `size_limit`. If the JPEG comes out larger
+than `maxNormalizedBytes`, Talon re-encodes at quality 75, 65 and 55, then shrinks
+the longest edge by 25% per step (down to 512 px) until it fits, so every vision
+provider can accept it; an image that never fits is Rejected / `size_limit`. Other
+decoder input limits stay enabled and a conversion that trips one is
+`conversion_failed`.
+
+Normalized files live in the thread workspace and are deleted when they expire:
+
+```
+data/threads/<thread_id>/attachments/images/<image_id>.jpg
+```
+
+### Retention, and what outlives the file
+
+**Retention is file-only.** After `retentionHours` (default 24) the normalized
+JPEG is removed — checked at startup and on a sweep at most every 60 seconds —
+and the Image becomes `Unavailable / expired`.
+
+**Not deleted by retention:** Image records, **GPS and other EXIF**, Findings, and
+conversation text. These persist until separately deleted. Retention also does not
+govern anything your model provider retains.
+
+So a thread's personal data outlives its pictures. In groups admitted by the
+existing connector group/trigger settings, extracted metadata is exposed the same
+way as any other reply — **there is no separate image or GPS group switch.** GPS
+and OCR-derived personal data can therefore appear in group responses and remains
+after the file is gone. Only enable image handling in groups where that is
+acceptable.
+
+**Expiry is absolute.** Looking at an Image, asking about it, retrying, or
+restarting the daemon never extends it. Because queue backlog or backoff can push
+a run back, a message's first run may already see its own images as expired.
+Re-upload is the only recovery, and it creates a **new Image ID** with a fresh
+deadline — Findings stay attached to the old ID.
+
+### Metadata
+
+Dimensions and selected EXIF are exposed automatically: GPS
+latitude/longitude/altitude, capture time with its recorded offset, camera
+make/model, and original orientation. Missing values stay **unknown** — Talon does
+not invent a location or a timezone, and EXIF location is kept distinct from a
+model's guess about where something was shot.
+
+Telegram and WhatsApp frequently strip EXIF from *photos*. When metadata matters,
+send the **original as a document** or attach it to an **email** — this improves
+the odds but cannot guarantee preservation.
+
+### Asking about an image
+
+An **Inspection** is one question about one or more Images, answered in a single
+multimodal request:
+
+```json
+{
+  "name": "vision",
+  "input": {
+    "imageIds": ["img-0001", "img-0002"],
+    "question": "What error message is shown, and what does it say to do next?"
+  }
+}
+```
+
+A successful Inspection returns and **saves** a Finding: `{ findingId, imageIds,
+answer, extractedText, uncertainty, model, usage }`. Findings are canonical rows
+in SQLite, survive failed runs, context rotation, and file expiry, and are
+attributable model output — pass `uncertainty` through rather than treating an
+answer as ground truth.
+
+Inspections run only inside a **foreground run** of the thread (a message or a
+scheduled task). A background agent cannot Inspect: its call is refused before
+any model is billed, because there is no foreground run to attach the Finding to.
+It can still read existing Findings with `image_lookup`.
+
+**`image_lookup`** reads that stored state without any model call
+(`image.read:thread`):
+
+| Operation       | Fields beyond `operation`                       | Returns                                             |
+| --------------- | ----------------------------------------------- | ---------------------------------------------------- |
+| `list_images`   | `limit`, `cursor`                               | `{ images, nextCursor }` — current descriptors        |
+| `get_image`     | `imageId`                                       | `{ image }` — current state of one Image              |
+| `list_findings` | `imageId` (filter), `limit`, `cursor`           | `{ findings, nextCursor }`                            |
+| `get_finding`   | `findingId`                                     | `{ finding }` — the exact saved Finding                |
+
+`list_images` deliberately includes Rejected and Unavailable Images — their
+metadata and Findings survive the missing file. Images still processing are
+omitted. Lists page 20 at a time (`limit` 1–100), newest first, with an opaque
+`nextCursor` bound to the operation, filter and thread; reuse it unchanged, and
+`null` means exhausted. Unknown, cross-thread, and still-processing IDs all
+return the same not-found error.
+
+### What the model sees, and when
+
+- **Live message** — the descriptors for the current message are appended to what
+every provider receives, in source order. Stored message and queue text is
+  unchanged.
+- **Fresh sessions and context rotation** — get the fuller inventory and Finding
+  projections. Resumed sessions do **not** get the full inventory repeated on
+every text-only turn; they use `image_lookup` for older Images and current state
+  ([ADR-0002](docs/adr/0002-image-context-placement.md)).
+- **Budgets** — 20 newest non-Processing descriptors (max 1,000 characters each,
+  8,000 total) and 10 newest Findings (max 2,000 characters each, 8,000 total),
+  shared between live and fresh sections. Omitted items stay reachable through
+  `image_lookup`; a persona without that tool gets a neutral notice and is never
+told about a tool it cannot use.
+- **Descriptors in history are stale snapshots.** A descriptor from an earlier
+  turn shows what was true then; its state and expiry may have lapsed.
+  `get_image` reports current state.
+
+### Failure reasons
+
+Rejection reasons are a closed list — no connector-specific values:
+
+| Reason                    | Meaning                                                        |
+| ------------------------- | -------------------------------------------------------------- |
+| `unsupported_mime`        | Eligible image MIME outside the supported formats               |
+| `count_limit`             | More eligible attachments than the message's upload slots       |
+| `size_limit`              | Bytes, decoded pixels, or the normalized JPEG exceed their limit |
+| `animated`                | Animated image, including APNG                                  |
+| `download_failed`         | Channel media fetch failed or timed out                         |
+| `conversion_failed`       | Input could not be decoded or normalized                        |
+| `processing_interrupted`  | Recovery found no usable source before the processing deadline  |
+| `processing_failed`       | Operational retries exhausted, or the deadline elapsed          |
+
+Unavailability has exactly two reasons: `expired` and `file_missing`. Both mean
+re-upload, and both preserve metadata and existing Findings.
+
+Rejections are permanent for that Image; an Inspection or provider failure never
+turns an Available Image into a Rejected one.
+
+### Timing you will notice
+
+- **Head-of-line delay, bounded per connector.** A sequential connector waits for
+  each image-bearing message before delivering anything else **on that connector**
+  — including messages for other chats. Connectors that download media (Telegram,
+  WhatsApp) get a fixed 60-second remote-fetch budget per message **plus** a
+  separate 60-second normalization deadline, so up to ~120 seconds. **Email has no
+  remote-fetch budget at all**: IMAP delivers the whole message within the 10 MiB
+  cap and the attachments are decoded before the connector sees them, so there is
+  nothing to download and only the shared 60-second normalization deadline applies
+  (on top of ordinary IMAP polling latency). Either way, at most 3 attempts per
+  Image.
+- **Attempts and deadlines survive restart.** Neither redelivery nor a restart
+  resets them, and a crash consumes its started attempt.
+- **Per-chat ordering on WhatsApp.** Both WhatsApp connectors hand a chat's
+  messages to the pipeline one at a time, so a text sent right after a photo waits
+  until the photo has been downloaded and normalized. Other chats are not held
+  up. Messages recovered after a restart may still enqueue in completion order.
+- **Image settings need a restart.** `talonctl reload` keeps the running
+  `images` limits and logs a warning when they changed.
 
 ---
 
@@ -1884,7 +2292,7 @@ exponents); the CLI rejects invalid values before writing any file.
 ```bash
 npx talonctl setup --config talond.yaml --data-dir data
 npx talonctl add-channel --name work-slack --type slack
-npx talonctl add-persona --name researcher --model claude-sonnet-4-6 --provider claude-code \
+npx talonctl add-persona --name researcher --model claude-sonnet-5-5 --provider claude-code \
   --capabilities "channel.send:slack,fs.read:*" --skills web-search
 npx talonctl add-skill --name web-search --persona researcher --format skillmd
 npx talonctl add-mcp --skill web-search --name tavily \
@@ -1905,7 +2313,7 @@ npx talonctl add-mcp --skill web-search --name tavily \
 | `remove-channel`    | Remove a channel and its bindings                                      |
 | `remove-persona`    | Remove a persona, its directory, and bindings                          |
 | `env-check`         | Audit Talon config and MCP definitions for missing env vars            |
-| `config-show`       | Display resolved config with secrets masked                            |
+| `config-show`       | Display resolved config for local inspection; do not paste output      |
 
 `env-check` also accepts `--skills-dir <path>` (default `skills`). It reports
 variable names and set/missing status only; it never prints values.
@@ -1956,6 +2364,7 @@ npx talonctl config-show --show-secrets
 | ------------------------- | ------------------------------------------------------------------------------ |
 | `list-threads`            | List persisted threads for a channel, including external IDs and provider info |
 | `reset-provider-affinity` | Reset provider affinity for one channel thread                                 |
+| `move-context`            | Move or copy memory and message history from one conversation to another       |
 
 **`list-threads`** options:
 
@@ -1988,6 +2397,37 @@ npx talonctl list-threads --channel my-telegram
 npx talonctl reset-provider-affinity --channel my-telegram --external-id 123456789
 npx talonctl reset-provider-affinity --channel my-telegram --external-id 123456789 --yes
 ```
+
+**`move-context`** options:
+
+| Option                | Description                                                                 | Default       |
+| --------------------- | --------------------------------------------------------------------------- | ------------- |
+| `--channel <name>`    | Channel of the source conversation (required)                               | —             |
+| `--from <id>`         | Source thread external ID (required). Use `list-threads` to discover values | —             |
+| `--to <id>`           | Target thread external ID (required), e.g. a Telegram topic `<chat>:<topic>` | —             |
+| `--to-channel <name>` | Channel of the target conversation, when it differs                         | `--channel`   |
+| `--copy`              | Leave the source unchanged instead of emptying it                           | off (move)    |
+| `--memory-only`       | Carry memory items and notebook files only, not the message history         | off           |
+| `--dry-run`           | Show what would be moved without changing anything                          | off           |
+| `--yes`               | Bypass the confirmation prompt                                              | off           |
+| `--config <path>`     | Path to talond.yaml                                                         | `talond.yaml` |
+
+`move-context` carries what makes a conversation remember — memory items (facts, notes, summaries, observations), message history, and the notebook files in the thread's `memory/` directory — to another conversation. The usual case is promoting a subject from a main chat into its own Telegram topic:
+
+```bash
+# Preview, then move the main chat's context into a topic
+npx talonctl move-context --channel my-telegram --from 123456789 --to '-1004452318413:42' --dry-run
+npx talonctl move-context --channel my-telegram --from 123456789 --to '-1004452318413:42'
+
+# Keep the main chat as it is and give the topic a copy
+npx talonctl move-context --channel my-telegram --from 123456789 --to '-1004452318413:42' --copy
+```
+
+- **Move** empties the source: it starts fresh afterwards. **Copy** leaves the source unchanged, and running the same copy twice adds nothing.
+- The target is created when the conversation has no history yet. A target that already has history is merged by time; the preview warns about it.
+- The daemon can keep running. Both affected conversations get a session reset, so the next message starts a fresh session that reads the migrated context.
+- It refuses while either conversation has queued or running work.
+- Not carried over: Images and Findings (they belong to the conversation they were sent in, so in move mode a message with images stays in the source), the reply/reaction message ledger, runs, schedules and bindings.
 
 ### Provider Management
 
@@ -2225,6 +2665,7 @@ npx talonctl whatsapp-auth --auth-dir ./baileys-auth --timeout 180
 | ----------------------------- | --------------------------------------------------- |
 | `a2a list`                    | List A2A tasks with optional filters                |
 | `a2a send <target> <message>` | Submit a manual A2A task to a persona (for testing) |
+| `a2a cancel <taskId>`         | Cancel an A2A task (aborts an in-flight run when talond is running) |
 
 **`a2a list`** options:
 
@@ -2242,11 +2683,21 @@ npx talonctl whatsapp-auth --auth-dir ./baileys-auth --timeout 180
 | `--source <persona>` | Source persona name | `cli`         |
 | `--config <path>`    | Path to talond.yaml | `talond.yaml` |
 
+**`a2a cancel`** options:
+
+| Option            | Description                                                             | Default            |
+| ----------------- | ----------------------------------------------------------------------- | ------------------ |
+| `--reason <text>` | Reason recorded on the canceled task                                    | `canceled via talonctl` |
+| `--ipc-dir <path>`| Daemon IPC directory                                                    | `data/ipc/daemon`  |
+| `--timeout <ms>`  | How long to wait for the daemon before falling back to the database     | `5000`             |
+| `--config <path>` | Path to talond.yaml (used for the database fallback)                    | `talond.yaml`      |
+
 ```bash
 npx talonctl a2a list
 npx talonctl a2a list --status working --target software-engineer
 npx talonctl a2a send software-engineer "Review the latest PR"
 npx talonctl a2a send software-engineer "Run tests" --source james
+npx talonctl a2a cancel 2b004602-b6ac-4dec-bd7b-f88e0565a16a --reason "superseded"
 ```
 
 ### Doctor Checks
@@ -2369,6 +2820,146 @@ bridge; it does not sandbox a provider runtime or make an external model or
 MCP server safe by itself. Docker container isolation for agent sandboxing is
 planned as an additional layer.
 
+### Browser voice
+
+Browser voice is disabled by default. When enabled, Talon binds the configured
+`voice.host` HTTP listener (`127.0.0.1` by default) and a reverse proxy can
+publish it over HTTPS. The browser exchanges an operator-configured token for
+an expiring cookie session; the login page has an unchecked `Keep me signed in
+for one year` option. The default omitted/unchecked request uses a fixed
+15-minute grant; selecting the option sends `rememberMe: true` for a fixed
+365-day grant. The browser stores no bearer credential in Web Storage. The
+server stores only hashed session/CSRF verification values and keeps grants
+across a normal restart; logout, credential/owner rotation, and configuration
+reload revoke the affected authority. `voice.persona` then selects an existing
+normal persona, its backend provider/model, ordinary tools, skills, and
+configured MCP servers. The selected backend provider must be enabled, and its
+normal provider, OAuth, and native-tool restrictions still apply.
+
+Use environment references for both the browser token and live provider key:
+
+```yaml
+auth:
+  providers:
+    voice:
+      apiKey: ${TALON_VOICE_ACCESS_TOKEN}
+    openai:
+      apiKey: ${OPENAI_API_KEY}
+
+voice:
+  enabled: true
+  host: 127.0.0.1
+  port: 8787
+  publicHost: voice.example.com
+  accessTokenRef: voice
+  liveApiKeyRef: openai
+  # provider: openai-compatible  # deprecated compatibility field; persona provider is authoritative
+  persona: assistant
+  # usdPerMinute: 0.00  # placeholder only; replace with a current provider rate; omitted means unavailable
+  allowedOrigins:
+    - https://voice.example.com
+```
+
+The old `voice.allowedToolNames` and `voice.allowedMcpServerNames` fields are
+deprecated compatibility fields and are ignored. Voice inherits the selected
+persona's normal capability and skill/MCP policy. A capability in
+`requireApproval` remains unavailable to voice because there is no interactive
+approval channel; grant only tools that can run without approval.
+The selected persona policy remains authoritative for voice descendants:
+approval-gated capability families are removed before child registration and
+enforced again at the shared host-tools bridge if denial metadata is omitted.
+
+When `voice.enabled` is true, `browser-voice` is reserved for Talon's internal
+voice channel. Startup rejects a conflicting ordinary channel configuration and
+does not overwrite an existing non-voice `browser-voice` database row.
+
+The default loopback bind is suitable when the proxy shares the daemon's
+network namespace. If the proxy is remote, set `voice.host` to a reachable
+interface or `0.0.0.0` and restrict network access; `allowedOrigins`,
+authentication, and CSRF checks still apply. The reverse proxy must preserve
+the public `Host` and `Origin` and send `X-Forwarded-Proto: https`. Voice uses
+one durable owner/persona thread across calls. Prompt history is bounded by
+`DEFAULT_VOICE_HISTORY_ROWS` and `DEFAULT_VOICE_HISTORY_CHARACTERS`; durable
+voice rows have no automatic TTL cleanup, and old calls or messages from other
+channels are not imported. Talon stores bounded prompt fragments, output,
+usage, and lifecycle state in local SQLite, not raw audio. Textless running
+progress is retained as lifecycle state without creating an empty delivery;
+terminal empty results remain delivery failures. Cloud provider
+retention is controlled by the provider account. Completed backend results remain
+durable after authority expiry or hangup, while expired authority suppresses
+speech until claimed work reaches terminal cleanup. See the [browser voice guide](docs/guides/voice.mdx)
+and [voice config reference](docs/reference/config-schema.mdx) for limits,
+cost status, and validation boundaries.
+
+The daemon selects the browser transport and live engine from trusted
+configuration and denies required capabilities that are unsupported or
+unknown before creating a provider session. Browser readiness still requires
+the real RTC connection and the engine's readiness event; a server-side
+connected status alone does not mark the call ready. The production browser
+path remains WebRTC.
+
+The delegation offset is a capture boundary, not an utterance cutoff. Only
+event-identified native input/output transcript deltas with valid explicit
+`start_ms` and `end_ms` can carry atomic chunk timing across that boundary;
+missing or legacy timing remains fail-closed at capture.
+
+Browser login retention and the live-call lifetime remain separate controls;
+the [browser voice guide](docs/guides/voice.mdx) and
+[voice configuration reference](docs/reference/config-schema.mdx)
+describe both.
+
+On page load, the browser first checks the cookie with the read-only
+`GET /voice/auth/session` endpoint and only then attempts to read the optional
+retained-call pointer. A valid cookie reaches the ready screen even when the
+pointer is missing or stale; a retained-call 404 clears only that pointer.
+Transient auth or retained-call failures keep recoverable pointers and show a
+retry message instead of claiming that the login expired. Restore opens only
+read-only status/history streams: it never requests microphone access, creates
+a peer or paid audio session, connects a provider, enqueues backend work, or
+replays old work automatically. Cookie retention still depends on the browser
+cookie context; a separate Safari home-screen context or cleared browser data
+may require a fresh login. Background/lock-screen audio and physical iPhone
+retention are not promised by this setup.
+
+The browser also sends bounded connection and playback proxies to
+`POST /voice/sessions/:id/telemetry`. The route uses the current origin,
+cookie login, CSRF token, and exact original session grant revision; output IDs
+are accepted only when they belong to that session. Browser-local
+`performance.now()` durations, RTC states, audio `play()` promise outcomes,
+visibility, and interruptions remain separate from semantic `/playback` state.
+A resolved promise is only a playback proxy, and a generic stream cannot mark a
+specific output as played. Requests are content-free, limited to 16 samples per
+batch and 256 per call, capped at 16 KiB and six batches per minute per exact
+grant/call, use one in-flight request with a two-second abort, and discard
+pending samples during cleanup. Telemetry failures do not change call controls,
+cleanup, retries, provider actions, or backend execution.
+
+When a live delegation arrives, the first notice remains provisional until a
+1,000 ms quiet interval has passed after the latest meaningful captured USER
+signature or safety classification change. A fixed 5,000 ms collection
+deadline starts when that notice is received and never extends. An initial safe
+snapshot still waits for quiet; an unsafe snapshot remains pending at quiet
+expiry so a valid late transcript can settle before the absolute deadline. At
+absolute expiry, a safe but unsettled snapshot is invalidated and follows the
+clarification path. These timers are local policy, not a completeness proof,
+and do not depend on an undocumented response-completion event.
+
+Later notices require a fresh user turn and never reuse an earlier utterance.
+Late assistant progress, completion timing, and notification speech do not
+rewrite an admitted request; user corrections, ambiguous timing, truncation,
+and provider replay conflicts remain unsafe. If the provider's missing
+transcript arrives after first publication or expiry, it is treated as a late
+change and fails closed. Optional diagnostics contain only local opaque
+correlation IDs, fixed event/reason values, bounded durations, counts, and an
+observation-scope marker; close summaries also report fixed availability,
+opened, finalized, close-requested, and observation-duration fields. They
+exclude transcript, prompt, provider ID, payload, error, hash, and credential
+data. A zero observed-delegation count only describes the observed window and
+does not prove that no provider event happened before observation began. The
+provider offset is not treated as proof that a user turn was complete. Offline
+checks cover transcript ordering, not provider-specific live audio timing or
+causal attribution.
+
 ### Host-Tools MCP Bridge
 
 Agents interact with the host through a small set of MCP tools exposed over a Unix socket. The daemon mediates all side effects — agents cannot access channels, databases, or the network directly.
@@ -2376,11 +2967,13 @@ Agents interact with the host through a small set of MCP tools exposed over a Un
 | Tool                  | Purpose                                                                  |
 | --------------------- | ------------------------------------------------------------------------ |
 | `schedule_manage`     | CRUD + list scheduled tasks (supports `promptFile` for reusable prompts) |
-| `channel_send`        | Send messages to channel connectors (supports `externalChatId` for explicit targeting; CLI-created schedules must pass it or use `channel_list` / `channel_broadcast`) |
+| `channel_send`        | Send messages to channel connectors (supports `externalChatId` for explicit targeting and `replyTo` for a native reply to a message ID; CLI-created schedules must pass `externalChatId` or use `channel_list` / `channel_broadcast`) |
 | `channel_list`        | List channels bound to the persona + their chat external_ids (discovery for `channel_send`) |
 | `channel_broadcast`   | Fan out a message to every chat the persona is bound to; skips channel-default bindings (no `thread_id`) with a warning |
+| `channel_react`       | Place or remove an emoji reaction on a message in the current conversation (Telegram, WhatsApp); defaults to the message being answered |
 | `persona_send`        | Submit a delegated A2A task to another persona                           |
 | `persona_task_status` | Fetch the status or result of a delegated A2A task                       |
+| `persona_task_cancel` | Cancel a delegated A2A task you submitted (queued or running)            |
 | `persona_list`        | List personas available for delegation                                   |
 | `memory_access`       | Read/write per-thread memory                                             |
 | `net_http`            | Fetch external URLs                                                      |
@@ -2436,7 +3029,8 @@ Complex SQL patterns (UNION, subqueries, CTEs, INTERSECT, EXCEPT) are rejected t
 
 - Credentials use `${ENV_VAR}` references in `talond.yaml` and MCP `headers` / `env` fields — never hardcoded
 - Environment variables loaded from `.env` file at startup
-- `talonctl config-show` masks all secret values in output
+- Keep secret-bearing fields environment-backed; `config-show` is not a
+  universal redaction boundary, so do not paste its output
 - `talonctl env-check` audits config and MCP references without printing values
 
 ### `requireApproval` configuration
@@ -2492,6 +3086,7 @@ Each conversation thread gets a persistent workspace:
 data/threads/<thread_id>/
   memory/          # human-editable notes (CLAUDE.md, etc.)
   attachments/     # ingested inbound files
+    images/        # normalized JPEGs (deleted at retention; records survive)
   artifacts/       # agent output files
   ipc/
     input/         # host -> container messages
@@ -2649,7 +3244,7 @@ The persona that spawns sandboxed background agents needs both `subagent.backgro
 ```yaml
 personas:
   - name: software-engineer
-    model: claude-sonnet-4-6
+    model: claude-sonnet-5-5
     capabilities:
       allow:
         - subagent.background
@@ -2847,6 +3442,33 @@ Running autonomous agents across multiple channels means you lose visibility fas
 ### How it works
 
 Talon uses the `@langfuse/otel` span processor to emit OpenTelemetry spans directly to Langfuse. Each agent run creates a trace with nested spans for generations, tool invocations, and retriever calls. When Langfuse is disabled (the default), a noop service replaces it — no Langfuse libraries are initialized and no network calls are made. If initialization fails when enabled, Talon logs a warning and falls back to the noop service rather than crashing, so `enabled: true` does not guarantee traces will be exported.
+
+Voice backend failures keep the user-facing error generic. For troubleshooting,
+inspect the failed run’s `error` field: when available it includes only allowlisted
+category, code, HTTP status and stage metadata. Provider messages, response bodies,
+headers and URLs are excluded. An `unknown` category or elapsed duration alone
+does not establish a timeout or root cause.
+
+Browser voice observations are content-free across the AgentRunner, provider tool
+events, host-tools bridge, and nested sub-agent spans. Server-owned correlation
+identifiers are bounded to 256 characters and allowlisted metadata to 4096
+UTF-8 bytes; transcripts, prompts, tool arguments/results, and free-form errors are
+not sent to Langfuse. Browser connection and playback observations use a separate
+authenticated, CSRF-protected endpoint and remain proxies: browser-local
+`performance.now()` values never combine with server clocks, and `audio.play()`
+success never claims that a person heard a complete output. Native AI SDK telemetry
+is disabled for voice descendants,
+and observation setup/update/export failures preserve the real operation result
+or error without retrying the work. The server lifecycle facade records bounded
+call, provider setup, adapter receipt, publication, queue admission/claim,
+backend start, durable result, output offer, provider acknowledgement, and
+closure transitions with a monotonic process clock. Receipt and publication are
+separate stages; missing or restarted context is unknown, while late and
+unassociated timing is excluded from duration denominators without changing a
+known observed outcome. The facade is
+no-op by default and never waits for export or changes queue, provider, delivery,
+or billing behavior. Its fixed bounds are 64 call handles, 256 milestones, 128
+delegations, 256 outputs, and 60 seconds of completed-call correlation retention.
 
 ### Setup
 
@@ -3072,6 +3694,7 @@ talon/
     tools/
       host-tools/                # Host-side tool handlers
         channel-send.ts          # Send via channel connector
+        channel-react.ts         # Emoji reactions on messages
         http-proxy.ts            # Fetch with domain allowlist
         memory-access.ts         # Thread memory CRUD
         schedule-manage.ts       # Schedule CRUD
@@ -3120,19 +3743,35 @@ Talon's data model supports supervisor/worker patterns via `parent_run_id` in th
 
 ## Agent-to-Agent Communication (A2A)
 
-Talon implements [Google's A2A protocol](https://google.github.io/A2A/) for internal persona-to-persona task routing. Any persona can delegate a task to another persona without human involvement, enabling supervisor/worker workflows and specialised delegation chains.
+Talon uses the task model of [Google's A2A protocol](https://google.github.io/A2A/) for internal persona-to-persona task routing. It is in-process only and not wire-compatible: there is no network endpoint, only `tasks/send` and `tasks/get` exist, and there is no streaming. Any persona can delegate a task to another persona without human involvement, enabling supervisor/worker workflows and specialised delegation chains.
 
 ### How it works
 
 Each persona is automatically discoverable as an A2A agent with a card describing its capabilities, skills, and endpoint. When persona A needs to delegate work to persona B, it submits a task via the internal A2A server. The task is persisted to the `a2a_tasks` table, enqueued as a `collaboration` queue item, and processed by the daemon exactly like any other message — but against the target persona's full model configuration.
 
-For agent-facing delegation, Talon exposes three host tools behind the same capability family:
+For agent-facing delegation, Talon exposes four host tools behind the same capability family:
 
 - `persona_send` submits a delegated task
 - `persona_task_status` fetches the current status or final result later
-- `persona_list` lists available target personas
+- `persona_task_cancel` cancels a task the calling persona delegated (a queued task is dropped, an in-flight run is aborted). It returns `{ task_id, state, canceled }`; `canceled: false` means the task had already finished and `state` is its real final state. A persona can only cancel tasks it submitted itself in its current thread
+- `persona_list` lists the target personas the caller may delegate to
 
-All three are granted by the same capability label: `persona.send:*`. No separate capability is needed for task status lookups.
+All four are granted by the same capability family: `persona.send:*` or a scoped `persona.send:<persona-name>`. No separate capability is needed for status lookups or cancellation.
+
+#### Restricting delegation targets
+
+`persona.send:*` lets a persona delegate to any persona. To limit it, list one `persona.send:<persona-name>` label per allowed target instead:
+
+```yaml
+personas:
+  - name: coordinator
+    capabilities:
+      allow:
+        - persona.send:researcher
+        - persona.send:code-reviewer
+```
+
+`coordinator` can now delegate only to `researcher` and `code-reviewer`. `persona_send` rejects any other target before anything is queued, with an error that names the allowed targets, and `persona_list` and the "Available personas:" roster in the system prompt show only those two. The check runs in the daemon from the calling persona's own capabilities, so a delegated persona's `persona_send` is limited by its own labels, not its caller's. `persona_task_status` and `persona_task_cancel` stay available with any `persona.send` label. A wildcard wins over scoped labels, an unscoped `persona.send` behaves like `persona.send:*` (as an unscoped label does for every other tool), labels in `requireApproval` count the same as `allow`, and names are matched exactly (case-sensitive). A scoped name that matches no configured persona is logged as a warning at load and never matches.
 
 ```
 Persona A (source)
@@ -3155,12 +3794,32 @@ a2a_tasks (completed / failed)
 
 | State            | Meaning                                       |
 | ---------------- | --------------------------------------------- |
-| `submitted`      | Task accepted, enqueued for processing        |
-| `working`        | AgentRunner has started processing            |
-| `input-required` | Target persona is waiting for clarification   |
-| `completed`      | Target persona finished and returned a result |
-| `failed`         | Processing failed with an error code          |
-| `canceled`       | Task was canceled before completion           |
+| `submitted`      | Task accepted, waiting for a free slot on the target persona |
+| `working`        | Admitted; AgentRunner is processing                           |
+| `input-required` | Reserved; never set by the current implementation            |
+| `completed`      | Target persona finished and returned a result                |
+| `failed`         | Final failure, with an error code                            |
+| `canceled`       | Canceled (await timeout with `cancel_on_timeout`, or TTL)    |
+
+Lifecycle guarantees:
+
+- **Terminal states are final.** `completed`, `failed` and `canceled` are never overwritten, and a queue item whose task is terminal is skipped instead of run.
+- **Busy personas queue, they do not reject.** At most `maxConcurrentPerTarget` tasks run per target persona; further tasks stay `submitted` and are admitted in submission order. A submit is rejected only when the backlog for that persona reaches `maxQueuedPerTarget`, or when it would create a delegation cycle (the target is already running an ancestor of this task and would wait on itself).
+- **`failed` means final.** With `maxAttempts > 1` a task stays `working` across queue retries and is only marked `failed` on the last attempt.
+- **Delegated runs are isolated.** The target persona receives only the delegated `message` plus its own system prompt, skills and tools. It gets no summary, recent messages, images or Findings from the source thread, so put everything it needs in `message`.
+- **Waiting does not hold a queue slot.** A run blocked in `persona_send` (`await_reply`) or `persona_task_status` (`wait_ms`) releases its `queue.concurrencyLimit` slot until it resumes, so delegated children can always be dispatched.
+- **Stale tasks are reaped.** At startup and every 60 seconds, tasks whose queue item is gone, completed or dead-lettered are marked `failed` (`ORPHANED`), and tasks older than `taskTtlMinutes` are canceled.
+- **Hot reload** rebuilds the agent cards, so a persona added by `talonctl reload` is routable immediately. Changes to the `a2a:` limits themselves need a restart.
+
+### Persona discovery
+
+Delegating personas find targets through the `description:` key in the target's `system.md` frontmatter. It appears in two places: an "Available personas:" roster appended to the persona-delegation instructions in the system prompt of every persona allowed `persona_send` (one line per other loaded persona, sorted by name, descriptions cut to 200 characters, at most 30 entries, rebuilt on hot reload), and the `persona_list` tool (name, description, skills). Without a `description:`, both fall back to the first line of the prompt body; a persona with neither shows a reminder to add one in the roster. Write it so a caller can tell when to delegate to this persona:
+
+```markdown
+---
+description: "Code reviewer: security and performance review of diffs and PRs; returns findings ranked by severity"
+---
+```
 
 ### Agent-facing flow
 
@@ -3171,7 +3830,9 @@ The normal synchronous pattern is:
 3. If the sync wait expires, the caller receives a structured timeout response with the `task_id`
 4. The caller can then use `persona_task_status` to poll or wait for the final result without querying the raw database
 
-`persona_send` now waits up to 5 minutes by default when `await_reply: true`. You can override that with `timeout_ms`. `persona_task_status` supports an optional `wait_ms` parameter for polling until the task reaches a terminal state.
+`persona_send` waits up to 5 minutes by default when `await_reply: true`. You can override that with `timeout_ms` (max 30 minutes). After a `timeout` result the delegated task keeps running; set `cancel_on_timeout: true` to cancel it instead (a pending task is dropped, an in-flight run is aborted). `persona_task_status` supports an optional `wait_ms` parameter for polling until the task reaches a terminal state. To stop a delegation you no longer need, call `persona_task_cancel` with its `task_id`.
+
+Timeouts to keep aligned: the wait includes time the task spends queued behind other tasks for the same persona, and it counts toward the calling persona's own `queryTimeoutMinutes` (default 10). For delegations that can take longer than 5 minutes, raise `timeout_ms` and the orchestrating persona's `queryTimeoutMinutes` together, or send without `await_reply` and collect the result with `persona_task_status`.
 
 Examples:
 
@@ -3218,25 +3879,45 @@ talonctl a2a send software-engineer "Run the test suite" --source james
 
 `a2a send` inserts a task directly into the database and enqueues it for processing. If the daemon is running, the task will be picked up immediately. If not, it will be processed on next daemon start.
 
+**Cancel a task:**
+
+```bash
+# Cancel by full task ID (as printed by `a2a send` and shown in persona_send results)
+talonctl a2a cancel 2b004602-b6ac-4dec-bd7b-f88e0565a16a
+
+# Record why
+talonctl a2a cancel 2b004602-b6ac-4dec-bd7b-f88e0565a16a --reason "superseded"
+```
+
+`a2a cancel` asks the running daemon (IPC command `a2a-cancel`) so an in-flight run is aborted; if the daemon does not answer within `--timeout`, it cancels directly in the database (a queued task is dropped; no run can be in flight without a daemon). It prints `canceled`, `already <state>` for a finished task (exit 0), or `task not found` (exit 1). The full task ID is required: `a2a list` shows only the first 8 characters, so read the full ID from the database or the `persona_send` result.
+
 ### Configuration
 
 A2A runtime limits live under the top-level `a2a:` block in `talond.yaml`. All
-three keys are optional and fall back to the built-in defaults shown below:
+keys are optional and fall back to the built-in defaults shown below:
 
 ```yaml
 a2a:
   maxHops: 4 # max delegation chain depth (1..32)
-  maxConcurrentPerTarget: 1 # max in-flight tasks per target persona (1..100)
-  maxAttempts: 3 # max queue retries before dead-letter (1..20)
+  maxConcurrentPerTarget: 1 # tasks that may run at once per target persona (1..100)
+  maxQueuedPerTarget: 10 # tasks that may wait per target persona (0..1000)
+  maxAttempts: 1 # queue attempts before dead-letter (1..20)
+  taskTtlMinutes: 60 # non-terminal tasks older than this are canceled (1..1440)
 ```
 
 - **`maxHops`** — a task is rejected when its incoming `hopCount >= maxHops`.
   Raise this if your supervisor/worker chains genuinely need more depth.
-- **`maxConcurrentPerTarget`** — admission control at submission time. Submissions
-  beyond the cap fail with a "Max allowed" error. Raise this to allow parallel
-  fan-out to the same persona.
-- **`maxAttempts`** — retry budget for the `collaboration` queue items that
-  carry A2A tasks. After this many failures the item is dead-lettered.
+- **`maxConcurrentPerTarget`** — how many tasks may run at once for one target
+  persona. Tasks beyond the cap wait in submission order. Raise this to allow
+  parallel fan-out to the same persona.
+- **`maxQueuedPerTarget`** — how many tasks may wait for one target persona.
+  Submissions beyond it are rejected with a "Max queued" error.
+- **`maxAttempts`** — attempt budget for the `collaboration` queue items that
+  carry A2A tasks. The default of 1 means a failed run is not re-run blindly:
+  the calling agent sees `failed` and decides whether to resend. Raising it
+  re-runs the whole delegated task, including its side effects.
+- **`taskTtlMinutes`** — upper bound on how long a task may stay non-terminal
+  before the reaper cancels it.
 
 ### Milestone 1 scope
 
@@ -3244,9 +3925,10 @@ The current implementation covers:
 
 - Internal-only task routing (no external HTTP exposure)
 - Single-hop and multi-hop delegation (configurable via `a2a.maxHops`, default 4)
-- Concurrency admission per target persona (configurable via
-  `a2a.maxConcurrentPerTarget`, default 1)
-- Configurable queue retry budget (`a2a.maxAttempts`, default 3)
+- Per-target concurrency with a bounded FIFO backlog (`a2a.maxConcurrentPerTarget`,
+  default 1; `a2a.maxQueuedPerTarget`, default 10)
+- Configurable queue attempt budget (`a2a.maxAttempts`, default 1)
+- Cancellation, stale-task reaping and a task TTL (`a2a.taskTtlMinutes`, default 60)
 - Full task lifecycle tracking in `a2a_tasks` table
 - Agent card discovery per persona
 - CLI commands for listing and submitting tasks

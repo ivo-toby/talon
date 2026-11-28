@@ -51,6 +51,19 @@ export interface WhatsAppConfig {
    * Defaults to '/webhook'.
    */
   webhookPath?: string;
+  /**
+   * When Talon's answer is sent as a contextual reply to the message that
+   * triggered it: `always`, `never`, or `groups` (default). The Cloud API
+   * serves individual conversations only, so the default never quotes; set
+   * `always` to quote every answer. A reply the agent requests explicitly is
+   * always sent as one.
+   */
+  replyToTrigger?: 'never' | 'groups' | 'always';
+  /**
+   * Forward emoji reactions that users place on Talon's messages to the
+   * agent. Defaults to true.
+   */
+  inboundReactions?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -99,6 +112,17 @@ export interface WhatsAppMessage {
   audio?: WhatsAppMediaBody;
   video?: WhatsAppMediaBody;
   sticker?: WhatsAppMediaBody;
+  /**
+   * Present when the message is a contextual reply: `id` is the replied-to
+   * message, `from` its sender. Other uses of `context` (forwarded messages,
+   * product inquiries) carry no `id`.
+   */
+  context?: { from?: string; id?: string };
+  /**
+   * Present on `type: 'reaction'` messages: the reacted-to message and the
+   * emoji. `emoji` is absent when the user removed their reaction.
+   */
+  reaction?: { message_id: string; emoji?: string };
 }
 
 /**
@@ -148,6 +172,24 @@ export interface WhatsAppWebhookPayload {
 // ---------------------------------------------------------------------------
 // Outbound API response
 // ---------------------------------------------------------------------------
+
+/**
+ * The verified direct response envelope of the media-ID lookup
+ * `GET /{apiVersion}/{media-id}`. There is NO `data`/`ok`/`result` wrapper —
+ * the fields sit at the top level. See the verified contract report
+ * (`whatsapp-business-verified-contract.md`) for the source citations.
+ *
+ * `file_size` is documented as a string (e.g. `"9517907"`) but is accepted as
+ * either a number or a numeric string; callers normalize it.
+ */
+export interface WhatsAppMediaEnvelope {
+  messaging_product?: string;
+  url?: string;
+  mime_type?: string;
+  sha256?: string;
+  file_size?: string | number;
+  id?: string;
+}
 
 /**
  * Result of a WhatsApp Cloud API send message call.

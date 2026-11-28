@@ -11,11 +11,20 @@
 
 import { z } from 'zod';
 import { isUnsafeCodexSandboxToken } from '../../subagents/codex-sandbox-protocol.js';
+import {
+  INFERENCE_PROVIDERS,
+  SUBSCRIPTION_CLI_PROVIDERS,
+  SANDBOXED_SUBSCRIPTION_PROVIDERS,
+  isInferenceProvider,
+} from '../../subagents/model-resolver.js';
+import { VISION_SUBAGENT_NAME } from '../../subagents/subagent-model-chain.js';
 
 import {
   MAX_HOPS,
   MAX_CONCURRENT_PER_TARGET,
   DEFAULT_A2A_MAX_ATTEMPTS,
+  DEFAULT_A2A_MAX_QUEUED_PER_TARGET,
+  DEFAULT_A2A_TASK_TTL_MINUTES,
 } from '../../a2a/a2a-types.js';
 
 // ---------------------------------------------------------------------------
@@ -112,7 +121,7 @@ const PersonaExecutionEnvSchema = z.object({
 
 export const PersonaConfigSchema = z.object({
   name: z.string().min(1),
-  model: z.string().default('claude-sonnet-4-6'),
+  model: z.string().default('claude-sonnet-5-5'),
   provider: z.string().trim().min(1).optional(),
   reasoningEffort: ReasoningEffortSchema.optional(),
   /**
@@ -172,6 +181,17 @@ export const BindingConfigSchema = z.object({
   persona: z.string().min(1),
   channel: z.string().min(1),
   isDefault: z.boolean().default(false),
+  /**
+   * Binds the persona to ONE conversation on the channel instead of the whole
+   * channel: the channel-specific thread ID, e.g. a Telegram chat ID
+   * (`'-1001234567890'`) or a forum topic (`'-1001234567890:42'`). A
+   * thread-scoped binding wins over the channel's default binding. Quote the
+   * value in YAML; a bare chat ID that parses as a number is accepted too.
+   */
+  thread: z
+    .union([z.string().trim().min(1), z.number().int()])
+    .transform((value) => String(value))
+    .optional(),
 });
 
 // ---------------------------------------------------------------------------
@@ -215,6 +235,39 @@ export const AuthConfigSchema = z.object({
   mode: z.enum(['subscription', 'api_key']).default('subscription'),
   apiKey: z.string().optional(),
   providers: z.record(z.string(), ProviderAuthSchema).default({}),
+});
+
+// ---------------------------------------------------------------------------
+// Browser voice
+// ---------------------------------------------------------------------------
+
+const BROWSER_VOICE_CHANNEL_NAME = 'browser-voice';
+
+/** Opt-in browservoice runtime. Secrets are resolved here, never copied into channels. */
+export const VoiceConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  host: z.string().default('127.0.0.1'),
+  port: z.number().int().min(0).max(65_535).default(0),
+  publicHost: z.string().trim().min(1).optional(),
+  accessToken: z.string().optional(),
+  accessTokenRef: z.string().trim().min(1).default('voice'),
+  liveApiKeyRef: z.string().trim().min(1).default('openai'),
+  provider: z.string().trim().min(1).optional(),
+  model: z.string().trim().min(1).optional(),
+  persona: z.string().trim().min(1).optional(),
+  voice: z.string().trim().min(1).default('marin'),
+  usdPerMinute: z.number().finite().nonnegative().optional(),
+  instructions: z.string().default('You are Talon, a helpful voice assistant.'),
+  allowedTransportTypes: z.array(z.string().trim().min(1)).min(1).default(['webrtc']),
+  allowedOrigins: z.array(z.string().url()).default([]),
+  allowedToolNames: z.array(z.string().trim().min(1)).default([]),
+  allowedMcpServerNames: z.array(z.string().trim().min(1)).default([]),
+  maxSessionLifetimeMs: z.number().int().min(1_000).default(15 * 60 * 1000),
+  maxContextChars: z.number().int().min(256).max(256_000).default(32_000),
+  maxConcurrentSessions: z.number().int().min(1).default(1),
+  maxSessionCreations: z.number().int().min(1).default(5),
+  sessionCreationWindowMs: z.number().int().min(1_000).default(60_000),
+  heartbeatIntervalMs: z.number().int().min(1_000).default(15_000),
 });
 
 // ---------------------------------------------------------------------------
@@ -415,28 +468,31 @@ export const A2AConfigSchema = z.object({
   maxHops: z.number().int().min(1).max(32).default(MAX_HOPS),
   /**
    * Maximum number of in-flight (submitted/working/input-required) A2A tasks
-   * targeting a single persona. Additional submissions are rejected until one
-   * completes. Set higher to allow parallel delegation to the same persona.
+   * targeting a single persona that may RUN at once. Additional submissions wait
+   * in a FIFO backlog (see maxQueuedPerTarget) until a slot frees up.
    */
   maxConcurrentPerTarget: z.number().int().min(1).max(100).default(MAX_CONCURRENT_PER_TARGET),
   /**
-   * Max queue retry attempts for collaboration queue items before they move
-   * to the dead-letter queue.
+   * Max queue attempts for collaboration queue items before they move to the
+   * dead-letter queue. Default 1: runs with side effects are not blindly re-run.
    */
   maxAttempts: z.number().int().min(1).max(20).default(DEFAULT_A2A_MAX_ATTEMPTS),
+  /** Max tasks waiting (submitted) for a single target persona; further submissions are rejected. */
+  maxQueuedPerTarget: z.number().int().min(0).max(1000).default(DEFAULT_A2A_MAX_QUEUED_PER_TARGET),
+  /** Non-terminal tasks older than this many minutes are canceled by the reaper. */
+  taskTtlMinutes: z.number().int().min(1).max(1440).default(DEFAULT_A2A_TASK_TTL_MINUTES),
 });
 
 // ---------------------------------------------------------------------------
 // Sub-agent overrides
 // ---------------------------------------------------------------------------
 
+// Provider names come from the model-resolver classifications so config and
+// resolution can never drift apart.
 const SubAgentModelProviderSchema = z.enum([
-  'anthropic',
-  'openai',
-  'google',
-  'ollama',
-  'claude-code',
-  'codex-sandbox',
+  ...INFERENCE_PROVIDERS,
+  ...SUBSCRIPTION_CLI_PROVIDERS,
+  ...SANDBOXED_SUBSCRIPTION_PROVIDERS,
 ]);
 
 const ClaudeCodeSubAgentCliSchema = z.object({
@@ -502,6 +558,49 @@ export const SubAgentOverrideSchema = z.object({
 export const SubAgentsConfigSchema = z.record(z.string(), SubAgentOverrideSchema);
 
 // ---------------------------------------------------------------------------
+// Images
+// ---------------------------------------------------------------------------
+
+/**
+ * Limits and retention for image ingestion and normalization.
+ *
+ * Byte, count, and edge settings are positive integers; JPEG quality is an
+ * integer from 1 to 100; retention is a positive number of hours. The upload
+ * slot count (`maxPerMessage`) and the Inspection reference limit
+ * (`maxPerInspection`) are independent settings.
+ */
+export const ImagesConfigSchema = z.object({
+  /** Maximum input bytes per Image; actual bytes are checked, not just declared ones. */
+  maxInputBytes: z.number().int().min(1).default(10_485_760),
+  /** Upload slots per message; eligible Attachments beyond this are Rejected/count_limit. */
+  maxPerMessage: z.number().int().min(1).default(5),
+  /** Maximum distinct current-thread Image IDs per Inspection. */
+  maxPerInspection: z.number().int().min(1).default(5),
+  /** Longest edge of a Normalized file in pixels; aspect ratio is preserved. */
+  maxEdge: z.number().int().min(1).default(4096),
+  /** JPEG quality for Normalized files. */
+  jpegQuality: z.number().int().min(1).max(100).default(85),
+  /**
+   * Maximum decoded source pixels (width × height); larger sources are
+   * Rejected/size_limit before decoding (decompression-bomb guard). Capped at
+   * sharp's own default limit (16383 × 16383) so config can never raise it.
+   */
+  maxInputPixels: z.number().int().min(1).max(268_402_689).default(100_000_000),
+  /**
+   * Maximum bytes of a Normalized file. Larger encodes are retried at lower
+   * quality, then a smaller edge; the default keeps the base64 form under the
+   * 5 MB per-image limit of Anthropic's API.
+   */
+  maxNormalizedBytes: z.number().int().min(1).default(3_750_000),
+  /**
+   * How long Normalized files are retained; Image records and metadata survive.
+   * Positive hours — fractional values are meaningful (e.g. 0.5), so this is the
+   * one Images setting that is not required to be an integer.
+   */
+  retentionHours: z.number().positive().default(24),
+});
+
+// ---------------------------------------------------------------------------
 // Root config
 // ---------------------------------------------------------------------------
 
@@ -516,6 +615,7 @@ export const TalondConfigSchema = z
     queue: QueueConfigSchema.default(() => QueueConfigSchema.parse({})),
     scheduler: SchedulerConfigSchema.default(() => SchedulerConfigSchema.parse({})),
     auth: AuthConfigSchema.default(() => AuthConfigSchema.parse({})),
+    voice: VoiceConfigSchema.default(() => VoiceConfigSchema.parse({})),
     agentRunner: AgentRunnerConfigSchema.default(() => AgentRunnerConfigSchema.parse({})),
     backgroundAgent: BackgroundAgentConfigSchema.default(() =>
       BackgroundAgentConfigSchema.parse({}),
@@ -526,10 +626,23 @@ export const TalondConfigSchema = z
     subagentSandbox: SubAgentSandboxConfigSchema.default(() => SubAgentSandboxConfigSchema.parse({})),
     subagents: SubAgentsConfigSchema.default({}),
     a2a: A2AConfigSchema.default(() => A2AConfigSchema.parse({})),
+    images: ImagesConfigSchema.default(() => ImagesConfigSchema.parse({})),
     logLevel: z.enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal']).default('info'),
     dataDir: z.string().default('data'),
   })
   .superRefine((value, ctx) => {
+    if (value.voice.enabled) {
+      value.channels.forEach((channel, index) => {
+        if (channel.name === BROWSER_VOICE_CHANNEL_NAME) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['channels', index, 'name'],
+            message: `channel name "${BROWSER_VOICE_CHANNEL_NAME}" is reserved for browser voice`,
+          });
+        }
+      });
+    }
+
     for (const [subAgentName, override] of Object.entries(value.subagents)) {
       if (
         !value.subagentSandbox.codex.enabled &&
@@ -541,6 +654,25 @@ export const TalondConfigSchema = z
           message:
             `subagents.${subAgentName} selects codex-sandbox, but ` +
             'subagentSandbox.codex is disabled. Enable the contained runner first.',
+        });
+      }
+
+      // The vision sub-agent is the only consumer of image parts; every
+      // configured vision override entry must be a vision-capable inference
+      // adapter. Classification is reused from the model-resolver — no
+      // second provider allowlist here.
+      if (subAgentName === VISION_SUBAGENT_NAME) {
+        override.model.forEach((model, modelIndex) => {
+          if (!isInferenceProvider(model.provider)) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ['subagents', subAgentName, 'model', modelIndex, 'provider'],
+              message:
+                `subagents.${VISION_SUBAGENT_NAME} is the vision sub-agent and may only use ` +
+                `vision-capable inference providers (${INFERENCE_PROVIDERS.join(', ')}); ` +
+                `"${model.provider}" is text-only and must stay out of the vision chain.`,
+            });
+          }
         });
       }
     }

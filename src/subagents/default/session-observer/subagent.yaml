@@ -4,7 +4,7 @@ description: "Compresses conversation messages into dated, prioritized observati
 
 model:
   provider: anthropic
-  name: claude-sonnet-4-6
+  name: claude-sonnet-5-5
   maxTokens: 16384
 
 requiredCapabilities: []

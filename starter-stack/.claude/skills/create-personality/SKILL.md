@@ -18,6 +18,9 @@ triggers:
 Guide the user through creating personality files for a Talon persona.
 Personality files are markdown files in `personas/<name>/personality/` that
 get appended to the system prompt (after `system.md`, before skills).
+Personality files do not affect how other personas see this persona: that is the
+`description:` frontmatter in `system.md` (used for `persona_send` delegation),
+so make sure it is set.
 
 ## Phase 1: Select Persona
 

@@ -121,6 +121,7 @@ export function buildPersonaRuntimeContext(
         // (disable excerpting) is not dropped.
         ...(cfg.timeoutMs !== undefined ? { timeoutMs: cfg.timeoutMs } : {}),
         ...(cfg.toolOutputCap !== undefined ? { toolOutputCap: cfg.toolOutputCap } : {}),
+        ...(cfg.allowedTools !== undefined ? { allowedTools: [...cfg.allowedTools] } : {}),
       };
       continue;
     }
@@ -141,6 +142,7 @@ export function buildPersonaRuntimeContext(
       // (disable excerpting) is not dropped.
       ...(cfg.timeoutMs !== undefined ? { timeoutMs: cfg.timeoutMs } : {}),
       ...(cfg.toolOutputCap !== undefined ? { toolOutputCap: cfg.toolOutputCap } : {}),
+      ...(cfg.allowedTools !== undefined ? { allowedTools: [...cfg.allowedTools] } : {}),
       // Forward dynamic auth verbatim. `resolveMcpServers()` runs in the
       // agent-runner and turns this into a materialized Bearer header
       // before the entry reaches a provider — domain `McpAuthConfig`

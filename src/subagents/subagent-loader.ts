@@ -97,7 +97,7 @@ export class SubAgentLoader {
 
     let entries: Dirent[];
     try {
-      entries = await readdir(rootDir, { withFileTypes: true }) as Dirent[];
+      entries = await readdir(rootDir, { withFileTypes: true });
     } catch (cause) {
       return err(
         new SubAgentError(
@@ -272,7 +272,10 @@ export class SubAgentLoader {
       }
 
       try {
-        const mod = await import(pathToFileURL(entryPath).href);
+        const mod = (await import(pathToFileURL(entryPath).href)) as {
+          run?: unknown;
+          default?: unknown;
+        };
         if (typeof mod.run === 'function') return mod.run as SubAgentRunFn;
         if (typeof mod.default === 'function') return mod.default as SubAgentRunFn;
         // File exists but has no usable export -- try next extension.

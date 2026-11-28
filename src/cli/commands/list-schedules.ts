@@ -100,7 +100,7 @@ function toScheduleInfo(
   let prompt = '';
   let promptFile = '';
   try {
-    const parsed = JSON.parse(row.payload);
+    const parsed = JSON.parse(row.payload) as Record<string, unknown>;
     label = typeof parsed.label === 'string' ? parsed.label : '';
     prompt = typeof parsed.prompt === 'string' ? parsed.prompt : '';
     promptFile = typeof parsed.promptFile === 'string' ? parsed.promptFile : '';

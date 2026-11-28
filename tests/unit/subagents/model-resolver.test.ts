@@ -1,5 +1,13 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { ModelResolver } from '../../../src/subagents/model-resolver.js';
+import {
+  ModelResolver,
+  isInferenceProvider,
+  isSubscriptionCliProvider,
+  isSandboxedSubscriptionProvider,
+  INFERENCE_PROVIDERS,
+  SUBSCRIPTION_CLI_PROVIDERS,
+  SANDBOXED_SUBSCRIPTION_PROVIDERS,
+} from '../../../src/subagents/model-resolver.js';
 
 describe('ModelResolver', () => {
   afterEach(() => {
@@ -232,5 +240,60 @@ describe('ModelResolver', () => {
     });
     expect(result.isErr()).toBe(true);
     expect(result._unsafeUnwrapErr().message).toContain('Missing apiKey');
+  });
+});
+
+describe('provider classification predicates', () => {
+  const inference = ['anthropic', 'openai', 'google', 'ollama'];
+  const nonInference = ['claude-code', 'codex-sandbox', 'gemini-cli', 'unknown'];
+
+  it('classifies exactly the inference adapters as inference providers', () => {
+    expect([...INFERENCE_PROVIDERS].sort()).toEqual([...inference].sort());
+    for (const provider of inference) {
+      expect(isInferenceProvider(provider)).toBe(true);
+    }
+    for (const provider of nonInference) {
+      expect(isInferenceProvider(provider)).toBe(false);
+    }
+  });
+
+  it('classifies claude-code as the only subscription CLI provider', () => {
+    expect([...SUBSCRIPTION_CLI_PROVIDERS]).toEqual(['claude-code']);
+    expect(isSubscriptionCliProvider('claude-code')).toBe(true);
+    expect(isSubscriptionCliProvider('codex-sandbox')).toBe(false);
+    expect(isSubscriptionCliProvider('anthropic')).toBe(false);
+  });
+
+  it('classifies codex-sandbox as the only sandboxed subscription provider', () => {
+    expect([...SANDBOXED_SUBSCRIPTION_PROVIDERS]).toEqual(['codex-sandbox']);
+    expect(isSandboxedSubscriptionProvider('codex-sandbox')).toBe(true);
+    expect(isSandboxedSubscriptionProvider('claude-code')).toBe(false);
+    expect(isSandboxedSubscriptionProvider('ollama')).toBe(false);
+  });
+
+  it('keeps the three classifications disjoint (vision may only use inference adapters)', () => {
+    const all = [...INFERENCE_PROVIDERS, ...SUBSCRIPTION_CLI_PROVIDERS, ...SANDBOXED_SUBSCRIPTION_PROVIDERS];
+    expect(new Set(all).size).toBe(all.length);
+    for (const provider of SUBSCRIPTION_CLI_PROVIDERS) {
+      expect(isInferenceProvider(provider)).toBe(false);
+    }
+    for (const provider of SANDBOXED_SUBSCRIPTION_PROVIDERS) {
+      expect(isInferenceProvider(provider)).toBe(false);
+    }
+  });
+
+  it('agrees with resolve(): classified inference providers resolve, text-only adapters never resolve as inference', async () => {
+    // The exported lists are the same lists resolve() branches on, so a
+    // second allowlist can never drift from resolution behavior.
+    const resolver = new ModelResolver({
+      anthropic: { apiKey: 'sk-ant-test' },
+      openai: { apiKey: 'sk-oai-test' },
+      google: { apiKey: 'google-test' },
+      ollama: {},
+    });
+    for (const provider of INFERENCE_PROVIDERS) {
+      const result = await resolver.resolve({ provider, name: 'm', maxTokens: 128 });
+      expect(result.isOk()).toBe(true);
+    }
   });
 });

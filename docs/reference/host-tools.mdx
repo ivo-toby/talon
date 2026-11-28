@@ -60,12 +60,43 @@ Sends a Markdown message to another Talon channel.
 |---|---|---|
 | `channelId` | string | Required; this is the configured channel name |
 | `content` | string | Required Markdown body |
-| `replyTo` | string | Optional channel-specific thread or message ID |
+| `replyTo` | string | Optional message ID to send this as a native reply to: the `(id …)` value from a `[Replying to …]` or `[Reaction: …]` header. Ignored on channels without native replies |
+| `externalChatId` | string | Optional explicit recipient chat on the target channel |
 
 Notes:
 
 - The agent does not pass a thread ID directly; Talon resolves the current thread context for the target channel.
 - Output is converted to the target connector's native format automatically.
+- A `replyTo` reply is always sent as a native reply, regardless of the connector's `replyToTrigger` setting.
+
+---
+
+## `channel_react`
+
+Internal tool: `channel.react`
+
+Capability labels:
+
+- `channel.react:*`
+
+Places an emoji reaction on a message in the current conversation, or removes Talon's reaction from it. Supported on Telegram, WhatsApp Baileys and WhatsApp Business; other channels return an error.
+
+| Parameter | Type | Notes |
+|---|---|---|
+| `emoji` | string | A single emoji. Required unless `remove` is `true` |
+| `messageId` | string | Optional. Leave out to react to the message that started the run. Otherwise the ID of another message in this conversation: an `(id …)` value from a `[Replying to …]` or `[Reaction: …]` header, or an ID from `list` |
+| `remove` | boolean | Optional; removes Talon's reaction instead of adding one |
+| `list` | boolean | Optional; does not react, and returns the conversation's recent messages (`messageId`, `from`, `text`), newest first |
+
+Notes:
+
+- The tool takes no channel or chat argument: it only acts on the conversation the run belongs to.
+- `channel.react` is a separate capability from `channel.send`. A persona with only `channel.send` cannot react.
+- To acknowledge without sending text, react and then make the final response exactly `NO_REPLY`. A response that is only that word is not delivered to the chat.
+- Telegram accepts only its standard reaction set. An emoji outside it returns an error that lists the allowed emoji.
+- A run that was not started by a channel message (a schedule, a user reaction, a background agent) has no default target and must pass `messageId`.
+- An explicit `messageId` must be known to the message ledger for this conversation. An unknown ID is not sent to the channel: the tool returns an error listing the recent messages and their real IDs. The numbers stored in the `messages` table are delivery keys (on Telegram an `update_id`), not message IDs; the tool does accept a stored message's own `messages.id`.
+- Delegated (A2A) runs cannot react.
 
 ---
 
@@ -171,10 +202,10 @@ Built-in sub-agents shipped in this repo:
 
 | Name | Model | Purpose |
 |---|---|---|
-| `session-summarizer` | `claude-sonnet-4-6` | Compress long conversation history for session resumption |
-| `memory-retriever` | `claude-haiku-4-5-20251001` | Retrieve relevant memory items for a query |
-| `memory-groomer` | `claude-haiku-4-5-20251001` | Consolidate and prune memory entries |
-| `file-searcher` | `claude-haiku-4-5-20251001` | Search files and return ranked snippets |
+| `session-summarizer` | `claude-sonnet-5-5` | Compress long conversation history for session resumption |
+| `memory-retriever` | `claude-haiku-5-5`          | Retrieve relevant memory items for a query |
+| `memory-groomer` | `claude-haiku-5-5`          | Consolidate and prune memory entries |
+| `file-searcher` | `claude-haiku-5-5`          | Search files and return ranked snippets |
 
 ---
 

@@ -22,6 +22,7 @@ import type {
   QueueConfigSchema,
   SchedulerConfigSchema,
   AuthConfigSchema,
+  VoiceConfigSchema,
   AgentRunnerConfigSchema,
   BackgroundAgentConfigSchema,
   LangfuseConfigSchema,
@@ -31,6 +32,7 @@ import type {
   SubAgentsConfigSchema,
   SubAgentModelOverrideSchema,
   A2AConfigSchema,
+  ImagesConfigSchema,
   ReasoningEffortSchema,
 } from './config-schema.js';
 
@@ -82,6 +84,9 @@ export type SchedulerConfig = z.infer<typeof SchedulerConfigSchema>;
 /** Authentication mode and credentials. */
 export type AuthConfig = z.infer<typeof AuthConfigSchema>;
 
+/** Opt-in browservoice runtime settings. */
+export type VoiceConfig = z.infer<typeof VoiceConfigSchema>;
+
 /** Provider execution settings shared by agent runners and background agents. */
 export type ProviderConfig = z.infer<typeof ProviderConfigSchema>;
 
@@ -114,3 +119,6 @@ export type SubAgentModelOverride = z.infer<typeof SubAgentModelOverrideSchema>;
 
 /** Agent-to-agent runtime limits. */
 export type A2AConfig = z.infer<typeof A2AConfigSchema>;
+
+/** Image ingestion limits and Normalized-file retention. */
+export type ImagesConfig = z.infer<typeof ImagesConfigSchema>;

@@ -1,3 +1,4 @@
+import { type ProviderErrorDiagnostic } from './openai-compatible/agent-cli/error-diagnostics.js';
 import type { Result } from 'neverthrow';
 import type { BackgroundAgentError } from '../core/errors/error-types.js';
 import type { ReasoningEffort } from '../core/config/config-types.js';
@@ -70,7 +71,7 @@ export type AgentStreamEvent =
       excerptChars?: number;
     }
   | { type: 'result'; result: AgentRunResult }
-  | { type: 'error'; message: string };
+  | { type: 'error'; message: string; diagnostic?: ProviderErrorDiagnostic };
 
 export interface SDKExecutionStrategy {
   readonly type: 'sdk';
@@ -130,6 +131,12 @@ export type SkillLoaderTransport = 'in-process' | 'stdio';
 export interface AgentProvider {
   readonly name: ProviderName;
   readonly skillLoaderTransport: SkillLoaderTransport;
+  /**
+   * Whether the provider applies `allowedTools` from canonical MCP server
+   * entries. When false, every tool of such a server reaches the model and
+   * the runners log a warning (see `warnIfMcpAllowedToolsIgnored`).
+   */
+  readonly enforcesMcpAllowedTools: boolean;
   createExecutionStrategy(): ExecutionStrategy;
   prepareBackgroundInvocation(
     input: ProviderSpawnInput,

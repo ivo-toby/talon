@@ -15,7 +15,7 @@ import { ThreadRepository } from '../../../src/core/database/repositories/thread
 import { ChannelRepository } from '../../../src/core/database/repositories/channel-repository.js';
 import { PersonaRepository } from '../../../src/core/database/repositories/persona-repository.js';
 import { A2ATaskMapper } from '../../../src/a2a/a2a-task-mapper.js';
-import type { A2AAgentCard } from '../../../src/a2a/a2a-types.js';
+import { defaultA2ALimits, type A2AAgentCard } from '../../../src/a2a/a2a-types.js';
 import { v4 as uuidv4 } from 'uuid';
 
 // ---------------------------------------------------------------------------
@@ -264,7 +264,7 @@ describe('A2ATaskMapper', () => {
         personaRepo,
         registry,
         createTestLogger(),
-        { maxHops: 2, maxConcurrentPerTarget: 1, maxAttempts: 3 },
+        { ...defaultA2ALimits(), maxHops: 2 },
       );
 
       const ok = strict.submitTask({
@@ -287,19 +287,19 @@ describe('A2ATaskMapper', () => {
       expect(rejected._unsafeUnwrapErr().message).toMatch(/maximum allowed hops \(2\)/);
     });
 
-    it('honors a higher maxConcurrentPerTarget', () => {
-      const relaxed = new A2ATaskMapper(
+    it('queues tasks past maxConcurrentPerTarget up to maxQueuedPerTarget', () => {
+      const limited = new A2ATaskMapper(
         taskRepo,
         queueRepo,
         threadRepo,
         personaRepo,
         registry,
         createTestLogger(),
-        { maxHops: 4, maxConcurrentPerTarget: 3, maxAttempts: 3 },
+        { ...defaultA2ALimits(), maxConcurrentPerTarget: 1, maxQueuedPerTarget: 3 },
       );
 
       for (let i = 0; i < 3; i++) {
-        const r = relaxed.submitTask({
+        const r = limited.submitTask({
           sourcePersona: 'assistant',
           targetPersona: 'software-engineer',
           sourceThreadId: threadId,
@@ -307,17 +307,32 @@ describe('A2ATaskMapper', () => {
           hopCount: 0,
         });
         expect(r.isOk()).toBe(true);
+        expect(r._unsafeUnwrap().state).toBe('submitted');
       }
 
-      const fourth = relaxed.submitTask({
+      const fourth = limited.submitTask({
         sourcePersona: 'assistant',
         targetPersona: 'software-engineer',
         sourceThreadId: threadId,
-        content: 'Over the new limit',
+        content: 'Over the backlog',
         hopCount: 0,
       });
       expect(fourth.isErr()).toBe(true);
-      expect(fourth._unsafeUnwrapErr().message).toMatch(/Max allowed: 3/);
+      expect(fourth._unsafeUnwrapErr().message).toMatch(/Max queued: 3/);
+    });
+
+    it('defaults maxAttempts to 1', () => {
+      expect(defaultA2ALimits().maxAttempts).toBe(1);
+      const status = mapper
+        .submitTask({
+          sourcePersona: 'assistant',
+          targetPersona: 'software-engineer',
+          sourceThreadId: threadId,
+          content: 'Default attempts',
+          hopCount: 0,
+        })
+        ._unsafeUnwrap();
+      expect(queueRepo.findById(status.queueItemId!)._unsafeUnwrap()?.max_attempts).toBe(1);
     });
 
     it('propagates maxAttempts into queue items', () => {
@@ -328,7 +343,7 @@ describe('A2ATaskMapper', () => {
         personaRepo,
         registry,
         createTestLogger(),
-        { maxHops: 4, maxConcurrentPerTarget: 1, maxAttempts: 7 },
+        { ...defaultA2ALimits(), maxAttempts: 7 },
       );
 
       const result = relaxed.submitTask({
@@ -370,6 +385,154 @@ describe('A2ATaskMapper', () => {
       const result = mapper.getTaskStatus('nonexistent-task-id');
       expect(result.isOk()).toBe(true);
       expect(result._unsafeUnwrap()).toBeNull();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // delegation cycles
+  // -------------------------------------------------------------------------
+
+  describe('delegation cycle detection', () => {
+    const submit = (source: string, target: string, parentTaskId?: string) =>
+      mapper.submitTask({
+        sourcePersona: source,
+        targetPersona: target,
+        sourceThreadId: threadId,
+        content: 'delegate',
+        hopCount: 0,
+        parentTaskId,
+      });
+
+    it('rejects a delegation back to a persona running an ancestor task', () => {
+      const a = submit('assistant', 'software-engineer')._unsafeUnwrap();
+      // software-engineer (running task a) delegates to assistant: fine.
+      const b = submit('software-engineer', 'assistant', a.taskId)._unsafeUnwrap();
+      // assistant (running task b) delegates back to software-engineer, whose
+      // slot is held by ancestor a -> deadlock.
+      const c = submit('assistant', 'software-engineer', b.taskId);
+      expect(c.isErr()).toBe(true);
+      expect(c._unsafeUnwrapErr().message).toMatch(/delegation cycle/);
+    });
+
+    it('allows the delegation once the ancestor is terminal', () => {
+      const a = submit('assistant', 'software-engineer')._unsafeUnwrap();
+      const b = submit('software-engineer', 'assistant', a.taskId)._unsafeUnwrap();
+      taskRepo.markCompleted(a.taskId, 'done');
+      expect(submit('assistant', 'software-engineer', b.taskId).isOk()).toBe(true);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // cancelTask
+  // -------------------------------------------------------------------------
+
+  describe('cancelTask', () => {
+    const submitOne = () =>
+      mapper
+        .submitTask({
+          sourcePersona: 'assistant',
+          targetPersona: 'software-engineer',
+          sourceThreadId: threadId,
+          content: 'cancel me',
+          hopCount: 0,
+        })
+        ._unsafeUnwrap();
+
+    it('cancels the task, its pending queue item, and invokes the abort hook', () => {
+      const hook = vi.fn();
+      mapper.setAbortHook(hook);
+      const task = submitOne();
+
+      expect(mapper.cancelTask(task.taskId, 'user requested')._unsafeUnwrap()).toBe(true);
+
+      const row = taskRepo.findById(task.taskId)._unsafeUnwrap()!;
+      expect(row.state).toBe('canceled');
+      expect(row.error_code).toBe('CANCELED');
+      expect(row.error_message).toBe('user requested');
+      expect(row.completed_at).not.toBeNull();
+      const item = queueRepo.findById(task.queueItemId!)._unsafeUnwrap()!;
+      expect(item.status).toBe('completed');
+      expect(item.error).toBe('canceled');
+      expect(hook).toHaveBeenCalledWith(task.taskId);
+    });
+
+    it('is idempotent and returns false for terminal or unknown tasks', () => {
+      const hook = vi.fn();
+      mapper.setAbortHook(hook);
+      const task = submitOne();
+      expect(mapper.cancelTask(task.taskId, 'x')._unsafeUnwrap()).toBe(true);
+      expect(mapper.cancelTask(task.taskId, 'again')._unsafeUnwrap()).toBe(false);
+      expect(mapper.cancelTask('missing', 'x')._unsafeUnwrap()).toBe(false);
+      expect(hook).toHaveBeenCalledTimes(1);
+      expect(taskRepo.findById(task.taskId)._unsafeUnwrap()!.error_message).toBe('x');
+    });
+
+    it('does not cancel a completed task', () => {
+      const task = submitOne();
+      taskRepo.markCompleted(task.taskId, 'ok');
+      expect(mapper.cancelTask(task.taskId, 'late')._unsafeUnwrap()).toBe(false);
+      expect(taskRepo.findById(task.taskId)._unsafeUnwrap()!.state).toBe('completed');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // reapStaleTasks
+  // -------------------------------------------------------------------------
+
+  describe('reapStaleTasks', () => {
+    const submitOne = () =>
+      mapper
+        .submitTask({
+          sourcePersona: 'assistant',
+          targetPersona: 'software-engineer',
+          sourceThreadId: threadId,
+          content: 'reap me',
+          hopCount: 0,
+        })
+        ._unsafeUnwrap();
+
+    it('leaves healthy tasks with live queue items alone', () => {
+      const task = submitOne();
+      const reaped = mapper.reapStaleTasks(Date.now() + 5 * 60_000)._unsafeUnwrap();
+      expect(reaped).toEqual([]);
+      expect(taskRepo.findById(task.taskId)._unsafeUnwrap()!.state).toBe('submitted');
+    });
+
+    it('fails orphaned tasks whose queue item was purged (after the grace period)', () => {
+      const task = submitOne();
+      queueRepo.purge(['pending']);
+      // Within grace: untouched.
+      expect(mapper.reapStaleTasks(Date.now())._unsafeUnwrap()).toEqual([]);
+      const reaped = mapper.reapStaleTasks(Date.now() + 61_000)._unsafeUnwrap();
+      expect(reaped).toEqual([task.taskId]);
+      const row = taskRepo.findById(task.taskId)._unsafeUnwrap()!;
+      expect(row.state).toBe('failed');
+      expect(row.error_code).toBe('ORPHANED');
+    });
+
+    it('fails tasks whose queue item is completed or dead-lettered', () => {
+      const t1 = submitOne();
+      const t2 = submitOne();
+      queueRepo.complete(t1.queueItemId!);
+      queueRepo.markDeadLetter(t2.queueItemId!, 'dead');
+      const reaped = mapper.reapStaleTasks(Date.now() + 61_000)._unsafeUnwrap();
+      expect(reaped.sort()).toEqual([t1.taskId, t2.taskId].sort());
+    });
+
+    it('cancels tasks older than the TTL even with a live queue item', () => {
+      const task = submitOne();
+      const reaped = mapper.reapStaleTasks(Date.now() + 61 * 60_000)._unsafeUnwrap();
+      expect(reaped).toEqual([task.taskId]);
+      const row = taskRepo.findById(task.taskId)._unsafeUnwrap()!;
+      expect(row.state).toBe('canceled');
+      expect(row.error_message).toBe('ttl expired');
+      expect(queueRepo.findById(task.queueItemId!)._unsafeUnwrap()!.status).toBe('completed');
+    });
+
+    it('ignores terminal tasks', () => {
+      const task = submitOne();
+      taskRepo.markCompleted(task.taskId, 'done');
+      expect(mapper.reapStaleTasks(Date.now() + 10 * 60 * 60_000)._unsafeUnwrap()).toEqual([]);
     });
   });
 });

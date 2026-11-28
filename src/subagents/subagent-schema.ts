@@ -36,7 +36,7 @@ export const SubAgentModelSchema = z.object({
   /** AI provider identifier (e.g. `anthropic`, `openai`, `google`). */
   provider: SubAgentModelProviderSchema,
 
-  /** Model name as understood by the provider (e.g. `claude-haiku-4-5-20251001`). */
+  /** Model name as understood by the provider (e.g. `claude-haiku-5-5`). */
   name: z.string().min(1, 'model name must be non-empty'),
 
   /** Maximum output tokens per generation. Defaults to 2048. */

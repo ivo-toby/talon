@@ -261,6 +261,109 @@ describe('TalondConfigSchema — subagents override', () => {
     }
   });
 
+  describe('vision chain overrides', () => {
+    it('accepts vision overrides built only from inference providers', () => {
+      const result = TalondConfigSchema.safeParse({
+        subagents: {
+          vision: {
+            model: [
+              { provider: 'openai', name: 'gpt-4o' },
+              { provider: 'ollama', name: 'llava' },
+              { provider: 'anthropic', name: 'claude-sonnet-4-6' },
+              { provider: 'google', name: 'gemini-2.0-flash' },
+            ],
+          },
+        },
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it('rejects a claude-code vision override even when the subscription CLI is enabled', () => {
+      const result = TalondConfigSchema.safeParse({
+        subagentCli: { claudeCode: { enabled: true } },
+        subagents: {
+          vision: {
+            model: [
+              { provider: 'openai', name: 'gpt-4o' },
+              { provider: 'claude-code', name: 'sonnet' },
+            ],
+          },
+        },
+      });
+
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.issues).toContainEqual(
+          expect.objectContaining({
+            path: ['subagents', 'vision', 'model', 1, 'provider'],
+            message: expect.stringContaining('claude-code" is text-only'),
+          }),
+        );
+      }
+    });
+
+    it('rejects a codex-sandbox vision override even when the contained runner is enabled', () => {
+      const result = TalondConfigSchema.safeParse({
+        subagentSandbox: {
+          codex: { enabled: true, token: 't'.repeat(32) },
+        },
+        subagents: {
+          vision: {
+            model: [{ provider: 'codex-sandbox', name: 'gpt-5.6-terra' }],
+          },
+        },
+      });
+
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        // The sandbox-enablement rule still passes here; only the vision
+        // classification rule fires.
+        expect(result.error.issues).not.toContainEqual(
+          expect.objectContaining({
+            message: expect.stringContaining('subagentSandbox.codex is disabled'),
+          }),
+        );
+        expect(result.error.issues).toContainEqual(
+          expect.objectContaining({
+            path: ['subagents', 'vision', 'model', 0, 'provider'],
+            message: expect.stringContaining('codex-sandbox" is text-only'),
+          }),
+        );
+      }
+    });
+
+    it('keeps non-vision subagent overrides on the existing provider rules (claude-code still allowed)', () => {
+      const result = TalondConfigSchema.safeParse({
+        subagentCli: { claudeCode: { enabled: true } },
+        subagents: {
+          'memory-groomer': {
+            model: [{ provider: 'claude-code', name: 'sonnet' }],
+          },
+        },
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it('keeps claude-code and codex-sandbox as valid providers for subagent overrides in general', () => {
+      // The enum is derived from the model-resolver classifications; every
+      // adapter the resolver can instantiate must remain configurable here.
+      const result = TalondConfigSchema.safeParse({
+        subagentCli: { claudeCode: { enabled: true } },
+        subagentSandbox: { codex: { enabled: true, token: 't'.repeat(32) } },
+        subagents: {
+          'session-summarizer': {
+            model: [
+              { provider: 'claude-code', name: 'sonnet' },
+              { provider: 'codex-sandbox', name: 'gpt-5.6-terra' },
+              { provider: 'ollama', name: 'qwen3-30b' },
+            ],
+          },
+        },
+      });
+      expect(result.success).toBe(true);
+    });
+  });
+
   it('accepts deeply nested providerOptions without inner validation', () => {
     const result = TalondConfigSchema.safeParse({
       subagents: {

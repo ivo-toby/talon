@@ -161,14 +161,26 @@ export const MAX_HOPS = 4;
 /** Default maximum number of concurrent active A2A tasks per target persona. */
 export const MAX_CONCURRENT_PER_TARGET = 1;
 
-/** Default max queue retry attempts for A2A collaboration items. */
-export const DEFAULT_A2A_MAX_ATTEMPTS = 3;
+/**
+ * Default max queue attempts for A2A collaboration items. 1 means no blind
+ * re-run: LLM runs have side effects, so the calling agent sees `failed` and
+ * decides whether to resubmit.
+ */
+export const DEFAULT_A2A_MAX_ATTEMPTS = 1;
+
+/** Default maximum number of queued (submitted, not yet running) tasks per target persona. */
+export const DEFAULT_A2A_MAX_QUEUED_PER_TARGET = 10;
+
+/** Default time-to-live (minutes since submission) for a non-terminal A2A task. */
+export const DEFAULT_A2A_TASK_TTL_MINUTES = 60;
 
 /** Runtime A2A limits resolved from config. Defaults mirror the constants above. */
 export interface A2ALimits {
   maxHops: number;
   maxConcurrentPerTarget: number;
   maxAttempts: number;
+  maxQueuedPerTarget: number;
+  taskTtlMinutes: number;
 }
 
 /** Returns A2ALimits populated with the built-in defaults. */
@@ -177,5 +189,7 @@ export function defaultA2ALimits(): A2ALimits {
     maxHops: MAX_HOPS,
     maxConcurrentPerTarget: MAX_CONCURRENT_PER_TARGET,
     maxAttempts: DEFAULT_A2A_MAX_ATTEMPTS,
+    maxQueuedPerTarget: DEFAULT_A2A_MAX_QUEUED_PER_TARGET,
+    taskTtlMinutes: DEFAULT_A2A_TASK_TTL_MINUTES,
   };
 }

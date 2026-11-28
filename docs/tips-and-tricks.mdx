@@ -45,6 +45,22 @@ bindings:
 
 `assistant` on both Telegram and terminal, `researcher` only on Slack. Same config, clean separation.
 
+The same idea works inside one Telegram group. Turn on topics, and each topic becomes its own conversation; bind a persona to a topic with `thread` and you get a groceries assistant and a calendar assistant in one group, through one bot. See [Telegram topic workspaces](/docs/guides/telegram-topics).
+
+---
+
+## Let the agent react instead of reply
+
+Not every message needs a written answer. Give a persona the `channel.react:*` capability and it can put a 👍 on "remember I have the dentist tomorrow" instead of sending "Noted!". When a reaction is the whole answer, the agent ends its turn with `NO_REPLY` and nothing else is sent.
+
+```yaml
+capabilities:
+  allow:
+    - channel.react:*
+```
+
+It works the other way too: a 👍 you put on one of the agent's messages reaches it as a message, so reacting to "Shall I book it?" counts as a yes. Turn that off per connector with `inboundReactions: false`.
+
 ---
 
 ## Keep capabilities minimal

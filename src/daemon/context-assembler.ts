@@ -14,10 +14,334 @@
 
 import type { MessageRepository, MessageRow } from '../core/database/repositories/message-repository.js';
 import type { MemoryRepository } from '../core/database/repositories/memory-repository.js';
+import {
+  DEFAULT_VOICE_HISTORY_ROWS,
+  formatVoiceHistory,
+  parseVoiceMessageContent,
+} from '../voice/voice-types.js';
+import type { ImageDescriptor } from '../images/image-types.js';
+import type { Finding } from '../images/finding-types.js';
+import {
+  IMAGE_CONTEXT_BUDGET,
+  IMAGE_CONTEXT_FRAMING,
+  renderImageDescriptor,
+  renderFinding,
+} from '../images/image-context-projection.js';
 
 export interface ContextAssemblerDeps {
-  messageRepo: Pick<MessageRepository, 'findLatestByThread' | 'findLatestByThreadSince'>;
+  messageRepo: Pick<MessageRepository, 'findLatestByThread' | 'findLatestByThreadSince'> &
+    Partial<
+      Pick<MessageRepository, 'findLatestByThreadPage' | 'findLatestByThreadSincePage'>
+    >;
   memoryRepo: Pick<MemoryRepository, 'findByThread'>;
+}
+
+// ---------------------------------------------------------------------------
+// Image-aware context (ADR-0002: docs/adr/0002-image-context-placement.md)
+//
+// Placement contract:
+// - Current-message Image descriptors are appended to the LIVE provider prompt
+//   once, with their message (`renderLiveImageDescriptors`). Provider history
+//   then contains them naturally; resumed turns never repeat an inventory.
+// - The full Image descriptor inventory and Finding projections are built ONLY
+//   when foreground history is injected into a FRESH session (here) or for
+//   context rotation (ContextRoller). Resumed sessions discover older
+//   Images/Findings through the capability-gated `image_lookup` tool.
+// - Live and fresh-history descriptors share ONE count/character budget
+//   (newest 20 descriptors, ≤1 000 chars each, ≤8 000 aggregate), consumed
+//   live-first. The Finding budget (newest 10, ≤2 000 each, ≤8 000 aggregate)
+//   is separate; both count toward the enclosing context budget. All limits
+//   are the frozen TASK-015 literals in IMAGE_CONTEXT_BUDGET.
+// ---------------------------------------------------------------------------
+
+/**
+ * Refreshed raw material for image-aware context injection.
+ *
+ * Implemented by the daemon wiring against the TASK-001 `ImageAccess` port and
+ * the canonical Finding store. Contract for every method:
+ * - Thread-scoped: only the requesting thread's records are returned.
+ * - Availability is REFRESHED before descriptors are returned (expiry first,
+ *   then file existence), exactly as `ImageAccess.resolveImage` does.
+ * - `processing` descriptors are internal; callers filter them defensively,
+ *   but implementations should not return them from listings.
+ * - Queries are INDEPENDENT of any message-rotation cutoff: Images and
+ *   Findings that predate the newest summary, Findings from failed runs, and
+ *   Findings that arrive while a summarizer is running must all be visible.
+ * - Never returns pixel bytes, local paths, staging references, or download
+ *   credentials (descriptors and Findings carry none by construction).
+ */
+export interface ImageContextSource {
+  /** Images owned by one (thread, message), source order, refreshed. */
+  resolveMessageDescriptors(request: {
+    threadId: string;
+    messageId: string;
+  }): Promise<ImageDescriptor[]>;
+  /** The thread's non-Processing Image descriptor inventory, refreshed. */
+  listThreadDescriptors(threadId: string): Promise<ImageDescriptor[]>;
+  /** The thread's canonical Findings, independent of message cutoffs. */
+  listThreadFindings(threadId: string): Promise<Finding[]>;
+}
+
+/** Section header of the live current-message descriptor block. */
+export const LIVE_IMAGE_SECTION_HEADER =
+  '[Images attached to this message; state shown is current at delivery]';
+
+/**
+ * The live descriptor block rendered for one image-bearing message, plus the
+ * budget it consumed. Passing this block into {@link projectImageHistory} is
+ * what makes the shared descriptor budget live-first: the fresh inventory
+ * skips these Image IDs and fills only the remaining count/characters.
+ */
+export interface LiveImageDescriptorBlock {
+  /** Rendered block appended after the stored message text; '' when empty. */
+  text: string;
+  /** Selected Image IDs in source order (excluded from fresh inventory). */
+  imageIds: string[];
+  selectedCount: number;
+  /** Characters consumed from the shared aggregate (includes the header). */
+  consumedChars: number;
+  omittedCount: number;
+}
+
+export const EMPTY_LIVE_BLOCK: LiveImageDescriptorBlock = Object.freeze({
+  text: '',
+  imageIds: [],
+  selectedCount: 0,
+  consumedChars: 0,
+  omittedCount: 0,
+});
+
+/** Non-Processing descriptors in stable source order (message ordinal). */
+export function orderLiveDescriptors(
+  descriptors: readonly ImageDescriptor[],
+  threadId: string,
+): ImageDescriptor[] {
+  return descriptors
+    .filter((d) => d.threadId === threadId && d.state !== 'processing')
+    .sort((a, b) => a.ordinal - b.ordinal);
+}
+
+/**
+ * Render the current-message descriptor block for the LIVE provider prompt.
+ *
+ * Entries follow source order and consume the shared descriptor budget first
+ * (count ≤ {@link IMAGE_CONTEXT_BUDGET}.descriptorMaxCount, per-entry ≤
+ * descriptorMaxChars via {@link renderImageDescriptor}, aggregate ≤
+ * descriptorAggregateChars including this header and any omission notice).
+ * Entries that no longer fit are omitted whole — never clipped IDs/state —
+ * and remain discoverable through the fresh inventory or `image_lookup`.
+ * The omission notice names `image_lookup` only when `imageLookupExposed`
+ * reflects the persona's actual filtered tool exposure.
+ *
+ * The live block additionally reserves the maximum fixed text the history
+ * projection (`projectImageHistory`) can emit for the same exposure — its
+ * section headers plus its omission notice — so the COMBINED live + inventory
+ * aggregate can never exceed `descriptorAggregateChars`, even when the
+ * inventory side has entries but no room renders them (its framing and
+ * omission notice are still emitted).
+ */
+export function renderLiveImageDescriptors(
+  descriptors: readonly ImageDescriptor[],
+  imageLookupExposed: boolean,
+): LiveImageDescriptorBlock {
+  const budget = IMAGE_CONTEXT_BUDGET;
+  const framing = IMAGE_CONTEXT_FRAMING;
+  const omissionNotice = imageLookupExposed
+    ? framing.imageOmissionNoticeWithLookup
+    : framing.imageOmissionNotice;
+
+  // Maximum fixed history-side framing under the same exposure: section
+  // headers + its omission notice + their separators.
+  const historyFramingReserve =
+    framing.imageSectionHeader.length + 1 + framing.inventorySectionHeader.length + 1 + omissionNotice.length + 1;
+
+  // Reserve the live header, the worst-case omission notice, and the
+  // history-side fixed framing above, all before any entry.
+  let remaining =
+    budget.descriptorAggregateChars -
+    (LIVE_IMAGE_SECTION_HEADER.length + 2 + omissionNotice.length + 1) -
+    historyFramingReserve;
+  let countLeft = budget.descriptorMaxCount;
+  const lines: string[] = [];
+  const imageIds: string[] = [];
+  let omitted = 0;
+
+  for (const descriptor of descriptors) {
+    if (countLeft <= 0) {
+      omitted += 1;
+      continue;
+    }
+    const cap = Math.min(budget.descriptorMaxChars, remaining - 1);
+    const line = cap >= 0 ? renderImageDescriptor(descriptor, cap) : null;
+    if (line === null) {
+      omitted += 1;
+      continue;
+    }
+    lines.push(line);
+    imageIds.push(descriptor.imageId);
+    remaining -= line.length + 1;
+    countLeft -= 1;
+  }
+
+  if (lines.length === 0) {
+    return EMPTY_LIVE_BLOCK;
+  }
+  const sections = [`${LIVE_IMAGE_SECTION_HEADER}\n${lines.join('\n')}`];
+  if (omitted > 0) {
+    sections.push(omissionNotice);
+  }
+  const text = sections.join('\n');
+  return {
+    text,
+    imageIds,
+    selectedCount: lines.length,
+    consumedChars: text.length + 1,
+    omittedCount: omitted,
+  };
+}
+
+/**
+ * Bounded Image/Finding history projection for fresh-session replay and
+ * context rotation. Mirrors `projectImageContext`
+ * (src/images/image-context-projection.ts) but emits ONLY the inventory and
+ * Findings sections: the live current-message lines are delivered separately
+ * with their message and are excluded here by {@link
+ * LiveImageDescriptorBlock.imageIds}.
+ *
+ * The live block's count/character consumption is subtracted from the shared
+ * descriptor budget first (live-first priority); remaining inventory entries
+ * are selected newest-first (receipt descending, then ID ascending). Findings
+ * keep their separate budget: selected newest-first, presented
+ * chronologically. Framing and omission notices count toward the aggregates;
+ * the notice names `image_lookup` only when actually exposed. Returns ''
+ * when there is nothing to project and nothing was omitted.
+ */
+export function projectImageHistory(request: {
+  live: LiveImageDescriptorBlock;
+  inventoryDescriptors: readonly ImageDescriptor[];
+  findings: readonly Finding[];
+  imageLookupExposed: boolean;
+}): string {
+  const budget = IMAGE_CONTEXT_BUDGET;
+  const framing = IMAGE_CONTEXT_FRAMING;
+  const imageNotice = request.imageLookupExposed
+    ? framing.imageOmissionNoticeWithLookup
+    : framing.imageOmissionNotice;
+  const liveIds = new Set(request.live.imageIds);
+
+  const inventory = request.inventoryDescriptors
+    .filter((d) => d.state !== 'processing' && !liveIds.has(d.imageId))
+    .sort((a, b) => {
+      if (b.receivedAt !== a.receivedAt) return b.receivedAt - a.receivedAt;
+      return a.imageId < b.imageId ? -1 : 1;
+    });
+
+  // Shared budget, live consumed first. Reserve the exact framing this
+  // projection emits (section headers + the exposure-matching notice).
+  let remaining =
+    request.live.consumedChars > 0
+      ? budget.descriptorAggregateChars - request.live.consumedChars
+      : budget.descriptorAggregateChars;
+  remaining -=
+    framing.imageSectionHeader.length +
+    1 +
+    framing.inventorySectionHeader.length +
+    1 +
+    imageNotice.length +
+    1;
+  let countLeft = Math.max(0, budget.descriptorMaxCount - request.live.selectedCount);
+
+  const inventoryLines: string[] = [];
+  let omittedImages = 0;
+  for (const descriptor of inventory) {
+    if (countLeft <= 0) {
+      omittedImages += 1;
+      continue;
+    }
+    const cap = Math.min(budget.descriptorMaxChars, remaining - 1);
+    const line = cap >= 0 ? renderImageDescriptor(descriptor, cap) : null;
+    if (line === null) {
+      omittedImages += 1;
+      continue;
+    }
+    inventoryLines.push(line);
+    remaining -= line.length + 1;
+    countLeft -= 1;
+  }
+
+  let descriptorsText = '';
+  if (inventoryLines.length > 0 || omittedImages > 0) {
+    const lines: string[] = [framing.imageSectionHeader];
+    if (inventoryLines.length > 0) {
+      lines.push(framing.inventorySectionHeader, ...inventoryLines);
+    }
+    if (omittedImages > 0) {
+      lines.push(imageNotice);
+    }
+    descriptorsText = `${lines.join('\n')}\n`;
+  }
+
+  // Findings: separate budget, selected newest-first, presented
+  // chronologically — identical policy to projectImageContext.
+  const candidates = [...request.findings].sort((a, b) => {
+    if (b.createdAt !== a.createdAt) return b.createdAt - a.createdAt;
+    return a.findingId < b.findingId ? -1 : 1;
+  });
+  let findingsRemaining =
+    budget.findingAggregateChars -
+    (framing.findingSectionHeader.length +
+      1 +
+      framing.findingOmissionNoticeWithLookup.length +
+      1);
+  let findingCountLeft = budget.findingMaxCount;
+  const selected: Array<{ finding: Finding; block: string }> = [];
+  for (const finding of candidates) {
+    if (findingCountLeft <= 0) {
+      continue;
+    }
+    const cap = Math.min(budget.findingMaxChars, findingsRemaining - 1);
+    const block = cap >= 0 ? renderFinding(finding, cap) : null;
+    if (block === null) {
+      continue;
+    }
+    selected.push({ finding, block });
+    findingsRemaining -= block.length + 1;
+    findingCountLeft -= 1;
+  }
+  const omittedFindings = request.findings.length - selected.length;
+
+  let findingsText = '';
+  if (selected.length > 0 || omittedFindings > 0) {
+    selected.sort((a, b) => {
+      if (a.finding.createdAt !== b.finding.createdAt) {
+        return a.finding.createdAt - b.finding.createdAt;
+      }
+      return a.finding.findingId < b.finding.findingId ? -1 : 1;
+    });
+    const lines: string[] = [framing.findingSectionHeader, ...selected.map((entry) => entry.block)];
+    if (omittedFindings > 0) {
+      lines.push(
+        request.imageLookupExposed
+          ? framing.findingOmissionNoticeWithLookup
+          : framing.findingOmissionNotice,
+      );
+    }
+    findingsText = `${lines.join('\n')}\n`;
+  }
+
+  return [descriptorsText, findingsText].filter((section) => section.length > 0).join('\n\n');
+}
+
+/** Image replay material supplied by the caller (AgentRunner) per run. */
+export interface AssembleImageContext {
+  /** Live block already appended to the prompt for this run's message. */
+  live: LiveImageDescriptorBlock;
+  /** Refreshed current-thread inventory (live IDs excluded by projection). */
+  inventoryDescriptors: readonly ImageDescriptor[];
+  /** Canonical current-thread Findings (independent of message cutoffs). */
+  findings: readonly Finding[];
+  /** Actual `image_lookup` exposure from the persona's filtered tool set. */
+  imageLookupExposed: boolean;
 }
 
 export interface AssembledContext {
@@ -50,13 +374,20 @@ export class ContextAssembler {
    *   passed to the provider as the live prompt; echoing it in the system
    *   prompt as a `[previous turn, user]: …` entry caused stateless
    *   providers to respond twice (once to the replay, once to the prompt).
+   * @param options.excludeVoiceSessionId — optional voice call identity. Voice
+   *   rows from that call are omitted because the live request already carries
+   *   them; older voice rows use the bounded historical voice format.
    *
    * Returns a markdown string and metadata for observability.
    */
   assemble(
     threadId: string,
     recentMessageLimit: number,
-    options: { excludeMessageId?: string } = {},
+    options: {
+      excludeMessageId?: string;
+      excludeVoiceSessionId?: string;
+      images?: AssembleImageContext;
+    } = {},
   ): AssembledContext {
     const sections: string[] = [];
     let summaryFound = false;
@@ -77,7 +408,7 @@ export class ContextAssembler {
     // avoids dropping messages that arrived during summarizer latency.
     const boundaryFromMeta = (rawMetadata: string, fallback: number): number => {
       try {
-        const meta = JSON.parse(rawMetadata);
+        const meta = JSON.parse(rawMetadata) as Record<string, unknown>;
         const ts = Number(meta.rotatedThroughTs);
         return Number.isFinite(ts) ? ts : fallback;
       } catch {
@@ -114,7 +445,7 @@ export class ContextAssembler {
       rotationBoundary = boundaryFromMeta(newest.metadata, newest.created_at);
       let continuationHint = '';
       try {
-        const meta = JSON.parse(newest.metadata);
+        const meta = JSON.parse(newest.metadata) as Record<string, unknown>;
         // Only surface hints when the observer explicitly flagged the task
         // as incomplete. A missing `taskComplete` (legacy observations) is
         // treated as "not complete" so older hints still render — previous
@@ -122,8 +453,8 @@ export class ContextAssembler {
         const completed = meta.taskComplete === true;
         if (!completed) {
           const parts: string[] = [];
-          if (meta.currentTask) parts.push(`**Current task:** ${meta.currentTask}`);
-          if (meta.suggestedContinuation) parts.push(`**Next step:** ${meta.suggestedContinuation}`);
+          if (typeof meta.currentTask === 'string' && meta.currentTask) parts.push(`**Current task:** ${meta.currentTask}`);
+          if (typeof meta.suggestedContinuation === 'string' && meta.suggestedContinuation) parts.push(`**Next step:** ${meta.suggestedContinuation}`);
           if (parts.length > 0) continuationHint = `\n\n${parts.join('\n')}`;
         }
       } catch { /* ignore parse errors */ }
@@ -164,24 +495,64 @@ export class ContextAssembler {
     // cap so the context window grows toward the rotation threshold naturally
     // — essential for stateless providers where every turn is a fresh session.
     const PRE_SUMMARY_MESSAGE_CAP = 50;
-    const messagesResult = rotationBoundary !== null
-      ? this.deps.messageRepo.findLatestByThreadSince(
-          threadId,
-          rotationBoundary,
-          recentMessageLimit,
-        )
-      : this.deps.messageRepo.findLatestByThread(
-          threadId,
-          Math.max(recentMessageLimit, PRE_SUMMARY_MESSAGE_CAP),
-        );
-    if (messagesResult.isOk() && messagesResult.value.length > 0) {
+    const messageLimit = options.excludeVoiceSessionId
+      ? Math.max(recentMessageLimit, DEFAULT_VOICE_HISTORY_ROWS)
+      : recentMessageLimit;
+    let messages: MessageRow[];
+    if (options.excludeVoiceSessionId) {
+      messages = this.readVoiceMessages(
+        threadId,
+        rotationBoundary,
+        messageLimit,
+        options.excludeVoiceSessionId,
+      );
+    } else {
+      const messagesResult = rotationBoundary !== null
+        ? this.deps.messageRepo.findLatestByThreadSince(
+            threadId,
+            rotationBoundary,
+            recentMessageLimit,
+          )
+        : this.deps.messageRepo.findLatestByThread(
+            threadId,
+            Math.max(recentMessageLimit, PRE_SUMMARY_MESSAGE_CAP),
+          );
+      messages = messagesResult.isOk() ? messagesResult.value : [];
+    }
+    if (messages.length > 0) {
       const filtered = options.excludeMessageId
-        ? messagesResult.value.filter((m) => m.id !== options.excludeMessageId)
-        : messagesResult.value;
-      if (filtered.length > 0) {
-        const formatted = this.formatMessages(filtered);
-        sections.push(`### Recent Messages\n\n${formatted}`);
-        recentMessageCount = filtered.length;
+        ? messages.filter((m) => m.id !== options.excludeMessageId)
+        : messages;
+      const voiceFiltered = options.excludeVoiceSessionId
+        ? filtered.filter((message) => {
+            const content = parseVoiceMessageContent(message.content);
+            return !(
+              content?.voice?.kind === 'transcript' &&
+              content.voice.sessionId === options.excludeVoiceSessionId
+            );
+          })
+        : filtered;
+      if (voiceFiltered.length > 0) {
+        const formatted = options.excludeVoiceSessionId
+          ? formatVoiceHistory(voiceFiltered)
+          : this.formatMessages(voiceFiltered);
+        if (formatted) {
+          sections.push(`### Recent Messages\n\n${formatted}`);
+          recentMessageCount = options.excludeVoiceSessionId
+            ? formatted.split('\n').length
+            : voiceFiltered.length;
+        }
+      }
+    }
+
+    // 3. Image descriptor inventory + Finding projections (fresh sessions
+    // only — this assembler is never consulted on resumed turns). Raw
+    // material is fetched by the caller; this stays a synchronous, pure
+    // projection within the shared live-first budgets (ADR-0002).
+    if (options.images) {
+      const imageSection = projectImageHistory(options.images);
+      if (imageSection.length > 0) {
+        sections.push(imageSection);
       }
     }
 
@@ -213,6 +584,74 @@ export class ContextAssembler {
     };
   }
 
+  private readVoiceMessages(
+    threadId: string,
+    rotationBoundary: number | null,
+    limit: number,
+    excludeSessionId: string,
+  ): MessageRow[] {
+    const pageSize = Math.max(limit, DEFAULT_VOICE_HISTORY_ROWS);
+    if (rotationBoundary !== null && this.deps.messageRepo.findLatestByThreadSincePage) {
+      return this.readVoicePages(
+        (offset) =>
+          this.deps.messageRepo.findLatestByThreadSincePage!(
+            threadId,
+            rotationBoundary,
+            pageSize,
+            offset,
+          ),
+        pageSize,
+        limit,
+        excludeSessionId,
+      );
+    }
+    if (rotationBoundary === null && this.deps.messageRepo.findLatestByThreadPage) {
+      return this.readVoicePages(
+        (offset) =>
+          this.deps.messageRepo.findLatestByThreadPage!(threadId, pageSize, offset),
+        pageSize,
+        limit,
+        excludeSessionId,
+      );
+    }
+
+    const fallback = rotationBoundary !== null
+      ? this.deps.messageRepo.findLatestByThreadSince(threadId, rotationBoundary, pageSize)
+      : this.deps.messageRepo.findLatestByThread(threadId, pageSize);
+    return fallback.isOk()
+      ? fallback.value.filter((message) => {
+          const content = parseVoiceMessageContent(message.content);
+          return !(
+            content?.voice?.kind === 'transcript' && content.voice.sessionId === excludeSessionId
+          );
+        })
+      : [];
+  }
+
+  private readVoicePages(
+    readPage: (offset: number) => ReturnType<MessageRepository['findLatestByThreadPage']>,
+    pageSize: number,
+    limit: number,
+    excludeSessionId: string,
+  ): MessageRow[] {
+    const selected: MessageRow[] = [];
+    let offset = 0;
+    while (selected.length < limit) {
+      const page = readPage(offset);
+      if (page.isErr()) return [];
+      const eligible = page.value.filter((message) => {
+        const content = parseVoiceMessageContent(message.content);
+        return !(
+          content?.voice?.kind === 'transcript' && content.voice.sessionId === excludeSessionId
+        );
+      });
+      selected.unshift(...eligible);
+      if (page.value.length < pageSize) break;
+      offset += page.value.length;
+    }
+    return selected.slice(-limit);
+  }
+
   private formatMessages(messages: MessageRow[]): string {
     // Emit replayed turns with bracketed state-style tags rather than
     // "User: …" / "Assistant: …" role markers. The main agent's prompt
@@ -226,7 +665,7 @@ export class ContextAssembler {
         const role = msg.direction === 'inbound' ? 'user' : 'agent';
         let body: string;
         try {
-          const parsed = JSON.parse(msg.content);
+          const parsed = JSON.parse(msg.content) as Record<string, unknown>;
           body = typeof parsed.body === 'string' ? parsed.body : msg.content;
         } catch {
           body = msg.content;

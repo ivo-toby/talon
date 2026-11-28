@@ -85,6 +85,36 @@ export interface EmailConfig {
 // ---------------------------------------------------------------------------
 
 /**
+ * One parsed MIME attachment forwarded from the mailparser result.
+ *
+ * This is the MINIMAL field set the connector needs from the actual
+ * MailParser 3.9.37 attachment shape (contract inventory E5): `filename?`,
+ * `contentType`, `contentDisposition?`, `size`, `content: Buffer`,
+ * `related?`. Parser internals (`checksum`, `headers`, `partId`, `release`)
+ * and the `contentId`/`cid` values are deliberately NOT forwarded: inline /
+ * related exclusion is decided by the disposition and the `related` flag, so
+ * a content ID is not needed downstream and forwarding it would only widen
+ * the durable surface.
+ *
+ * `size` is sender-declared metadata and stays untrusted — the shared
+ * selection port re-measures the actual `content` length before staging.
+ */
+export interface EmailAttachment {
+  /** Declared filename, when the MIME part carried one. Never establishes MIME. */
+  filename?: string;
+  /** Declared MIME type exactly as parsed (parameters and case included). */
+  contentType?: string;
+  /** Normalized disposition (`"attachment"` / `"inline"`), when declared. */
+  contentDisposition?: string;
+  /** Declared size in bytes; untrusted metadata. */
+  size?: number;
+  /** `true` only for CID parts under a `multipart/related` ancestor. */
+  related?: boolean;
+  /** Decoded attachment bytes, already in hand from the bounded parse. */
+  content: Buffer;
+}
+
+/**
  * A raw parsed email message as produced by the IMAP poll.
  */
 export interface ParsedEmail {
@@ -115,6 +145,14 @@ export interface ParsedEmail {
    * the values of all `ARC-Authentication-Results` headers (top to bottom).
    */
   authenticationResults?: string[];
+  /**
+   * Parsed MIME attachments in source order, forwarded with the minimal
+   * {@link EmailAttachment} fields. Absent when the message carried none.
+   * Presence here does NOT mean the content is admissible: image eligibility
+   * and inline/related exclusion run in `email-media.ts`, and staging happens
+   * only after the sender allowlist and DMARC checks pass.
+   */
+  attachments?: EmailAttachment[];
 }
 
 /**

@@ -96,6 +96,28 @@ function enqueueItem(
   return id;
 }
 
+/** Enqueues a collaboration item with a caller-supplied payload and status. */
+function enqueueCollaborationItem(
+  repo: QueueRepository,
+  threadId: string,
+  payload: string,
+  status: 'claimed' | 'processing',
+): string {
+  const id = uuid();
+  repo.enqueue({
+    id,
+    thread_id: threadId,
+    message_id: null,
+    type: 'collaboration',
+    payload,
+    max_attempts: 1,
+  });
+
+  const db = (repo as unknown as { db: Database.Database }).db;
+  db.prepare(`UPDATE queue_items SET status = ? WHERE id = ?`).run(status, id);
+  return id;
+}
+
 // ---------------------------------------------------------------------------
 // recoverFromCrash tests
 // ---------------------------------------------------------------------------
@@ -131,6 +153,73 @@ describe('recoverFromCrash', () => {
     const id = enqueueItem(queueRepo, threadId, 'processing');
 
     recoverFromCrash(queueRepo, logger);
+
+    const row = db.prepare('SELECT status FROM queue_items WHERE id = ?').get(id) as {
+      status: string;
+    };
+    expect(row.status).toBe('pending');
+  });
+
+  it('leaves voice backend work for voice reconciliation instead of replaying it', () => {
+    const id = enqueueCollaborationItem(
+      queueRepo,
+      threadId,
+      JSON.stringify({ kind: 'voice_backend', sessionId: 'session-1', delegationId: 'delegation-1' }),
+      'claimed',
+    );
+
+    recoverFromCrash(queueRepo, logger);
+
+    const row = db.prepare('SELECT status FROM queue_items WHERE id = ?').get(id) as {
+      status: string;
+    };
+    expect(row.status).toBe('claimed');
+  });
+
+  it('leaves processing voice backend work for voice reconciliation', () => {
+    const id = enqueueCollaborationItem(
+      queueRepo,
+      threadId,
+      JSON.stringify({ kind: 'voice_backend', sessionId: 'session-2', delegationId: 'delegation-2' }),
+      'processing',
+    );
+
+    recoverFromCrash(queueRepo, logger);
+
+    const row = db.prepare('SELECT status FROM queue_items WHERE id = ?').get(id) as {
+      status: string;
+    };
+    expect(row.status).toBe('processing');
+  });
+
+  it('recovers normal collaboration work when kind is missing or null', () => {
+    const missingKindId = enqueueCollaborationItem(
+      queueRepo,
+      threadId,
+      JSON.stringify({ sessionId: 'normal-missing-kind' }),
+      'claimed',
+    );
+    const nullKindId = enqueueCollaborationItem(
+      queueRepo,
+      threadId,
+      JSON.stringify({ kind: null, sessionId: 'normal-null-kind' }),
+      'processing',
+    );
+
+    recoverFromCrash(queueRepo, logger);
+
+    for (const id of [missingKindId, nullKindId]) {
+      const row = db.prepare('SELECT status FROM queue_items WHERE id = ?').get(id) as {
+        status: string;
+      };
+      expect(row.status).toBe('pending');
+    }
+  });
+
+  it('recovers malformed collaboration payloads without throwing', () => {
+    const id = enqueueCollaborationItem(queueRepo, threadId, '{"kind":', 'processing');
+
+    expect(() => recoverFromCrash(queueRepo, logger)).not.toThrow();
 
     const row = db.prepare('SELECT status FROM queue_items WHERE id = ?').get(id) as {
       status: string;

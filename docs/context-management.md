@@ -132,7 +132,7 @@ selected_metric / contextWindowTokens >= thresholdRatio
 ## Summarizer
 
 The default summarizer is `session-summarizer`. Its manifest now uses
-`claude-sonnet-4-6`, and Talon respects the manifest's `model.maxTokens` value
+`claude-sonnet-5-5`, and Talon respects the manifest's `model.maxTokens` value
 when invoking it.
 
 ## Migration

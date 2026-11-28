@@ -57,7 +57,8 @@ docker ps --filter name=talond --format '{{.Names}} {{.Status}}'    # daemon run
   `cat .env`.
 - `config/talond.yaml` *should* only contain `${ENV_VAR}` placeholders,
   but some users hand-paste literal keys. Don't `cat` it either. When
-  the daemon is running, use `talonctl config-show` (auto-masked). Until
+  the daemon is running, use `talonctl config-show` only for local inspection;
+  direct secret fields can still be visible, so never paste its output. Until
   then, inspect specific sections you need with `grep -A` for the keys
   you're checking, and never display lines that match `apiKey:`,
   `botToken:`, `password:`, `secret`, or `token:` patterns with a
@@ -66,7 +67,7 @@ docker ps --filter name=talond --format '{{.Names}} {{.Status}}'    # daemon run
 If you need to *show* a config snippet to the user, use:
 
 ```bash
-talonctl config-show 2>/dev/null         # post-boot, masked
+talonctl config-show 2>/dev/null         # post-boot, local only; do not paste
 # OR pre-boot, redact inline:
 sed -E 's/^(  *(apiKey|botToken|.*[Tt]oken|.*[Ss]ecret|password): )(.+)$/\1***MASKED***/' config/talond.yaml
 ```
@@ -106,7 +107,7 @@ installed `talonctl` if `./install.sh` has been run):
 |---------|---------|
 | `talonctl status` | Daemon health, active runs, queue depth |
 | `talonctl doctor` | Validate config + environment |
-| `talonctl config-show` | Show current config (secrets masked) |
+| `talonctl config-show` | Show current config for local inspection; do not paste output |
 | `talonctl env-check` | List config and MCP env references (names/status only) |
 | `talonctl list-channels` | Configured channels |
 | `talonctl add-channel --name <n> --type <t>` | Add a channel |
@@ -209,7 +210,7 @@ Find:
 ```yaml
 personas:
   - name: assistant
-    model: Codex-sonnet-4-6
+    model: Codex-sonnet-5-5
     provider: Codex
 ```
 
@@ -290,6 +291,12 @@ auth:
 
 #### Set the channel's `allowedChatIds` / equivalent
 
+To use one Telegram group with a separate conversation per topic, or a
+persona per topic, finish this basic setup first and then follow the
+**Topic Workspace (forum group)** flow in the `add-telegram` skill. Its
+last step can move or copy the memory and history of your existing chat into
+a topic (`talonctl move-context`).
+
 For Telegram, find the channels block and set the chat ID the bot is
 allowed to talk to (find your ID via [@userinfobot](https://t.me/userinfobot)):
 
@@ -305,6 +312,86 @@ channels:
 ```
 
 For other channels, refer to the matching `add-*` skill.
+
+#### Optional browser voice
+
+Ask one question: **"Do you want to enable the opt-in browser voice UI?"**
+Leave it disabled unless the user explicitly opts in. Voice currently accepts
+authenticated WebRTC only and requires the selected persona's provider to be
+enabled. The provider's normal OAuth and native-tool restrictions remain in
+force. Use env references, never literal tokens, in `config/talond.yaml`:
+
+```yaml
+auth:
+  providers:
+    voice:
+      apiKey: ${TALON_VOICE_ACCESS_TOKEN}
+    openai:
+      apiKey: ${OPENAI_API_KEY}
+
+voice:
+  enabled: true
+  host: 127.0.0.1
+  port: 8787
+  publicHost: voice.example.com
+  accessTokenRef: voice
+  liveApiKeyRef: openai
+  # provider: openai-compatible  # deprecated compatibility field; persona provider is authoritative
+  persona: assistant
+  # usdPerMinute: 0.00  # placeholder only; replace with a current provider rate; omitted means unavailable
+  allowedTransportTypes: [webrtc]
+  allowedOrigins: [https://voice.example.com]
+```
+
+When `voice.enabled` is true, `browser-voice` is reserved for Talon's internal
+voice channel. Do not configure an ordinary channel with that name; startup
+rejects the conflict and leaves an existing non-voice `browser-voice` database
+row untouched. `voice.persona` selects an existing normal persona, including
+its backend model, ordinary tools, skills, and configured MCP servers. The
+separate `voice.model` is the live audio model. Approval-gated capabilities are
+unavailable because voice has no interactive approval channel, and the legacy
+`voice.allowedToolNames` / `voice.allowedMcpServerNames` fields are ignored.
+The selected persona policy is also enforced for voice descendants at child
+registration and again at the shared host-tools bridge. Completed backend
+results remain in durable history after authority expiry or hangup, but are not
+spoken after the session loses authority.
+
+The starter bundle's published `127.0.0.1:8788` port is for OAuth callbacks;
+it does not publish browser voice. The voice listener defaults to loopback. To
+serve voice outside the container, put an HTTPS reverse proxy in the same
+network namespace as `talond`, or configure `voice.host` with a reachable
+container interface or `0.0.0.0` and restrict the published network path.
+Preserve `Host` and `Origin` and send `X-Forwarded-Proto: https`. Run
+`talonctl doctor` after the config change and open
+`https://<publicHost>/voice/`. Physical-phone and paid live-provider
+verification remain separate acceptance steps.
+
+The browser login form leaves `Keep me signed in for one year` unchecked. The
+default omitted/false `rememberMe` value keeps a fixed 15-minute grant; the
+checked option sends `rememberMe: true` for a fixed 365-day grant. Grants use
+hashed session/CSRF verification data, survive ordinary restart, and are
+revoked by logout, credential/owner rotation, or configuration reload. The
+browser stores no access token or raw session bearer in Web Storage.
+
+On page load, the browser checks `GET /voice/auth/session` before an optional
+retained-call lookup. A valid cookie reaches the ready state without a
+retained call; a retained-call 404 clears only the stale pointer. Transient
+failures preserve recoverable pointers and show an English retry message.
+Restore never requests a microphone, creates a peer or paid session, connects a
+provider, enqueues work, or replays old work. Cookie retention is scoped to the
+browser cookie context; Safari home-screen contexts may need a fresh login.
+Background/lock-screen audio and physical iPhone retention are not promised.
+
+The delegation offset is a capture boundary, not an utterance cutoff. Only
+event-identified native input/output transcript deltas with valid explicit
+`start_ms` and `end_ms` can carry atomic chunk timing across that boundary;
+missing or legacy timing remains fail-closed at capture.
+
+If the operator supplies a current provider rate, `voice.usdPerMinute` makes
+the displayed voice amount a duration estimate. There is no default rate;
+final provider usage remains `estimated`, a configured rate with known usage
+and an incomplete close is `incomplete`, and an omitted rate is `unavailable`.
+Backend cost comes only from AgentRunner run accounting.
 
 ### Step 4: Boot the daemon
 
@@ -342,6 +429,38 @@ Once boot is verified, anything else uses `talonctl`:
 - **Bind persona ↔ channel** — `talonctl bind --persona <p> --channel <c>`.
 - **Adjust capabilities** — `talonctl set-capabilities --persona <p> --show`
   to see current, then `--add` or `--remove`.
+- **Enable image handling** — an Inspection needs exactly two things: `vision`
+  listed under the persona's `subagents` key in `talond.yaml` (there is no
+  `talonctl` flag for persona sub-agent assignment) plus the existing
+  `subagent.invoke` capability. The shipped `vision` manifest declares
+  `requiredCapabilities: []`, so no image capability is part of an Inspection.
+  `image.read:thread` is an **independent** grant: it exposes `image_lookup`, the
+  model-free reader for the thread's Images and saved Findings, needs no vision
+  assignment and never calls a model, and is recommended (so a persona can re-read
+  an existing Finding instead of paying for a repeat Inspection) rather than
+  required. None of it is automatic on upgrade. Uploads are ingested and described
+  regardless. Pixels go only to the `vision` sub-agent; the persona itself stays
+  text-only, so a text-only foreground model still supports images. Only
+  `anthropic`, `openai`, `google`, and `ollama` may appear in a vision chain — a
+  text-only override such as `claude-code` or `codex-sandbox` is rejected at
+  config load, not silently skipped.
+
+  The published image bundles Sharp and proves it at build time: each release
+  target (linux/amd64 and linux/arm64, both glibc) loads Sharp and normalizes a
+  tiny JPEG during its build, so image support needs no extra packages inside the
+  container. That gate is architecture-specific — a custom base image or a
+  musl/Alpine variant is not covered by it, so re-run the same check before
+  claiming image support there. Normalized JPEGs live under `dataDir`
+  (`threads/<thread_id>/attachments/images/`), so the `talond-data` volume must
+  persist across restarts or Inspections lose their files. Retention deletes only
+  the JPEG, after `images.retentionHours` (default 24h); Image records, GPS/EXIF
+  and Findings persist until separately deleted and can appear in replies.
+  Inspections work from normal messages and scheduled tasks, not from background
+  agents. The `images:` block's defaults suit most setups; `maxInputPixels`
+  (default 100 MP) guards against decompression bombs and `maxNormalizedBytes`
+  (default 3.75 MB) should be lowered if the vision provider has a smaller
+  per-image limit. Changing `images` needs a container restart — `talonctl
+  reload` keeps the running values.
 - **Schedule tasks** — `talonctl add-schedule …` (see `/manage-schedules`).
 - **Add MCP servers** — `talonctl add-mcp …`. Pre-built MCP servers for
   GitHub, Atlassian, Gmail, Slack, etc. are documented in

@@ -41,6 +41,7 @@ const GEMINI_JSON_UPGRADE_MESSAGE =
 export class GeminiCliProvider implements AgentProvider {
   readonly name: ProviderName;
   readonly skillLoaderTransport = 'stdio' as const;
+  readonly enforcesMcpAllowedTools = false;
 
   constructor(
     private readonly config: ProviderConfig,

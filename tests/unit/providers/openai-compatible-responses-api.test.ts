@@ -13,6 +13,24 @@ import {
 } from '../../../src/providers/openai-compatible/agent-cli/responses-api.js';
 
 describe('openai-compatible Responses API runner', () => {
+  it('retains HTTP status as structured evidence on request failure', async () => {
+    await expect(
+      runResponsesLoop({
+        prompt: 'hello',
+        systemPrompt: 'system',
+        model: 'test',
+        baseUrl: 'https://example.invalid/v1',
+        tools: {},
+        maxSteps: 1,
+        streamEvents: true,
+        emit: () => {},
+        fetchImpl: vi.fn(
+          async () => new Response('private response', { status: 429 }),
+        ) as unknown as typeof fetch,
+      }),
+    ).rejects.toMatchObject({ statusCode: 429 });
+  });
+
   it('uses the executable tool map key as the Responses tool name', () => {
     const tool = createTool({
       id: 'internal_id',
@@ -502,6 +520,76 @@ describe('openai-compatible Responses API runner', () => {
       input: Array<{ output: string }>;
     };
     expect(secondBody.input[0]?.output).toContain('hello from workspace');
+  });
+
+  it('keeps media file pixels out of workspace tool output', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'talon-responses-workspace-'));
+    const workspace = new Workspace({
+      filesystem: new LocalFilesystem({ basePath: dir, contained: false }),
+    });
+    await workspace.init();
+    writeFileSync(
+      join(dir, 'pixel.png'),
+      Buffer.from(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+        'base64',
+      ),
+    );
+    const fetchImpl = vi.fn(async (_url: string | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      if (!body.previous_response_id) {
+        return new Response(
+          JSON.stringify({
+            id: 'resp-tool',
+            output: [
+              {
+                type: 'function_call',
+                call_id: 'call-read',
+                name: 'mastra_workspace_read_file',
+                arguments: JSON.stringify({ path: 'pixel.png', showLineNumbers: false }),
+              },
+            ],
+          }),
+          { status: 200 },
+        );
+      }
+
+      return new Response(
+        JSON.stringify({
+          id: 'resp-final',
+          output_text: 'done',
+        }),
+        { status: 200 },
+      );
+    });
+
+    try {
+      await runResponsesLoop({
+        prompt: 'Read pixel.png',
+        systemPrompt: 'You are a coding agent.',
+        model: 'qwen3.5-9b-optiq-4bit',
+        baseUrl: 'http://127.0.0.1:8000/v1',
+        tools: await createWorkspaceTools(workspace),
+        maxSteps: 5,
+        streamEvents: false,
+        executionContext: {
+          workspace,
+          requestContext: new RequestContext(),
+        },
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        emit: vi.fn(),
+      });
+    } finally {
+      await workspace.destroy();
+      rmSync(dir, { recursive: true, force: true });
+    }
+
+    const secondBody = JSON.parse(String(fetchImpl.mock.calls[1]?.[1]?.body)) as {
+      input: Array<{ output: string }>;
+    };
+    const output = secondBody.input[0]?.output ?? '';
+    expect(output).toContain('content omitted');
+    expect(output).not.toContain('iVBORw0KGgo');
   });
 
   it('resumes from an existing response id without resending system instructions', async () => {
