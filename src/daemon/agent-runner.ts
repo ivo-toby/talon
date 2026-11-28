@@ -229,7 +229,7 @@ export class AgentRunner {
     }
     this.ctx.logger.info(
       { runId, threadId: scheduleThread.id, originThreadId: resolved.value.thread.id },
-      'agent-runner: schedule run serves its origin conversation for memory tools',
+      'agent-runner: schedule run can reach its origin conversation (memory scope "conversation")',
     );
     return resolved.value.thread.id;
   }
@@ -668,8 +668,9 @@ export class AgentRunner {
     let a2aSuppressRetry = false;
     const bridgeSecret = generateBridgeSecret();
     // A schedule run on a dedicated schedule thread serves the chat it was
-    // created in; thread-scoped memory tools reach that chat when it is routed
-    // to the same persona. Never for A2A or voice runs.
+    // created in. Memory tools reach that chat only on an explicit
+    // `scope: 'conversation'` and only when it is routed to the same persona;
+    // by default they stay on the schedule thread. Never for A2A or voice runs.
     const scheduleOriginThreadId =
       isScheduleTask && threadResult.isOk() && threadResult.value
         ? this.resolveScheduleOriginThreadId(threadResult.value, personaId, runId)
@@ -680,6 +681,7 @@ export class AgentRunner {
       personaId,
       bridgeSecret,
       ...(scheduleOriginThreadId !== undefined ? { originThreadId: scheduleOriginThreadId } : {}),
+      ...(isScheduleTask ? { scheduleRun: true } : {}),
       ...(voiceToolAccess
         ? {
             deniedToolNames: voiceToolAccess.deniedMcpTools.map(

@@ -643,6 +643,7 @@ describe('HostToolsBridge', () => {
         personaId: 'persona-001',
         bridgeSecret: validBridgeSecret,
         originThreadId: 'chat-thread-001',
+        scheduleRun: true,
       });
       const dispatch = vi.fn().mockResolvedValue({
         requestId: 'req-origin',
@@ -669,7 +670,11 @@ describe('HostToolsBridge', () => {
       expect(dispatch).toHaveBeenCalledWith(
         'memory.access',
         expect.anything(),
-        expect.objectContaining({ threadId: 'thread-001', originThreadId: 'chat-thread-001' }),
+        expect.objectContaining({
+          threadId: 'thread-001',
+          originThreadId: 'chat-thread-001',
+          scheduleRun: true,
+        }),
       );
     });
 
@@ -689,6 +694,28 @@ describe('HostToolsBridge', () => {
           personaId: 'persona-001',
           requestId: 'req-forged-origin',
           originThreadId: 'someone-elses-thread',
+        },
+      });
+
+      expect(response.error).toBe('Origin thread context is server-owned');
+    });
+
+    it('rejects a client-supplied scheduleRun flag', async () => {
+      bridge = new HostToolsBridge(mockCtx);
+      registerActiveRunAuth();
+      bridge.start();
+      await waitForSocket(bridge.path);
+
+      const response = await sendRequest(bridge.path, {
+        id: randomUUID(),
+        tool: 'memory_access',
+        args: { operation: 'list' },
+        context: {
+          runId: 'run-001',
+          threadId: 'thread-001',
+          personaId: 'persona-001',
+          requestId: 'req-forged-schedule',
+          scheduleRun: false,
         },
       });
 

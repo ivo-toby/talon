@@ -516,6 +516,12 @@ const TOOLS = [
           type: 'string' as const,
           description: 'Optional namespace/layer to scope the operation',
         },
+        scope: {
+          type: 'string' as const,
+          enum: ['thread', 'conversation'],
+          description:
+            'Whose memory: "thread" (default) is this run\'s own thread. In a scheduled run, "conversation" is the chat the schedule was created in (its notes and observations); the schedule\'s own state stays under "thread".',
+        },
       },
       required: ['operation'],
     },
@@ -680,6 +686,12 @@ const TOOLS = [
         input: {
           type: 'object' as const,
           description: 'Task-specific input for the sub-agent',
+        },
+        scope: {
+          type: 'string' as const,
+          enum: ['thread', 'conversation'],
+          description:
+            'For memory sub-agents (memory-groomer, memory-retriever): "thread" (default) works on this run\'s memory; in a scheduled run, "conversation" works on the chat the schedule was created in.',
         },
       },
       required: ['name'],

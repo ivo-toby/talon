@@ -3179,11 +3179,15 @@ describe('AgentRunner', () => {
       await runner.run(makeQueueItem({ type: 'schedule' }));
 
       expect(ctx.hostToolsBridge.registerRunAuthentication).toHaveBeenCalledWith(
-        expect.objectContaining({ threadId: 'thread-001', originThreadId: 'chat-thread-001' }),
+        expect.objectContaining({
+          threadId: 'thread-001',
+          originThreadId: 'chat-thread-001',
+          scheduleRun: true,
+        }),
       );
       expect(ctx.logger.info).toHaveBeenCalledWith(
         expect.objectContaining({ originThreadId: 'chat-thread-001' }),
-        'agent-runner: schedule run serves its origin conversation for memory tools',
+        'agent-runner: schedule run can reach its origin conversation (memory scope "conversation")',
       );
     });
 
@@ -3208,6 +3212,9 @@ describe('AgentRunner', () => {
 
       expect(ctx.hostToolsBridge.registerRunAuthentication).toHaveBeenCalledWith(
         expect.not.objectContaining({ originThreadId: expect.anything() }),
+      );
+      expect(ctx.hostToolsBridge.registerRunAuthentication).toHaveBeenCalledWith(
+        expect.not.objectContaining({ scheduleRun: expect.anything() }),
       );
     });
   });
