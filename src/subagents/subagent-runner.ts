@@ -43,6 +43,8 @@ import {
  */
 export interface SubAgentInvokeContext {
   threadId: string;
+  /** Server-resolved origin conversation of a schedule run; see SubAgentContext. */
+  memoryThreadId?: string;
   personaId: string;
   /**
    * Trusted run identity from the host-tool `ToolExecutionContext`.
@@ -196,6 +198,7 @@ export class SubAgentRunner {
       logger: modelChainLogger,
       createContext: ({ model, entry, abortSignal, providerOptions }) => ({
         threadId: ctx.threadId,
+        memoryThreadId: ctx.memoryThreadId ?? ctx.threadId,
         personaId: ctx.personaId,
         runId: ctx.runId,
         systemPrompt,

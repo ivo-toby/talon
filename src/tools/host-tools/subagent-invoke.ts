@@ -99,6 +99,7 @@ export class SubAgentInvokeHandler {
     // execution context only — never from model-authored tool arguments.
     const result = await this.deps.runner.execute(args.name, args.input ?? {}, {
       threadId: context.threadId,
+      ...(context.originThreadId !== undefined ? { memoryThreadId: context.originThreadId } : {}),
       personaId: context.personaId,
       runId: context.runId,
       personaSubagents: loadedPersona.config.subagents ?? [],

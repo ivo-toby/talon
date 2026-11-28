@@ -57,5 +57,6 @@ Optionally filter: `--persona <name>`
 
 - Schedules fire in system local time (CET on the VM).
 - Schedule output is silent -- the agent only sends messages if it explicitly uses channel.send.
+- A schedule created from a chat works on that chat's memory (memory.access, db.query, memory-groomer, memory-retriever), as long as the chat is bound to the same persona. Maintenance schedules such as memory grooming therefore act on the conversation. Schedules created with `talonctl add-schedule` have no origin chat and stay on their own schedule thread.
 - The daemon must be running for schedules to fire (they live in the DB, not the config).
 - After creating schedules, remind the user: schedules require a running daemon to execute.
