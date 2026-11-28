@@ -8,12 +8,27 @@
 
 import { describe, it, expect } from 'vitest';
 import { v4 as uuidv4 } from 'uuid';
+import pino from 'pino';
 import { ScheduleRepository } from '../../../src/core/database/repositories/schedule-repository.js';
 import { ThreadRepository } from '../../../src/core/database/repositories/thread-repository.js';
 import { ChannelRepository } from '../../../src/core/database/repositories/channel-repository.js';
 import { PersonaRepository } from '../../../src/core/database/repositories/persona-repository.js';
 import { migrateLegacySchedules } from '../../../src/scheduler/legacy-schedule-migration.js';
 import { createTestDb, createTestLogger, seedPersona } from './helpers.js';
+
+/** A pino logger that keeps every emitted record for assertions. */
+function createCapturingLogger(): { logger: pino.Logger; records: Array<Record<string, unknown>> } {
+  const records: Array<Record<string, unknown>> = [];
+  const logger = pino(
+    { level: 'debug' },
+    {
+      write(line: string): void {
+        records.push(JSON.parse(line) as Record<string, unknown>);
+      },
+    },
+  );
+  return { logger, records };
+}
 
 interface Seeded {
   channelId: string;
@@ -24,7 +39,10 @@ interface Seeded {
   channelName: string;
 }
 
-function seedChannelAndLiveThread(db: ReturnType<typeof createTestDb>, liveExternalId = '74575531'): Seeded {
+function seedChannelAndLiveThread(
+  db: ReturnType<typeof createTestDb>,
+  liveExternalId = '74575531',
+): Seeded {
   const channels = new ChannelRepository(db);
   const threads = new ThreadRepository(db);
   const personas = new PersonaRepository(db);
@@ -264,7 +282,10 @@ describe('migrateLegacySchedules', () => {
     });
 
     expect(result.metadataRehydrated).toBe(1);
-    const meta = JSON.parse(threads.findById(oldStyleId)._unsafeUnwrap()!.metadata) as Record<string, unknown>;
+    const meta = JSON.parse(threads.findById(oldStyleId)._unsafeUnwrap()!.metadata) as Record<
+      string,
+      unknown
+    >;
     expect(meta.originExternalId).toBe(slackLikeOrigin);
   });
 
@@ -304,74 +325,168 @@ describe('migrateLegacySchedules', () => {
     expect(result.metadataRehydrated).toBe(0);
   });
 
-  it('refuses already-corrupted dedicated threads whose metadata.originExternalId is itself synthetic (issue #205)', () => {
-    // Production-corrupted shape produced by an earlier version of this
-    // migration: kind=schedule marker IS present but originExternalId
-    // points to a synthetic `schedule:<persona>:<channel>` id rather
-    // than the real chat recipient. Pre-fix the migration treated this
-    // as alreadyMigrated and never logged. We now refuse and skip.
+  it('reports already-broken threads whose originExternalId is itself synthetic, without touching them or their memory (issue #205)', () => {
+    // Production shape produced by an earlier version of this migration,
+    // which rebound a CLI schedule thread as if it were a live chat: the
+    // marker IS present but originExternalId is the synthetic
+    // `schedule:<persona>:<channel>` id rather than a chat.
     const db = createTestDb();
     const seeded = seedChannelAndLiveThread(db);
     const threads = new ThreadRepository(db);
 
-    const corruptedId = uuidv4();
-    threads.insert({
-      id: corruptedId,
-      channel_id: seeded.channelId,
-      external_id: `schedule:${seeded.personaName}:${seeded.channelName}:schedule:${seeded.personaName}:${seeded.channelName}`,
-      metadata: JSON.stringify({
-        kind: 'schedule',
-        originExternalId: `schedule:${seeded.personaName}:${seeded.channelName}`,
-        personaName: seeded.personaName,
-        channelName: seeded.channelName,
-        migratedFrom: 'legacy-live-thread',
-      }),
+    const brokenExternalId = `schedule:${seeded.personaName}:${seeded.channelName}:schedule:${seeded.personaName}:${seeded.channelName}`;
+    const brokenMetadata = JSON.stringify({
+      kind: 'schedule',
+      originExternalId: `schedule:${seeded.personaName}:${seeded.channelName}`,
+      personaName: seeded.personaName,
+      channelName: seeded.channelName,
+      migratedFrom: 'legacy-live-thread',
     });
-    const scheduleId = seedSchedule(db, seeded.personaId, corruptedId);
+    const brokenId = uuidv4();
+    threads.insert({
+      id: brokenId,
+      channel_id: seeded.channelId,
+      external_id: brokenExternalId,
+      metadata: brokenMetadata,
+    });
+    const scheduleA = seedSchedule(db, seeded.personaId, brokenId);
+    const scheduleB = seedSchedule(db, seeded.personaId, brokenId);
 
+    const now = Date.now();
+    db.prepare(
+      `INSERT INTO memory_items (id, thread_id, type, content, metadata, created_at, updated_at)
+       VALUES (?, ?, 'note', 'heartbeat state', '{}', ?, ?)`,
+    ).run(uuidv4(), brokenId, now, now);
+
+    const { logger, records } = createCapturingLogger();
     const scheduleRepo = new ScheduleRepository(db);
     const result = migrateLegacySchedules({
       scheduleRepo,
       threadRepo: threads,
       channelRepo: new ChannelRepository(db),
       personaRepo: new PersonaRepository(db),
-      logger: createTestLogger(),
+      logger,
     });
 
-    expect(result.skipped).toBe(1);
+    expect(result.brokenOrigin.map((b) => b.scheduleId).sort()).toEqual(
+      [scheduleA, scheduleB].sort(),
+    );
+    expect(result.brokenOrigin[0]!.originExternalId).toBe(
+      `schedule:${seeded.personaName}:${seeded.channelName}`,
+    );
     expect(result.alreadyMigrated).toBe(0);
     expect(result.rebound).toBe(0);
     expect(result.metadataRehydrated).toBe(0);
+    expect(result.skipped).toBe(0);
 
-    // Schedule remains on the corrupted thread (no destructive automatic
-    // recovery) — operator removes/recreates manually.
-    const schedRow = scheduleRepo.findById(scheduleId);
-    expect(schedRow._unsafeUnwrap()!.thread_id).toBe(corruptedId);
+    // One warning names every affected schedule and the remedy.
+    const warnings = records.filter((r) => r.level === 40);
+    expect(warnings).toHaveLength(1);
+    expect((warnings[0]!.scheduleIds as string[]).sort()).toEqual([scheduleA, scheduleB].sort());
+    expect(warnings[0]!.msg).toContain('talonctl set-schedule-origin <id> --origin <chatId>');
+
+    // Nothing is rewritten: schedules, thread and memory stay as they were.
+    expect(scheduleRepo.findById(scheduleA)._unsafeUnwrap()!.thread_id).toBe(brokenId);
+    expect(scheduleRepo.findById(scheduleB)._unsafeUnwrap()!.thread_id).toBe(brokenId);
+    const threadRow = threads.findById(brokenId)._unsafeUnwrap()!;
+    expect(threadRow.external_id).toBe(brokenExternalId);
+    expect(threadRow.metadata).toBe(brokenMetadata);
+    const memoryCount = db
+      .prepare('SELECT COUNT(*) AS n FROM memory_items WHERE thread_id = ?')
+      .get(brokenId) as { n: number };
+    expect(memoryCount.n).toBe(1);
   });
 
-  it('refuses to rebind when the thread external_id is itself synthetic (3-part schedule prefix) and skips the schedule (issue #205)', () => {
-    // Pre-fix bug: a thread whose external_id matched the older 3-part
-    // synthetic shape `schedule:<persona>:<channel>` (no origin appended,
-    // no kind=schedule marker) flowed past parseSyntheticOrigin (length
-    // < 4 → null) into Case C, which then concatenated it as if it were a
-    // real chat id, producing a doubly-nested external_id and a synthetic
-    // originExternalId. We now log + skip such cases, leaving the schedule
-    // on its legacy thread for manual remediation.
+  it('reports a doubly-nested thread without a marker instead of rehydrating a synthetic origin', () => {
     const db = createTestDb();
     const seeded = seedChannelAndLiveThread(db);
     const threads = new ThreadRepository(db);
 
-    // 3-part synthetic external_id with no kind=schedule marker — exactly
-    // the shape the buggy migration silently corrupted into doubly-nested
-    // dedicated threads on production databases.
-    const syntheticThreeId = uuidv4();
+    const nestedId = uuidv4();
     threads.insert({
-      id: syntheticThreeId,
+      id: nestedId,
+      channel_id: seeded.channelId,
+      external_id: `schedule:${seeded.personaName}:${seeded.channelName}:schedule:${seeded.personaName}:${seeded.channelName}`,
+      metadata: '{}',
+    });
+    const scheduleId = seedSchedule(db, seeded.personaId, nestedId);
+
+    const result = migrateLegacySchedules({
+      scheduleRepo: new ScheduleRepository(db),
+      threadRepo: threads,
+      channelRepo: new ChannelRepository(db),
+      personaRepo: new PersonaRepository(db),
+      logger: createTestLogger(),
+    });
+
+    expect(result.brokenOrigin.map((b) => b.scheduleId)).toEqual([scheduleId]);
+    expect(result.metadataRehydrated).toBe(0);
+    expect(threads.findById(nestedId)._unsafeUnwrap()!.metadata).toBe('{}');
+  });
+
+  it('leaves a CLI schedule thread without origin alone instead of treating it as a live chat (issue #205)', () => {
+    // `talonctl add-schedule` without `--origin` creates
+    // `schedule:<persona>:<channel>` with metadata `{}`. That is a valid
+    // schedule without an origin chat. An earlier version of this
+    // migration rebound it as a live chat and produced a doubly-nested
+    // thread whose originExternalId was synthetic.
+    const db = createTestDb();
+    const seeded = seedChannelAndLiveThread(db);
+    const threads = new ThreadRepository(db);
+
+    const cliThreadId = uuidv4();
+    threads.insert({
+      id: cliThreadId,
       channel_id: seeded.channelId,
       external_id: `schedule:${seeded.personaName}:${seeded.channelName}`,
       metadata: '{}',
     });
-    const scheduleId = seedSchedule(db, seeded.personaId, syntheticThreeId);
+    const scheduleId = seedSchedule(db, seeded.personaId, cliThreadId);
+
+    const { logger, records } = createCapturingLogger();
+    const scheduleRepo = new ScheduleRepository(db);
+    const result = migrateLegacySchedules({
+      scheduleRepo,
+      threadRepo: threads,
+      channelRepo: new ChannelRepository(db),
+      personaRepo: new PersonaRepository(db),
+      logger,
+    });
+
+    expect(result.noOrigin).toBe(1);
+    expect(result.rebound).toBe(0);
+    expect(result.metadataRehydrated).toBe(0);
+    expect(result.brokenOrigin).toEqual([]);
+    expect(result.skipped).toBe(0);
+    // A valid shape: nothing at warn level or above.
+    expect(records.filter((r) => (r.level as number) >= 40)).toEqual([]);
+
+    // Schedule stays on the CLI thread, whose metadata is unchanged.
+    expect(scheduleRepo.findById(scheduleId)._unsafeUnwrap()!.thread_id).toBe(cliThreadId);
+    expect(threads.findById(cliThreadId)._unsafeUnwrap()!.metadata).toBe('{}');
+
+    // No doubly-nested replacement thread was created.
+    const candidate = threads.findByExternalId(
+      seeded.channelId,
+      `schedule:${seeded.personaName}:${seeded.channelName}:schedule:${seeded.personaName}:${seeded.channelName}`,
+    );
+    expect(candidate._unsafeUnwrap()).toBeNull();
+  });
+
+  it('still rebinds a live chat thread next to a CLI schedule thread on the same channel', () => {
+    const db = createTestDb();
+    const seeded = seedChannelAndLiveThread(db);
+    const threads = new ThreadRepository(db);
+
+    const cliThreadId = uuidv4();
+    threads.insert({
+      id: cliThreadId,
+      channel_id: seeded.channelId,
+      external_id: `schedule:${seeded.personaName}:${seeded.channelName}`,
+      metadata: '{}',
+    });
+    const cliSchedule = seedSchedule(db, seeded.personaId, cliThreadId);
+    const liveSchedule = seedSchedule(db, seeded.personaId, seeded.liveThreadId);
 
     const scheduleRepo = new ScheduleRepository(db);
     const result = migrateLegacySchedules({
@@ -382,24 +497,15 @@ describe('migrateLegacySchedules', () => {
       logger: createTestLogger(),
     });
 
-    expect(result.skipped).toBe(1);
-    expect(result.rebound).toBe(0);
-    expect(result.metadataRehydrated).toBe(0);
-
-    // Schedule is still bound to the legacy thread — we did not create a
-    // doubly-nested replacement.
-    const schedRow = scheduleRepo.findById(scheduleId);
-    expect(schedRow._unsafeUnwrap()!.thread_id).toBe(syntheticThreeId);
-
-    // No new thread was created for this (persona, channel, synthetic
-    // origin) tuple. (The only schedule-prefixed thread should remain the
-    // one we seeded.)
-    const candidate = threads.findByExternalId(
-      seeded.channelId,
-      `schedule:${seeded.personaName}:${seeded.channelName}:schedule:${seeded.personaName}:${seeded.channelName}`,
-    );
-    expect(candidate.isOk()).toBe(true);
-    expect(candidate._unsafeUnwrap()).toBeNull();
+    expect(result.rebound).toBe(1);
+    expect(result.noOrigin).toBe(1);
+    expect(scheduleRepo.findById(cliSchedule)._unsafeUnwrap()!.thread_id).toBe(cliThreadId);
+    const liveThreadId = scheduleRepo.findById(liveSchedule)._unsafeUnwrap()!.thread_id!;
+    const meta = JSON.parse(threads.findById(liveThreadId)._unsafeUnwrap()!.metadata) as Record<
+      string,
+      unknown
+    >;
+    expect(meta.originExternalId).toBe(seeded.liveExternalId);
   });
 
   it('skips schedules with a null thread_id', () => {

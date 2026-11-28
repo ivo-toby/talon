@@ -59,5 +59,6 @@ Optionally filter: `--persona <name>`
 - Schedules fire in system local time (CET on the VM).
 - Schedule output is silent -- the agent only sends messages if it explicitly uses channel.send.
 - A schedule keeps its own state on its schedule thread. To work on the chat it serves (grooming its notes, a weekly review), its prompt must pass `scope: "conversation"` to `memory_access`, or to `subagent_invoke` for `memory-groomer`/`memory-retriever`. That needs an origin chat bound to the same persona: schedules created from the chat have one; for `talonctl add-schedule` pass `--origin <chatId>` (ask the user for it — `/chatid` in the chat shows it), or fix an existing schedule with `npx talonctl set-schedule-origin <id> --origin <chatId> --config talond.yaml`.
+- If the daemon log has a `schedule-migration` warning about schedules whose origin is a schedule thread, those schedules deliver nowhere. Ask the user which chat each one serves and run `npx talonctl set-schedule-origin <id> --origin <chatId> --config talond.yaml` for each listed ID. Do not delete the schedule or its thread's memory.
 - The daemon must be running for schedules to fire (they live in the DB, not the config).
 - After creating schedules, remind the user: schedules require a running daemon to execute.
