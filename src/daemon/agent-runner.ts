@@ -37,6 +37,7 @@ import {
 } from '../skills/skill-runtime-text.js';
 import { getProviderAffinityResetAt } from '../threads/thread-metadata.js';
 import { resolveThreadRecipient } from './schedule-thread-utils.js';
+import { resolveScheduleOriginThread } from './schedule-origin.js';
 import { buildTimeContext } from '../core/time-context.js';
 import { formatToolCall } from './tool-name-formatter.js';
 import { RunDelivery } from './run-delivery.js';
@@ -140,6 +141,54 @@ export class AgentRunner {
     return this.imageContextSource === undefined
       ? undefined
       : { source: this.imageContextSource, imageLookupExposed };
+  }
+
+  /**
+   * The origin conversation thread of a schedule thread, or undefined when
+   * the thread has none, it no longer exists, or it is routed to another
+   * persona. Lookup failures are logged and leave the run on its own thread.
+   */
+  private resolveScheduleOriginThreadId(
+    scheduleThread: { id: string; channel_id: string; metadata: string | null },
+    personaId: string,
+    runId: string,
+  ): string | undefined {
+    let resolved: ReturnType<typeof resolveScheduleOriginThread>;
+    try {
+      resolved = resolveScheduleOriginThread(
+        { threadRepository: this.ctx.repos.thread, bindingRepository: this.ctx.repos.binding },
+        scheduleThread,
+        personaId,
+      );
+    } catch (cause) {
+      // The origin only widens memory-tool scope; it must never fail the run.
+      this.ctx.logger.warn(
+        { runId, threadId: scheduleThread.id, err: cause },
+        'agent-runner: schedule origin lookup failed; memory tools stay on the schedule thread',
+      );
+      return undefined;
+    }
+    if (resolved.isErr()) {
+      this.ctx.logger.warn(
+        { runId, threadId: scheduleThread.id, err: resolved.error },
+        'agent-runner: schedule origin lookup failed; memory tools stay on the schedule thread',
+      );
+      return undefined;
+    }
+    if (resolved.value.thread === null) {
+      if (resolved.value.reason !== 'not_schedule_thread') {
+        this.ctx.logger.info(
+          { runId, threadId: scheduleThread.id, reason: resolved.value.reason },
+          'agent-runner: schedule has no usable origin conversation; memory tools stay on the schedule thread',
+        );
+      }
+      return undefined;
+    }
+    this.ctx.logger.info(
+      { runId, threadId: scheduleThread.id, originThreadId: resolved.value.thread.id },
+      'agent-runner: schedule run serves its origin conversation for memory tools',
+    );
+    return resolved.value.thread.id;
   }
 
   /**
@@ -559,11 +608,19 @@ export class AgentRunner {
     // the queue item must complete rather than retry.
     let a2aSuppressRetry = false;
     const bridgeSecret = generateBridgeSecret();
+    // A schedule run on a dedicated schedule thread serves the chat it was
+    // created in; thread-scoped memory tools reach that chat when it is routed
+    // to the same persona. Never for A2A or voice runs.
+    const scheduleOriginThreadId =
+      isScheduleTask && threadResult.isOk() && threadResult.value
+        ? this.resolveScheduleOriginThreadId(threadResult.value, personaId, runId)
+        : undefined;
     this.ctx.hostToolsBridge.registerRunAuthentication?.({
       runId,
       threadId: item.threadId,
       personaId,
       bridgeSecret,
+      ...(scheduleOriginThreadId !== undefined ? { originThreadId: scheduleOriginThreadId } : {}),
       ...(voiceToolAccess
         ? {
             deniedToolNames: voiceToolAccess.deniedMcpTools.map(

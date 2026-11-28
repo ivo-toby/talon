@@ -635,6 +635,66 @@ describe('HostToolsBridge', () => {
       expect(response.error).toBe('Voice observation context is server-owned');
     });
 
+    it('passes a registered schedule origin to tools as originThreadId', async () => {
+      bridge = new HostToolsBridge(mockCtx);
+      bridge.registerRunAuthentication({
+        runId: 'run-001',
+        threadId: 'thread-001',
+        personaId: 'persona-001',
+        bridgeSecret: validBridgeSecret,
+        originThreadId: 'chat-thread-001',
+      });
+      const dispatch = vi.fn().mockResolvedValue({
+        requestId: 'req-origin',
+        tool: 'memory.access',
+        status: 'success',
+        result: [],
+      });
+      (bridge as any).dispatch = dispatch;
+      bridge.start();
+      await waitForSocket(bridge.path);
+
+      await sendRequest(bridge.path, {
+        id: randomUUID(),
+        tool: 'memory_access',
+        args: { operation: 'list' },
+        context: {
+          runId: 'run-001',
+          threadId: 'thread-001',
+          personaId: 'persona-001',
+          requestId: 'req-origin',
+        },
+      });
+
+      expect(dispatch).toHaveBeenCalledWith(
+        'memory.access',
+        expect.anything(),
+        expect.objectContaining({ threadId: 'thread-001', originThreadId: 'chat-thread-001' }),
+      );
+    });
+
+    it('rejects a client-supplied originThreadId', async () => {
+      bridge = new HostToolsBridge(mockCtx);
+      registerActiveRunAuth();
+      bridge.start();
+      await waitForSocket(bridge.path);
+
+      const response = await sendRequest(bridge.path, {
+        id: randomUUID(),
+        tool: 'memory_access',
+        args: { operation: 'list' },
+        context: {
+          runId: 'run-001',
+          threadId: 'thread-001',
+          personaId: 'persona-001',
+          requestId: 'req-forged-origin',
+          originThreadId: 'someone-elses-thread',
+        },
+      });
+
+      expect(response.error).toBe('Origin thread context is server-owned');
+    });
+
     it('redacts voice tool telemetry while preserving the real tool result', async () => {
       let observedInput: unknown;
       const update = vi.fn();

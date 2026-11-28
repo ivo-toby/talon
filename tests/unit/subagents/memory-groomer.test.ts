@@ -64,6 +64,14 @@ describe('memory-groomer', () => {
     expect(generateObjectMock).not.toHaveBeenCalled();
   });
 
+  it('grooms the memoryThreadId thread when one is given', async () => {
+    const ctx = { ...makeCtx(), memoryThreadId: 'chat-thread' };
+
+    await run(ctx, {});
+
+    expect(ctx.services.memory.findByThread).toHaveBeenCalledWith('chat-thread');
+  });
+
   it('returns error when memory read fails', async () => {
     const ctx = makeCtx({
       findByThread: vi.fn().mockReturnValue(err(new DbError('DB connection lost'))),

@@ -63,13 +63,16 @@ export async function run(
   input: SubAgentInput,
 ): Promise<Result<SubAgentResult, SubAgentError>> {
   const { memory, logger } = ctx.services;
+  // The conversation whose memory this run works on: the run's own thread,
+  // or the origin chat of a schedule run (SubAgentContext.memoryThreadId).
+  const memoryThreadId = ctx.memoryThreadId ?? ctx.threadId;
 
   const periodMs = typeof input.periodMs === 'number' && input.periodMs > 0
     ? input.periodMs
     : 0;
 
   // 1. Read all memory items for this thread.
-  const findResult = memory.findByThread(ctx.threadId);
+  const findResult = memory.findByThread(memoryThreadId);
   if (findResult.isErr()) {
     return err(new SubAgentError(`Failed to read memory items: ${findResult.error.message}`));
   }
@@ -147,7 +150,7 @@ export async function run(
       switch (action.type) {
         case 'prune': {
           for (const id of actionIds) {
-            const deleteResult = memory.delete(ctx.threadId, id);
+            const deleteResult = memory.delete(memoryThreadId, id);
             if (deleteResult.isErr()) {
               logger.warn({ id, error: deleteResult.error.message }, 'Failed to delete memory item during prune');
             } else {
@@ -177,7 +180,7 @@ export async function run(
           // Insert merged entry FIRST to prevent data loss if insert fails.
           const newItem: InsertMemoryItemInput = {
             id: randomUUID(),
-            thread_id: ctx.threadId,
+            thread_id: memoryThreadId,
             type: sourceItem.type,
             content: action.mergedContent,
             embedding_ref: null,
@@ -191,7 +194,7 @@ export async function run(
 
           // Delete source entries only after successful insert.
           for (const id of actionIds) {
-            const deleteResult = memory.delete(ctx.threadId, id);
+            const deleteResult = memory.delete(memoryThreadId, id);
             if (deleteResult.isErr()) {
               logger.warn({ id, error: deleteResult.error.message }, 'Failed to delete memory item during consolidation');
             }

@@ -98,6 +98,38 @@ describe('SubAgentInvokeHandler', () => {
     expect(execute.mock.calls[0][1]).toEqual({ runId: 'model-authored-run' });
   });
 
+  it('hands a schedule run\'s origin conversation to the sub-agent as memoryThreadId only', async () => {
+    const execute = vi.fn().mockResolvedValue(ok({ summary: 'Done' }));
+    const handler = new SubAgentInvokeHandler({
+      runner: { execute } as any,
+      personaLoader: {
+        getByName: vi.fn().mockReturnValue(
+          ok({
+            config: { subagents: ['memory-groomer'] },
+            resolvedCapabilities: { allow: ['subagent.invoke'], requireApproval: [] },
+          }),
+        ),
+      } as any,
+      personaRepository: { findById: vi.fn().mockReturnValue(ok({ name: 'bot' })) } as any,
+      logger: makeLogger(),
+    });
+
+    await handler.execute(
+      { name: 'memory-groomer', input: {} },
+      { runId: 'run-1', threadId: 'schedule-thread', personaId: 'p1', originThreadId: 'chat-thread' },
+    );
+    await handler.execute(
+      { name: 'memory-groomer', input: {} },
+      { runId: 'run-2', threadId: 'chat-thread', personaId: 'p1' },
+    );
+
+    // Run provenance stays on the run's own thread.
+    expect(execute.mock.calls[0][2]).toEqual(
+      expect.objectContaining({ threadId: 'schedule-thread', memoryThreadId: 'chat-thread' }),
+    );
+    expect(execute.mock.calls[1][2]).not.toHaveProperty('memoryThreadId');
+  });
+
   it('returns error when runner rejects', async () => {
     const handler = new SubAgentInvokeHandler({
       runner: {

@@ -82,8 +82,24 @@ export class MemoryAccessHandler {
     const requestId = context.requestId ?? 'unknown';
     const { operation, key, namespace } = args;
 
+    // A schedule run on a dedicated schedule thread works on the memory of the
+    // conversation it serves (server-resolved, same persona only); every other
+    // run works on its own thread. All handlers below read `threadId`.
+    const memoryContext: ToolExecutionContext =
+      context.originThreadId !== undefined
+        ? { ...context, threadId: context.originThreadId }
+        : context;
+
     this.deps.logger.info(
-      { requestId, runId: context.runId, threadId: context.threadId, operation, key, namespace },
+      {
+        requestId,
+        runId: context.runId,
+        threadId: memoryContext.threadId,
+        ...(context.originThreadId !== undefined ? { runThreadId: context.threadId } : {}),
+        operation,
+        key,
+        namespace,
+      },
       'memory.access: executing',
     );
 
@@ -98,13 +114,13 @@ export class MemoryAccessHandler {
 
     switch (operation) {
       case 'read':
-        return this.handleRead(args, context, requestId);
+        return this.handleRead(args, memoryContext, requestId);
       case 'write':
-        return this.handleWrite(args, context, requestId);
+        return this.handleWrite(args, memoryContext, requestId);
       case 'delete':
-        return this.handleDelete(args, context, requestId);
+        return this.handleDelete(args, memoryContext, requestId);
       case 'list':
-        return this.handleList(args, context, requestId);
+        return this.handleList(args, memoryContext, requestId);
       default: {
         // TypeScript exhaustiveness — should never reach here
         const error = new ToolError(`memory.access: unknown operation "${operation as string}"`);

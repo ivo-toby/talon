@@ -219,8 +219,15 @@ export class DbQueryHandler {
       // Use unqualified column names to support table aliases (e.g. "FROM memory_items m").
       // Safe because the allowed tables don't share ambiguous column names.
       if (scoping.scopeColumn && context.threadId) {
-        scopingClauses.push(`${scoping.scopeColumn} = ?`);
-        scopingParams.push(context.threadId);
+        // A schedule run also reads the conversation it serves
+        // (server-resolved origin, same persona only).
+        if (context.originThreadId !== undefined && context.originThreadId !== context.threadId) {
+          scopingClauses.push(`${scoping.scopeColumn} IN (?, ?)`);
+          scopingParams.push(context.threadId, context.originThreadId);
+        } else {
+          scopingClauses.push(`${scoping.scopeColumn} = ?`);
+          scopingParams.push(context.threadId);
+        }
       }
       if (scoping.personaId && context.personaId) {
         scopingClauses.push(`persona_id = ?`);
